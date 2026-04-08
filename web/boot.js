@@ -36,7 +36,7 @@
         banner.innerHTML = `
           <div class="boot-banner-copy">
             <strong>当前是本地文件模式。</strong>
-            <span>保存、打卡、Todo 状态切换都需要通过本地服务打开。</span>
+            <span>保存、打卡、Todo 状态切换都需要通过本地服务打开。第一次使用时，建议先打开可写版本，再补 Soul 和个人信息。</span>
           </div>
           <a class="inline-link" href="${targetUrl}">打开可写版本</a>
         `;

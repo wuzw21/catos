@@ -62,7 +62,7 @@ PEOS_CONTENT_ROOT=/absolute/path/to/your-content npm run serve
 - `soul.md`
 - 必要时同步 `profile/personal-info.md`
 
-你也可以先参考 `content.example/` 里的脱敏示例，再逐步替换成你自己的内容。
+你也可以先参考 `content.example/` 里的空模板目录，再逐步写成你自己的内容。
 
 ## 5. 后续怎么记录
 
@@ -106,18 +106,19 @@ PEOS_CONTENT_ROOT=/absolute/path/to/your-content npm run serve
 
 第一次的大规模身份初始化，仍然更适合通过直接对话完成，而不是仅靠首页随手记。
 
-## 8. 公开仓库里的示例数据是什么
+## 8. 公开仓库里的模板是什么
 
-`content.example/` 使用的是基于作者真实使用场景改写后的脱敏示例。
+`content.example/` 现在是一套空模板内容目录。
 
 它保留了：
 
 - 文件结构
 - 路由方式
 - 首页到日志的联动关系
+- 第一次打开时的引导提示
 
-它去掉了：
+它不包含：
 
-- 真实私人关系细节
-- 真实长期轨迹
-- 完整消费与照片数据
+- 作者的真实日志
+- 作者的私人关系细节
+- 真实消费、照片和长期轨迹

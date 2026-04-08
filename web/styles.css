@@ -337,6 +337,40 @@ body[data-page="diary"] .page-intro h1 {
   margin-bottom: 18px;
 }
 
+.home-start-guide {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-top: 14px;
+  padding: 14px 16px;
+  border-radius: 18px;
+  border: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.8);
+}
+
+.home-start-copy {
+  display: grid;
+  gap: 4px;
+}
+
+.home-start-copy strong {
+  font-size: 0.98rem;
+  color: var(--ink);
+}
+
+.home-start-copy span {
+  color: var(--muted);
+  font-size: 0.9rem;
+  line-height: 1.6;
+}
+
+.home-start-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
 .home-status-bar {
   display: flex;
   align-items: center;
@@ -2325,6 +2359,11 @@ body[data-page="diary"] .page-intro h1 {
   }
 
   .home-status-bar {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .home-start-guide {
     align-items: flex-start;
     flex-direction: column;
   }
