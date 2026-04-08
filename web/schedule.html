@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Schedule | Personal Evolution OS</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body data-page="schedule">
+    <div class="page-shell">
+      <header class="site-header reveal">
+        <a class="brand" href="./index.html">Personal Evolution OS</a>
+        <nav class="nav">
+          <a href="./index.html">首页</a>
+          <a href="./system.html">索引</a>
+          <a href="./todo.html">Todo</a>
+          <a href="./iterations.html">领域</a>
+          <a href="./schedule.html">日程</a>
+          <a href="./diary.html">日记</a>
+          <a href="./cat.html">和猫</a>
+          <a href="./photos.html">照片</a>
+        </nav>
+      </header>
+
+      <main>
+        <section class="section reveal">
+          <div class="schedule-toolbar">
+            <div class="schedule-toolbar-top">
+              <div class="schedule-nav">
+                <button class="filter-button" id="schedule-prev" type="button">上一周</button>
+                <button class="filter-button" id="schedule-next" type="button">下一周</button>
+                <button class="filter-button" id="schedule-reset-week" type="button">重置本周编辑</button>
+              </div>
+              <div class="schedule-range" id="schedule-range"></div>
+            </div>
+            <div class="schedule-capture-bar">
+              <div class="schedule-capture-input-wrap">
+                <label class="schedule-inline-label" for="schedule-quick-input">快速插入</label>
+                <input
+                  class="text-input schedule-inline-input"
+                  id="schedule-quick-input"
+                  type="text"
+                  placeholder="例如：周四晚上 去东操音乐跑"
+                />
+              </div>
+              <button class="panel-action-chip" id="schedule-quick-add" type="button">插入日程</button>
+              <div class="schedule-capture-input-wrap schedule-search-wrap">
+                <label class="schedule-inline-label" for="schedule-search">查询</label>
+                <input
+                  class="text-input schedule-inline-input"
+                  id="schedule-search"
+                  type="search"
+                  placeholder="搜索这周的事项"
+                />
+              </div>
+            </div>
+            <div class="filter-row" id="schedule-week-tabs"></div>
+            <div class="schedule-meta-bar">
+              <div class="schedule-summary" id="schedule-summary"></div>
+              <div class="schedule-edit-status" id="schedule-edit-status">日期在横轴，分段在纵轴。支持直接编辑、快速插入和查询，并自动同步回 Markdown。</div>
+            </div>
+          </div>
+          <div class="schedule-search-results" id="schedule-search-results"></div>
+          <div class="schedule-table-shell">
+            <div class="schedule-table-wrap" id="schedule-body"></div>
+          </div>
+        </section>
+      </main>
+    </div>
+
+    <script src="./boot.js"></script>
+    <script src="./data.js"></script>
+    <script src="./schedule.js"></script>
+  </body>
+</html>

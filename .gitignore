@@ -1,0 +1,26 @@
+.DS_Store
+.env
+tmp/
+content-private/
+content-local/
+content-demo-private/
+web/data.js
+
+# Private data layer
+/soul.md
+/assets/
+/dimensions/
+/explorations/
+/inbox/
+/iterations/
+/lists/
+/logs/
+/metrics/
+/notes/
+/photos/
+/plans/
+/private/
+/profile/
+/schedules/
+/tasks/
+/todos/

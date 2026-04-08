@@ -1,0 +1,12 @@
+{
+  "name": "personal-evolution-os",
+  "private": true,
+  "scripts": {
+    "init:demo": "node scripts/init-content-root.js content.example",
+    "sync": "node scripts/sync-web-data.js",
+    "sync:demo": "PEOS_CONTENT_ROOT=content.example node scripts/sync-web-data.js",
+    "serve": "node scripts/web-server.js",
+    "serve:demo": "PEOS_CONTENT_ROOT=content.example node scripts/web-server.js",
+    "check": "node --check scripts/sync-web-data.js && node --check scripts/update-todo-status.js && node --check scripts/schedule-utils.js && node --check scripts/update-weekly-schedule.js && node --check scripts/update-home-index.js && node --check scripts/update-daily-checkin.js && node --check scripts/update-core-contribution.js && node --check scripts/ingest-capture.js && node --check scripts/archive-capture.js && node --check scripts/daily-log-generator.js && node --check scripts/start-new-day.js && node --check scripts/codex-route-capture.js && node --check scripts/web-server.js && node --check web/boot.js && node --check web/app.js && node --check web/detail.js && node --check web/diary.js && node --check web/photos.js && node --check web/iterations.js && node --check web/schedule.js && node --check web/input.js && node --check web/todo.js && node --check web/system.js && node --check web/data.js"
+  }
+}

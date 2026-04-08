@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Detail | Personal Evolution OS</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body data-page="detail">
+    <div class="page-shell">
+      <header class="site-header reveal">
+        <a class="brand" href="./index.html">Personal Evolution OS</a>
+        <nav class="nav">
+          <a href="./index.html">首页</a>
+          <a href="./system.html">索引</a>
+          <a href="./todo.html">Todo</a>
+          <a href="./iterations.html">领域</a>
+          <a href="./schedule.html">日程</a>
+          <a href="./diary.html">日记</a>
+          <a href="./cat.html">和猫</a>
+          <a href="./photos.html">照片</a>
+        </nav>
+      </header>
+
+      <section class="page-intro reveal">
+        <p class="eyebrow" id="detail-kind"></p>
+        <h1 class="detail-title" id="detail-title"></h1>
+        <p class="detail-summary" id="detail-summary"></p>
+        <div class="detail-actions" id="detail-actions"></div>
+      </section>
+
+      <main class="reveal">
+        <section class="section detail-main">
+          <div class="markdown-body" id="detail-body"></div>
+        </section>
+
+        <aside class="section detail-side detail-meta-footer">
+          <div class="section-heading">
+            <p class="eyebrow">Meta</p>
+            <h2>索引</h2>
+          </div>
+          <div class="side-list" id="detail-meta"></div>
+        </aside>
+      </main>
+    </div>
+
+    <script src="./boot.js"></script>
+    <script src="./data.js"></script>
+    <script src="./detail.js"></script>
+  </body>
+</html>

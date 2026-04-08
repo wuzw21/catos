@@ -1,0 +1,42 @@
+{
+  "type": "object",
+  "properties": {
+    "should_archive_to_iteration": {
+      "type": "boolean"
+    },
+    "iteration_id": {
+      "type": "string",
+      "enum": ["basketball", "football", "badminton", "fitness", "skincare", "diet", "none"]
+    },
+    "section": {
+      "type": "string",
+      "enum": ["recent_changes", "current_problems", "insights", "next_step", "ignore"]
+    },
+    "title": {
+      "type": "string"
+    },
+    "summary": {
+      "type": "string"
+    },
+    "reason": {
+      "type": "string"
+    },
+    "markdown_bullet": {
+      "type": "string"
+    },
+    "achievement_candidate": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "should_archive_to_iteration",
+    "iteration_id",
+    "section",
+    "title",
+    "summary",
+    "reason",
+    "markdown_bullet",
+    "achievement_candidate"
+  ],
+  "additionalProperties": false
+}

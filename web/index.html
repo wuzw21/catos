@@ -1,0 +1,151 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Personal Evolution OS</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body data-page="home">
+    <div class="page-shell">
+      <header class="site-header reveal">
+        <a class="brand" href="./index.html">Personal Evolution OS</a>
+        <nav class="nav">
+          <a href="./index.html">首页</a>
+          <a href="./system.html">索引</a>
+          <a href="./todo.html">Todo</a>
+          <a href="./iterations.html">领域</a>
+          <a href="./schedule.html">日程</a>
+          <a href="./diary.html">日记</a>
+          <a href="./cat.html">和猫</a>
+          <a href="./photos.html">照片</a>
+        </nav>
+      </header>
+
+      <main>
+        <section class="section reveal">
+          <div class="section-heading">
+            <p class="eyebrow">Home</p>
+            <h1 class="home-title">今日</h1>
+            <p class="home-note" id="home-note">这里只放最常用的入口和今天要动的内容，改完会直接写回系统。</p>
+            <div class="home-status-bar">
+              <div class="home-status-copy">
+                <div class="home-date-chip">
+                  <span class="home-date-label">今日日期</span>
+                  <strong id="home-current-date">今天</strong>
+                </div>
+                <p class="home-status-note">会整理昨天的随手记、日计划、打卡和核心贡献，并收进昨天日志。</p>
+              </div>
+              <div class="home-status-actions">
+                <a class="panel-action-chip panel-action-chip-muted home-yesterday-link" id="view-yesterday-log" href="./diary.html">查看昨日</a>
+                <button class="panel-action-chip home-new-day-button" id="start-new-day" type="button">开启新的一天</button>
+              </div>
+            </div>
+          </div>
+          <div class="home-stack">
+            <article class="dashboard-panel dashboard-side">
+              <div class="card-topline">
+                <h2>重要日程</h2>
+                <div class="panel-actions">
+                  <span class="tag">Dates</span>
+                  <button class="panel-action-chip panel-action-chip-muted" id="toggle-ddl-edit" type="button">编辑</button>
+                  <button class="panel-action-chip" id="add-ddl-item" type="button">新增</button>
+                </div>
+              </div>
+              <p class="panel-note">只放明确有日期、需要提前记住的重要事项。</p>
+              <div class="simple-index-list" id="ddl-list"></div>
+            </article>
+
+            <article class="dashboard-panel home-primary-panel">
+              <div class="card-topline">
+                <h2>日计划</h2>
+                <div class="panel-actions">
+                  <span class="tag">Today</span>
+                  <button class="panel-action-chip" id="add-today-plan" type="button">新增</button>
+                </div>
+              </div>
+              <p class="panel-note">这里写今天真正要推进的动作，保持短句、直接、可执行。</p>
+              <div class="simple-index-list" id="today-list"></div>
+            </article>
+
+            <div class="dashboard-grid home-support-grid">
+              <article class="dashboard-panel">
+                <div class="card-topline">
+                  <h2>每天打卡</h2>
+                  <div class="panel-actions">
+                    <span class="tag" id="checkin-date">Check</span>
+                    <button class="panel-action-chip" id="add-daily-checkin" type="button">新增</button>
+                  </div>
+                </div>
+                <p class="panel-note">这里放每天重复要做的固定动作，适合勾选式维护。</p>
+                <div class="checkin-list" id="daily-checkin-list"></div>
+              </article>
+
+              <article class="dashboard-panel dashboard-side">
+                <div class="card-topline">
+                  <h2>今日核心贡献</h2>
+                  <span class="tag" id="core-contribution-date">Today</span>
+                </div>
+                <p class="panel-note">只记录今天最能推动主线向前的一件事。</p>
+                <p class="home-core-emphasis"><strong>先记录真正推动主线的一件事。</strong></p>
+                <textarea
+                  class="home-core-input"
+                  id="core-contribution-input"
+                  rows="6"
+                  placeholder="今天最重要的贡献还没有写入。先记录真正推动主线的一件事。"
+                ></textarea>
+              </article>
+            </div>
+
+            <article class="dashboard-panel home-capture-panel">
+              <div class="card-topline">
+                <h2>随手记</h2>
+                <a class="button-link home-capture-open" href="./detail.html?type=doc&id=quick-capture">打开收集箱</a>
+              </div>
+              <p class="panel-note">临时想法和图片先丢这里，后面再归档进系统。</p>
+              <div class="home-capture-composer" id="capture-dropzone">
+                <textarea
+                  class="home-capture-input"
+                  id="capture-text"
+                  rows="1"
+                  placeholder="随便记一句话。"
+                ></textarea>
+                <input id="capture-photo-input" type="file" accept="image/*" />
+                <div class="home-capture-composer-bar">
+                  <label class="home-capture-attach" for="capture-photo-input">添加图片</label>
+                  <span id="capture-file-status">可附一张图片，支持拖拽</span>
+                </div>
+              </div>
+              <div class="capture-actions">
+                <button class="button-link button-accent" id="save-capture" type="button">保存随手记</button>
+                <button class="button-link button-accent-light" id="archive-capture" type="button">归档今天随手记</button>
+                <button class="button-link" id="clear-capture" type="button">清空</button>
+              </div>
+              <p class="capture-status" id="capture-status">支持文字、拖拽图片和点选图片。</p>
+              <div class="capture-last-entry" id="capture-last-entry"></div>
+            </article>
+
+            <article class="dashboard-panel home-directory-panel">
+              <div class="card-topline">
+                <h2>索引页</h2>
+                <a class="inline-link" href="./system.html">打开索引</a>
+              </div>
+              <div class="directory-links">
+                <a class="directory-link" href="./system.html">进入索引页</a>
+                <a class="directory-link" href="./detail.html?type=doc&id=personal-info">个人信息</a>
+                <a class="directory-link" href="./detail.html?type=doc&id=memorial-days">纪念日</a>
+                <a class="directory-link" href="./detail.html?type=doc&id=wardrobe">衣柜与妆台</a>
+                <a class="directory-link" href="./detail.html?type=doc&id=want-to-do">想做的事</a>
+                <a class="directory-link" href="./detail.html?type=doc&id=input-rules">可直接说的命令</a>
+              </div>
+            </article>
+          </div>
+        </section>
+      </main>
+    </div>
+
+    <script src="./boot.js"></script>
+    <script src="./data.js"></script>
+    <script src="./app.js"></script>
+  </body>
+</html>

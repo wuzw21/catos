@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Photos | Personal Evolution OS</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body data-page="photos">
+    <div class="page-shell">
+      <header class="site-header reveal">
+        <a class="brand" href="./index.html">Personal Evolution OS</a>
+        <nav class="nav">
+          <a href="./index.html">首页</a>
+          <a href="./system.html">索引</a>
+          <a href="./todo.html">Todo</a>
+          <a href="./iterations.html">领域</a>
+          <a href="./schedule.html">日程</a>
+          <a href="./diary.html">日记</a>
+          <a href="./cat.html">和猫</a>
+          <a href="./photos.html">照片</a>
+        </nav>
+      </header>
+
+      <section class="page-intro reveal">
+        <p class="eyebrow">Photos</p>
+        <h1>把变化留成证据，也把生活留成画面。</h1>
+        <p class="hero-text">项目照片放在 `photos/` 目录；如果只是临时查看，也可以直接选择本地图片文件，网页只在本机预览，不会上传。</p>
+      </section>
+
+      <main>
+        <section class="section reveal">
+          <div class="section-heading">
+            <p class="eyebrow">Project Photos</p>
+            <h2>项目内照片</h2>
+          </div>
+          <div class="photo-grid" id="project-photo-grid"></div>
+        </section>
+
+        <section class="section reveal">
+          <div class="section-heading">
+            <p class="eyebrow">Local Preview</p>
+            <h2>本地临时读取</h2>
+          </div>
+          <label class="upload-panel">
+            <span>选择图片文件</span>
+            <input id="photo-input" type="file" accept="image/*" multiple />
+          </label>
+          <div class="photo-grid" id="local-photo-grid"></div>
+        </section>
+      </main>
+    </div>
+
+    <script src="./boot.js"></script>
+    <script src="./data.js"></script>
+    <script src="./photos.js"></script>
+  </body>
+</html>

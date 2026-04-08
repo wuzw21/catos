@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Todo | Personal Evolution OS</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body data-page="todo">
+    <div class="page-shell">
+      <header class="site-header reveal">
+        <a class="brand" href="./index.html">Personal Evolution OS</a>
+        <nav class="nav">
+          <a href="./index.html">首页</a>
+          <a href="./system.html">索引</a>
+          <a href="./todo.html">Todo</a>
+          <a href="./iterations.html">领域</a>
+          <a href="./schedule.html">日程</a>
+          <a href="./diary.html">日记</a>
+          <a href="./cat.html">和猫</a>
+          <a href="./photos.html">照片</a>
+        </nav>
+      </header>
+
+      <main>
+        <section class="section reveal">
+          <div class="section-heading">
+            <p class="eyebrow">Purchase</p>
+            <h2>购买总表</h2>
+            <p class="home-note">所有购买类输入都先回到这里。这里负责总入口、索引跳转和状态切换。</p>
+          </div>
+          <div id="purchase-todo-anchor"></div>
+        </section>
+
+        <section class="section reveal">
+          <div class="section-heading">
+            <p class="eyebrow">Todos</p>
+            <h2>文件列表</h2>
+          </div>
+          <div class="compact-filter-bar">
+            <div class="compact-filter-group">
+              <span class="filter-label">状态</span>
+              <div class="filter-row" id="todo-filter-status"></div>
+            </div>
+            <div class="compact-filter-group">
+              <span class="filter-label">八维</span>
+              <div class="filter-row" id="todo-filter-dimension"></div>
+            </div>
+          </div>
+          <div class="sync-status" id="todo-sync-status">状态切换会同步到 Todo 文件、索引和前端数据。</div>
+          <div class="filter-result" id="todo-result"></div>
+          <div class="todo-feed" id="todo-feed"></div>
+        </section>
+
+        <section class="section reveal">
+          <div class="section-heading">
+            <p class="eyebrow">Overview</p>
+            <h2>Todo 总览</h2>
+          </div>
+          <div class="iteration-summary-grid">
+            <article class="dashboard-panel">
+              <div class="card-topline">
+                <h3>状态分布</h3>
+                <span class="tag">Status</span>
+              </div>
+              <div class="compact-table" id="todo-status-overview"></div>
+            </article>
+            <article class="dashboard-panel dashboard-side">
+              <div class="card-topline">
+                <h3>八维分布</h3>
+                <span class="tag">Dimension</span>
+              </div>
+              <div class="compact-table" id="todo-dimension-overview"></div>
+            </article>
+          </div>
+        </section>
+      </main>
+    </div>
+
+    <script src="./boot.js"></script>
+    <script src="./data.js"></script>
+    <script src="./todo.js"></script>
+  </body>
+</html>

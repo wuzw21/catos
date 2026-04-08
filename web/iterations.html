@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>领域 | Personal Evolution OS</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body data-page="iterations">
+    <div class="page-shell">
+      <header class="site-header reveal">
+        <a class="brand" href="./index.html">Personal Evolution OS</a>
+        <nav class="nav">
+          <a href="./index.html">首页</a>
+          <a href="./system.html">索引</a>
+          <a href="./todo.html">Todo</a>
+          <a href="./iterations.html">领域</a>
+          <a href="./schedule.html">日程</a>
+          <a href="./diary.html">日记</a>
+          <a href="./cat.html">和猫</a>
+          <a href="./photos.html">照片</a>
+        </nav>
+      </header>
+
+      <section class="page-intro reveal">
+        <p class="eyebrow">Fields</p>
+        <h1 class="fields-title">按领域看变化。</h1>
+        <p class="hero-text fields-summary">这里维护长期方向本身，不看零散流水。篮球、足球、饮食、护肤这类领域都单独记录现状、里程碑、最近变化、当前问题和下一步，并支持按八维筛选、集中查看和直达对应 Todo。</p>
+      </section>
+
+      <main>
+        <section class="section reveal">
+          <div class="section-heading">
+            <p class="eyebrow">Result</p>
+            <h2>结果列表</h2>
+          </div>
+          <div class="compact-filter-bar">
+            <div class="compact-filter-group">
+              <span class="filter-label">八维</span>
+              <div class="filter-row" id="filter-dimension"></div>
+            </div>
+            <div class="compact-filter-group">
+              <span class="filter-label">状态</span>
+              <div class="filter-row" id="filter-status"></div>
+            </div>
+          </div>
+          <div class="filter-result" id="iteration-result"></div>
+          <div class="iteration-feed" id="iteration-feed"></div>
+        </section>
+
+        <section class="section reveal">
+          <div class="section-heading">
+            <p class="eyebrow">Overview</p>
+            <h2>简写速览</h2>
+          </div>
+          <div class="iteration-summary-grid">
+            <article class="dashboard-panel">
+              <div class="card-topline">
+                <h3>八维分布</h3>
+                <span class="tag">Dimension</span>
+              </div>
+              <div class="compact-table" id="dimension-overview"></div>
+            </article>
+            <article class="dashboard-panel dashboard-side">
+              <div class="card-topline">
+                <h3>领域状态</h3>
+                <span class="tag">Status</span>
+              </div>
+              <div class="compact-table" id="iteration-overview"></div>
+            </article>
+          </div>
+        </section>
+      </main>
+    </div>
+
+    <script src="./boot.js"></script>
+    <script src="./data.js"></script>
+    <script src="./iterations.js"></script>
+  </body>
+</html>
