@@ -4173,6 +4173,28 @@ body.couple-home .pixel-person-cat {
   box-shadow: inset 0 -5px 0 rgba(255, 255, 255, 0.38);
 }
 
+body.couple-home .person-avatar {
+  flex: 0 0 auto;
+}
+
+body.couple-home .person-avatar.has-image {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  overflow: hidden;
+  border: 2px solid var(--person-color, var(--pixel-pink));
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--person-color, var(--pixel-pink)) 12%, #fff);
+}
+
+body.couple-home .person-avatar.has-image img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
 body.couple-home .pixel-cat-mark::before,
 body.couple-home .pixel-person-cat::before,
 body.couple-home .pixel-cat-mark::after,
@@ -4315,6 +4337,150 @@ body.couple-home .dashboard-wide {
   margin-bottom: 18px;
   background:
     linear-gradient(180deg, rgba(255, 249, 252, 0.98), rgba(255, 248, 242, 0.94));
+}
+
+body.couple-home .dashboard-capture-strip {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(260px, 0.34fr);
+  gap: 12px;
+  align-items: stretch;
+  margin-bottom: 14px;
+}
+
+body.couple-home .dashboard-capture-form,
+body.couple-home .dashboard-capture-recent {
+  min-width: 0;
+  padding: 12px;
+  border: 1px solid rgba(86, 50, 68, 0.12);
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.66);
+}
+
+body.couple-home .dashboard-capture-form textarea {
+  min-height: 64px;
+  resize: vertical;
+  font-size: 0.98rem;
+  line-height: 1.55;
+}
+
+body.couple-home .dashboard-capture-controls {
+  display: grid;
+  grid-template-columns: minmax(96px, 0.65fr) minmax(86px, 0.55fr) minmax(0, 1fr) auto auto;
+  gap: 8px;
+  align-items: center;
+}
+
+body.couple-home .dashboard-capture-controls input,
+body.couple-home .dashboard-capture-controls select {
+  min-width: 0;
+  height: 40px;
+  border: 1px solid rgba(86, 50, 68, 0.18);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.9);
+}
+
+body.couple-home .dashboard-capture-controls button {
+  min-height: 40px;
+  white-space: nowrap;
+}
+
+body.couple-home .dashboard-capture-recent {
+  display: grid;
+  gap: 9px;
+  align-content: start;
+}
+
+body.couple-home .dashboard-capture-recent-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+body.couple-home .dashboard-capture-recent-head strong {
+  color: var(--pixel-ink);
+}
+
+body.couple-home .dashboard-capture-recent-head a {
+  color: var(--pixel-pink-deep);
+  font-size: 0.82rem;
+  font-weight: 900;
+  text-decoration: none;
+}
+
+body.couple-home .dashboard-mini-capture-list {
+  display: grid;
+  gap: 7px;
+}
+
+body.couple-home .dashboard-focus-row {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  margin: 0 0 14px;
+}
+
+body.couple-home .dashboard-mini-panel {
+  display: grid;
+  gap: 9px;
+  min-width: 0;
+  padding: 12px;
+  border: 1px solid rgba(86, 50, 68, 0.12);
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.64);
+}
+
+body.couple-home .dashboard-mini-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+body.couple-home .dashboard-mini-head strong {
+  color: var(--pixel-ink);
+}
+
+body.couple-home .dashboard-mini-head a {
+  color: var(--pixel-pink-deep);
+  font-size: 0.82rem;
+  font-weight: 900;
+  text-decoration: none;
+}
+
+body.couple-home .dashboard-mini-list {
+  display: grid;
+  gap: 7px;
+}
+
+body.couple-home .dashboard-mini-item {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+  min-width: 0;
+  padding: 9px 10px;
+  border: 1px solid rgba(86, 50, 68, 0.1);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.78);
+  color: rgba(86, 50, 68, 0.76);
+  text-align: left;
+}
+
+body.couple-home .dashboard-mini-item strong {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--pixel-ink);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+body.couple-home .dashboard-mini-item span,
+body.couple-home .dashboard-mini-item em {
+  color: rgba(86, 50, 68, 0.58);
+  font-size: 0.78rem;
+  font-style: normal;
+  font-weight: 800;
 }
 
 body.couple-home .couple-panel-head {
@@ -4751,6 +4917,7 @@ body.couple-home .mini-create-form input,
 body.couple-home .mini-create-form select,
 body.couple-home .capture-form textarea,
 body.couple-home .capture-form select,
+body.couple-home .capture-form input,
 body.couple-home .couple-field input,
 body.couple-home .couple-field textarea,
 body.couple-home .couple-field select {
@@ -5547,6 +5714,26 @@ body.couple-home .capture-feed-head span {
   font-weight: 800;
 }
 
+body.couple-home .capture-note.is-mini {
+  padding: 8px 9px;
+  border-radius: 12px;
+}
+
+body.couple-home .capture-note.is-mini span {
+  font-size: 0.72rem;
+}
+
+body.couple-home .capture-note.is-mini p {
+  display: -webkit-box;
+  overflow: hidden;
+  margin: 4px 0 0;
+  color: rgba(86, 50, 68, 0.72);
+  font-size: 0.82rem;
+  line-height: 1.35;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
 body.couple-home .quick-add-panel,
 body.couple-home .capture-panel {
   background:
@@ -5628,6 +5815,34 @@ body.couple-home .personal-pages-list {
   gap: 10px;
 }
 
+body.couple-home .goals-page-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(280px, 0.42fr);
+  gap: 14px;
+  align-items: start;
+}
+
+body.couple-home .goal-card {
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.9), color-mix(in srgb, var(--person-color, var(--pixel-pink)) 8%, #fff));
+}
+
+body.couple-home .goal-form textarea {
+  min-height: 72px;
+}
+
+body.couple-home .goal-readonly p {
+  color: var(--pixel-ink);
+  font-weight: 800;
+}
+
+body.couple-home .future-goals-panel {
+  padding: 12px;
+  border: 1px solid rgba(86, 50, 68, 0.12);
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.64);
+}
+
 body.couple-home .future-page-item {
   display: grid;
   gap: 6px;
@@ -5701,6 +5916,64 @@ body.couple-home .personal-page-readonly small {
   line-height: 1.55;
 }
 
+body.couple-home .settings-page-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 0.9fr) minmax(260px, 0.46fr);
+  gap: 14px;
+  align-items: start;
+}
+
+body.couple-home .profile-settings-form,
+body.couple-home .settings-members {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid rgba(86, 50, 68, 0.12);
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.66);
+}
+
+body.couple-home .settings-avatar-preview,
+body.couple-home .settings-member {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+body.couple-home .settings-avatar-preview strong,
+body.couple-home .settings-member b {
+  display: block;
+  color: var(--pixel-ink);
+}
+
+body.couple-home .settings-avatar-preview span,
+body.couple-home .settings-member span {
+  color: rgba(86, 50, 68, 0.58);
+  font-size: 0.82rem;
+  font-weight: 800;
+}
+
+body.couple-home .settings-form-row {
+  display: grid;
+  grid-template-columns: minmax(120px, 0.4fr) minmax(0, 1fr);
+  gap: 8px;
+}
+
+body.couple-home .settings-upload-button {
+  min-height: 44px;
+}
+
+body.couple-home .settings-members > strong {
+  color: var(--pixel-ink);
+}
+
+body.couple-home .settings-member {
+  padding: 10px;
+  border: 1px solid color-mix(in srgb, var(--person-color, var(--pixel-pink)) 28%, rgba(86, 50, 68, 0.12));
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--person-color, var(--pixel-pink)) 8%, #fff);
+}
+
 body.couple-home .pixel-empty {
   border: 1px dashed rgba(86, 50, 68, 0.22);
   border-radius: 14px;
@@ -5754,6 +6027,12 @@ body.couple-home .pixel-empty {
   body.couple-home .todo-create-controls,
   body.couple-home .quick-add-controls,
   body.couple-home .schedule-list-layout,
+  body.couple-home .dashboard-capture-strip,
+  body.couple-home .dashboard-capture-controls,
+  body.couple-home .dashboard-focus-row,
+  body.couple-home .goals-page-layout,
+  body.couple-home .settings-page-layout,
+  body.couple-home .settings-form-row,
   body.couple-home .capture-hub-layout,
   body.couple-home .daily-summary-layout,
   body.couple-home .daily-empty-state,
@@ -5794,6 +6073,7 @@ body.couple-home .pixel-empty {
   body.couple-home .thing-row-actions,
   body.couple-home .diary-toolbar,
   body.couple-home .daily-summary-title-row,
+  body.couple-home .dashboard-capture-controls,
   body.couple-home .capture-extra-row,
   body.couple-home .capture-form-row {
     align-items: stretch;

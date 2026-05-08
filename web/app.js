@@ -47,6 +47,13 @@
       note: "这里只放具体安排；每天的完成情况在 Dashboard 用短标记显示。",
     },
     {
+      id: "goals",
+      label: "长期目标",
+      kicker: "Long Goals",
+      title: "长期目标",
+      note: "记录想成为什么样的人，以及未来想一起做的事情。",
+    },
+    {
       id: "daily-summary",
       label: "日总结",
       kicker: "Daily Story",
@@ -54,11 +61,11 @@
       note: "由随手记、Todo、日程、打卡、地点和照片自动整理。",
     },
     {
-      id: "pages",
-      label: "小页面",
-      kicker: "Personal Pages",
-      title: "未来想做和个人资料",
-      note: "把未来想做、个人信息和偏好放到独立页面里。",
+      id: "settings",
+      label: "设置",
+      kicker: "Settings",
+      title: "设置",
+      note: "调整自己的昵称、头像和代表颜色。",
     },
   ];
   const pageIds = new Set(pageDefinitions.map((page) => page.id));
@@ -128,6 +135,7 @@
 
   function normalizePageId(value) {
     const pageId = String(value || "").replace(/^#/, "");
+    if (pageId === "pages") return "goals";
     return pageIds.has(pageId) ? pageId : "dashboard";
   }
 
@@ -413,6 +421,23 @@
   function profileStyle(userId) {
     const profile = getProfile(userId);
     return profile ? `style="--person-color: ${escapeHtml(profile.color)}"` : "";
+  }
+
+  function renderAvatar(profileOrUserId, className = "", options = {}) {
+    const profile = typeof profileOrUserId === "string" ? getProfile(profileOrUserId) : profileOrUserId;
+    if (!profile) {
+      return `<span class="pixel-person-cat person-avatar ${escapeHtml(className)}" aria-hidden="true"></span>`;
+    }
+    const style = `style="--person-color: ${escapeHtml(profile.color)}"`;
+    const label = escapeHtml(profile.displayName || "成员头像");
+    if (profile.avatarUrl && options.allowImage !== false) {
+      return `
+        <span class="person-avatar has-image ${escapeHtml(className)}" ${style}>
+          <img src="${escapeHtml(profile.avatarUrl)}" alt="${label}" />
+        </span>
+      `;
+    }
+    return `<span class="pixel-person-cat person-avatar ${escapeHtml(className)}" ${style} aria-hidden="true"></span>`;
   }
 
   function selectedDay() {
@@ -882,7 +907,9 @@
     const text = String(formData.get("text") || "").trim();
     if (!text) return;
 
-    const mode = String(formData.get("mode") || state.captureMode || "analysis");
+    const submitMode =
+      event.submitter?.dataset?.captureSubmitMode || event.submitter?.value || "";
+    const mode = String(submitMode || formData.get("mode") || state.captureMode || "analysis");
     const ownerId = String(formData.get("ownerId") || "shared");
     const visibility = formData.get("visibility") || "shared";
     const location = String(formData.get("location") || "").trim();
@@ -934,7 +961,11 @@
         if (!result) return;
         setData(result.state);
         state.todoMode = "today";
+        state.activePage = "todos";
         state.status = "随手记已保存，并生成 Todo。";
+        if (window.location.hash !== "#todos") {
+          window.location.hash = "#todos";
+        }
         renderApp();
         return;
       }
@@ -976,6 +1007,8 @@
         title: formData.get("title") || "",
         bio: formData.get("bio") || "",
         likes: formData.get("likes") || "",
+        longTermGoal: formData.get("longTermGoal") || "",
+        identityGoal: formData.get("identityGoal") || "",
         notes: formData.get("notes") || "",
       },
     });
@@ -983,6 +1016,45 @@
     setData(result.state);
     state.status = "个人页已保存。";
     renderApp();
+  }
+
+  async function saveProfileSettings(event) {
+    event.preventDefault();
+    const formData = new FormData(event.currentTarget);
+    const avatarFile = event.currentTarget.querySelector('input[name="avatarFile"]')?.files?.[0] || null;
+
+    try {
+      let avatarAsset = null;
+      if (avatarFile) {
+        if (avatarFile.size > 5 * 1024 * 1024) {
+          state.status = "头像图片不能超过 5MB。";
+          renderApp();
+          return;
+        }
+        avatarAsset = {
+          name: avatarFile.name,
+          dataUrl: await readFileAsDataUrl(avatarFile),
+        };
+      }
+      const result = await request("/api/couple/profile", {
+        method: "POST",
+        body: {
+          date: state.selectedDate,
+          displayName: formData.get("displayName") || "",
+          initials: formData.get("initials") || "",
+          color: formData.get("color") || "",
+          avatar: formData.get("avatar") || "pink-cat",
+          avatarAsset,
+        },
+      });
+      if (!result) return;
+      setData(result.state);
+      state.status = "设置已保存。";
+      renderApp();
+    } catch (error) {
+      state.status = `设置保存失败：${error.message}`;
+      renderApp();
+    }
   }
 
   async function saveTodo(event) {
@@ -1195,7 +1267,7 @@
                     data-login-select="${escapeHtml(profile.login)}"
                     style="--person-color: ${escapeHtml(profile.color)}"
                   >
-                    <span class="pixel-person-cat" aria-hidden="true"></span>
+                    ${renderAvatar(profile, "login-avatar", { allowImage: false })}
                     <strong>${escapeHtml(profile.displayName)}</strong>
                     <em>${escapeHtml(profile.login)}</em>
                   </button>
@@ -1255,7 +1327,7 @@
             <p class="couple-headline-note">${escapeHtml(page.note)}</p>
           </div>
           <div class="couple-session-card">
-            <span class="pixel-person-cat" ${profileStyle(currentUser().id)} aria-hidden="true"></span>
+            ${renderAvatar(currentUser(), "session-avatar")}
             <div>
               <strong>${escapeHtml(currentUser().displayName)}</strong>
               <span>当前登录</span>
@@ -1310,7 +1382,8 @@
     if (state.activePage === "daily-summary") return renderDailySummaryPanel();
     if (state.activePage === "schedule") return renderSchedulePage();
     if (state.activePage === "todos") return renderTodosPage();
-    if (state.activePage === "pages") return renderMemoryPagesPanel();
+    if (state.activePage === "goals") return renderGoalsPage();
+    if (state.activePage === "settings") return renderSettingsPage();
     return renderDashboard();
   }
 
@@ -1358,6 +1431,8 @@
           state.dashboardMode === "month"
             ? renderMonthDashboard()
             : `
+              ${renderDashboardCaptureStrip()}
+              ${renderDashboardFocusRow()}
               <div class="couple-filter-row">
                 <div class="couple-filter-tabs">
                   <button class="${state.view === "shared" ? "is-active" : ""}" data-view-filter="shared" type="button">共同</button>
@@ -1382,6 +1457,100 @@
     `;
   }
 
+  function renderDashboardFocusRow() {
+    const schedule = scheduleItemsForDate(state.selectedDate).slice(0, 4);
+    const deadlines = deadlineItemsForView()
+      .filter((item) => item.date >= state.selectedDate)
+      .slice(0, 4);
+    return `
+      <div class="dashboard-focus-row">
+        <section class="dashboard-mini-panel">
+          <div class="dashboard-mini-head">
+            <strong>今天日程</strong>
+            <a href="#schedule">进入日程</a>
+          </div>
+          <div class="dashboard-mini-list">
+            ${
+              schedule.length
+                ? schedule
+                    .map(
+                      (item) => `
+                        <button class="dashboard-mini-item" data-schedule-detail="${escapeHtml(item.id)}" data-schedule-date="${escapeHtml(item.date)}" type="button">
+                          <span>${escapeHtml(segmentLabel(item.segment))}</span>
+                          <strong>${escapeHtml(item.title)}</strong>
+                          <em>${escapeHtml(ownerLabel(item.ownerId))}</em>
+                        </button>
+                      `
+                    )
+                    .join("")
+                : `<div class="pixel-empty">今天还没有日程。</div>`
+            }
+          </div>
+        </section>
+        <section class="dashboard-mini-panel">
+          <div class="dashboard-mini-head">
+            <strong>重要 DDL</strong>
+            <a href="#todos">管理</a>
+          </div>
+          <div class="dashboard-mini-list">
+            ${
+              deadlines.length
+                ? deadlines
+                    .map(
+                      (item) => `
+                        <article class="dashboard-mini-item is-deadline">
+                          <span>${escapeHtml(item.date)}</span>
+                          <strong>${escapeHtml(item.title)}</strong>
+                          <em>${escapeHtml(ownerLabel(item.ownerId))}</em>
+                        </article>
+                      `
+                    )
+                    .join("")
+                : `<div class="pixel-empty">还没有重要 DDL。</div>`
+            }
+          </div>
+        </section>
+      </div>
+    `;
+  }
+
+  function renderDashboardCaptureStrip() {
+    const captures = capturesForSelectedDate().slice(0, 3);
+    return `
+      <div class="dashboard-capture-strip">
+        <form class="capture-form dashboard-capture-form" data-capture-form>
+          <input type="hidden" name="mode" value="analysis" />
+          <textarea name="text" rows="2" placeholder="随手记：一句话、地点、照片线索、待办都可以先放这里"></textarea>
+          <div class="dashboard-capture-controls">
+            <select name="ownerId" aria-label="归属">
+              ${renderOwnerOptions(state.quickOwner)}
+            </select>
+            <select name="visibility" aria-label="可见范围">
+              <option value="shared">共享</option>
+              <option value="private">仅自己</option>
+            </select>
+            <input name="location" type="text" placeholder="地点" autocomplete="off" />
+            <button class="pixel-secondary-button" data-capture-submit-mode="todo" type="submit">转 Todo</button>
+            <button class="pixel-primary-button" data-capture-submit-mode="analysis" type="submit">交给 Agent</button>
+          </div>
+        </form>
+        <div class="dashboard-capture-recent">
+          <div class="dashboard-capture-recent-head">
+            <strong>今天随手记</strong>
+            <a href="#capture">全部 ${capturesForSelectedDate().length}</a>
+          </div>
+          <div class="dashboard-mini-capture-list">
+            ${
+              captures.length
+                ? captures.map((capture) => renderCaptureNote(capture, "mini")).join("")
+                : `<div class="pixel-empty">还没有随手记。</div>`
+            }
+          </div>
+        </div>
+      </div>
+    `;
+  }
+
   function renderPersonDashboardCard(profile) {
     const stats = getCompletion(profile.id);
     const day = state.data.diaryDay.userDays[profile.id] || {};
@@ -1390,7 +1559,7 @@
     return `
       <article class="person-dashboard-card" style="--person-color: ${escapeHtml(profile.color)}">
         <div class="person-card-top">
-          <span class="pixel-person-cat" aria-hidden="true"></span>
+          ${renderAvatar(profile, "dashboard-avatar")}
           <div>
             <strong>${escapeHtml(profile.displayName)}</strong>
             <span>${stats.done}/${stats.total} 已完成</span>
@@ -1917,28 +2086,77 @@
     `;
   }
 
-  function renderMemoryPagesPanel() {
+  function renderGoalsPage() {
     return `
-      <section class="couple-panel memory-pages-panel" id="pages">
+      <section class="couple-panel memory-pages-panel" id="goals">
         <div class="couple-panel-head compact">
           <div>
-            <p class="couple-kicker">Pages</p>
-            <h2>小页面</h2>
-          </div>
-          <div class="couple-filter-tabs compact-tabs">
-            <button class="${state.pagesMode === "future" ? "is-active" : ""}" data-pages-mode="future" type="button">未来想做</button>
-            <button class="${state.pagesMode === "profiles" ? "is-active" : ""}" data-pages-mode="profiles" type="button">个人资料</button>
+            <p class="couple-kicker">Long Goals</p>
+            <h2>长期目标</h2>
           </div>
         </div>
-        ${state.pagesMode === "profiles" ? renderPersonalPages() : renderFuturePage()}
+        <div class="goals-page-layout">
+          ${renderLongTermGoals()}
+          ${renderFuturePage()}
+        </div>
       </section>
+    `;
+  }
+
+  function renderLongTermGoals() {
+    const pages = state.data?.personalPages || {};
+    return `
+      <div class="personal-pages-list goals-list">
+        ${profiles()
+          .map((profile) => {
+            const page = pages[profile.id] || {};
+            const editable = profile.id === currentUser()?.id;
+            return `
+              <article class="personal-page-card goal-card" style="--person-color: ${escapeHtml(profile.color)}">
+                <div class="personal-page-head">
+                  ${renderAvatar(profile, "goal-avatar")}
+                  <div>
+                    <strong>${escapeHtml(profile.displayName)}</strong>
+                    <em>${escapeHtml(page.title || "长期目标")}</em>
+                  </div>
+                </div>
+                ${
+                  editable
+                    ? `
+                      <form class="personal-page-form goal-form" data-personal-page-form>
+                        <input name="title" type="text" value="${escapeHtml(page.title || profile.displayName)}" placeholder="页面标题" />
+                        <textarea name="longTermGoal" rows="3" placeholder="长期目标：想长期稳定做到什么">${escapeHtml(page.longTermGoal || "")}</textarea>
+                        <textarea name="identityGoal" rows="3" placeholder="希望成为什么样的人">${escapeHtml(page.identityGoal || "")}</textarea>
+                        <textarea name="bio" rows="2" placeholder="简单介绍">${escapeHtml(page.bio || "")}</textarea>
+                        <textarea name="likes" rows="2" placeholder="喜欢、偏好、注意事项">${escapeHtml(page.likes || "")}</textarea>
+                        <textarea name="notes" rows="3" placeholder="更多补充">${escapeHtml(page.notes || "")}</textarea>
+                        <button class="pixel-secondary-button" type="submit">保存长期目标</button>
+                      </form>
+                    `
+                    : `
+                      <div class="personal-page-readonly goal-readonly">
+                        <p>${escapeHtml(page.longTermGoal || "还没有长期目标。")}</p>
+                        <span>${escapeHtml(page.identityGoal || "还没有写希望成为什么样的人。")}</span>
+                        ${page.bio ? `<small>${escapeHtml(page.bio)}</small>` : ""}
+                      </div>
+                    `
+                }
+              </article>
+            `;
+          })
+          .join("")}
+      </div>
     `;
   }
 
   function renderFuturePage() {
     const items = futureItems().slice(0, 8);
     return `
-      <div class="future-page-list">
+      <div class="future-page-list future-goals-panel">
+        <div class="dashboard-mini-head">
+          <strong>未来想做</strong>
+          <a href="#todos">添加 Todo</a>
+        </div>
         ${
           items.length
             ? items
@@ -1958,6 +2176,89 @@
     `;
   }
 
+  function renderSettingsPage() {
+    const current = currentUser();
+    return `
+      <section class="couple-panel settings-panel" id="settings">
+        <div class="couple-panel-head compact">
+          <div>
+            <p class="couple-kicker">Settings</p>
+            <h2>个人设置</h2>
+          </div>
+        </div>
+        <div class="settings-page-layout">
+          <form class="profile-settings-form" id="profile-settings-form">
+            <div class="settings-avatar-preview">
+              ${renderAvatar(current, "settings-avatar")}
+              <div>
+                <strong>${escapeHtml(current?.displayName || "")}</strong>
+                <span>${escapeHtml(current?.login || "")}</span>
+              </div>
+            </div>
+            <label class="couple-field">
+              <span>昵称</span>
+              <input name="displayName" type="text" value="${escapeHtml(current?.displayName || "")}" autocomplete="off" />
+            </label>
+            <label class="couple-field">
+              <span>短标记</span>
+              <input name="initials" type="text" maxlength="2" value="${escapeHtml(current?.initials || "")}" autocomplete="off" />
+            </label>
+            <div class="settings-form-row">
+              <label class="couple-field compact">
+                <span>代表颜色</span>
+                <input name="color" type="color" value="${escapeHtml(current?.color || "#ff5c9a")}" />
+              </label>
+              <label class="couple-field compact">
+                <span>头像样式</span>
+                <select name="avatar">
+                  ${renderAvatarOptions(current?.avatar)}
+                </select>
+              </label>
+            </div>
+            <label class="capture-photo-button settings-upload-button">
+              <span>上传头像</span>
+              <input name="avatarFile" type="file" accept="image/png,image/jpeg,image/webp,image/gif" />
+            </label>
+            <button class="pixel-primary-button" type="submit">保存设置</button>
+          </form>
+          <div class="settings-members">
+            <strong>成员</strong>
+            ${profiles()
+              .map(
+                (profile) => `
+                  <article class="settings-member" style="--person-color: ${escapeHtml(profile.color)}">
+                    ${renderAvatar(profile, "settings-member-avatar")}
+                    <div>
+                      <b>${escapeHtml(profile.displayName)}</b>
+                      <span>${escapeHtml(profile.initials || "")} · ${escapeHtml(profile.login)}</span>
+                    </div>
+                  </article>
+                `
+              )
+              .join("")}
+          </div>
+        </div>
+      </section>
+    `;
+  }
+
+  function renderAvatarOptions(selectedAvatar = "pink-cat") {
+    const options = [
+      ["pink-cat", "粉色小猫"],
+      ["violet-cat", "紫色小猫"],
+      ["mint-cat", "薄荷小猫"],
+      ["yellow-cat", "奶黄小猫"],
+      ["custom", "自定义头像"],
+    ];
+    return options
+      .map(
+        ([value, label]) => `
+          <option value="${escapeHtml(value)}"${selectedAvatar === value ? " selected" : ""}>${escapeHtml(label)}</option>
+        `
+      )
+      .join("");
+  }
+
   function renderPersonalPages() {
     const pages = state.data?.personalPages || {};
     return `
@@ -1969,7 +2270,7 @@
             return `
               <article class="personal-page-card" style="--person-color: ${escapeHtml(profile.color)}">
                 <div class="personal-page-head">
-                  <span class="pixel-person-cat" aria-hidden="true"></span>
+                  ${renderAvatar(profile, "personal-page-avatar")}
                   <div>
                     <strong>${escapeHtml(page.title || profile.displayName)}</strong>
                     <em>${escapeHtml(profile.displayName)}</em>
@@ -2167,7 +2468,7 @@
           </div>
         </div>
         <div class="capture-hub-layout">
-          <form class="capture-form capture-hub-form" id="capture-form">
+          <form class="capture-form capture-hub-form" id="capture-form" data-capture-form>
             <input type="hidden" name="mode" value="${escapeHtml(state.captureMode)}" />
             <textarea name="text" rows="3" placeholder="先写下来，后台交给 Agent 分析。"></textarea>
             <div class="capture-extra-row">
@@ -2197,19 +2498,7 @@
               ${
                 capturesForSelectedDate().length
                   ? capturesForSelectedDate()
-                      .map(
-                        (capture) => `
-                          <article class="capture-note ${capture.visibility === "private" ? "is-private" : ""}">
-                            <span>${escapeHtml(profileName(capture.createdBy))} · ${capture.mode === "todo" ? "Todo" : "Agent"} · ${capture.visibility === "private" ? "仅自己" : "共享"}${capture.location ? ` · ${escapeHtml(capture.location)}` : ""}</span>
-                            <p>${escapeHtml(capture.text)}</p>
-                            ${
-                              capture.assets?.length
-                                ? `<img src="${escapeHtml(capture.assets[0].url)}" alt="${escapeHtml(capture.assets[0].name || "capture photo")}" />`
-                                : ""
-                            }
-                          </article>
-                        `
-                      )
+                      .map((capture) => renderCaptureNote(capture))
                       .join("")
                   : `<div class="pixel-empty">这一天还没有随手记。</div>`
               }
@@ -2217,6 +2506,20 @@
           </div>
         </div>
       </section>
+    `;
+  }
+
+  function renderCaptureNote(capture, variant = "") {
+    return `
+      <article class="capture-note ${variant === "mini" ? "is-mini" : ""} ${capture.visibility === "private" ? "is-private" : ""}">
+        <span>${escapeHtml(profileName(capture.createdBy))} · ${capture.mode === "todo" ? "Todo" : "Agent"} · ${capture.visibility === "private" ? "仅自己" : "共享"}${capture.location ? ` · ${escapeHtml(capture.location)}` : ""}</span>
+        <p>${escapeHtml(capture.text)}</p>
+        ${
+          capture.assets?.length && variant !== "mini"
+            ? `<img src="${escapeHtml(capture.assets[0].url)}" alt="${escapeHtml(capture.assets[0].name || "capture photo")}" />`
+            : ""
+        }
+      </article>
     `;
   }
 
@@ -2289,6 +2592,7 @@
     root.querySelectorAll("[data-personal-page-form]").forEach((form) => {
       form.addEventListener("submit", savePersonalPage);
     });
+    root.querySelector("#profile-settings-form")?.addEventListener("submit", saveProfileSettings);
     root.querySelector("#checkin-form")?.addEventListener("submit", saveCheckin);
     root.querySelector("#deadline-form")?.addEventListener("submit", saveDeadline);
     root.querySelectorAll("[data-schedule-detail]").forEach((button) => {
@@ -2296,6 +2600,10 @@
         event.stopPropagation();
         state.selectedScheduleId = button.dataset.scheduleDetail || "";
         state.selectedDate = button.dataset.scheduleDate || state.selectedDate;
+        state.activePage = "schedule";
+        if (window.location.hash !== "#schedule") {
+          window.location.hash = "#schedule";
+        }
         renderApp();
       });
     });
@@ -2353,7 +2661,9 @@
         deleteDeadline(button.dataset.deleteDeadline);
       });
     });
-    root.querySelector("#capture-form")?.addEventListener("submit", saveCapture);
+    root.querySelectorAll("[data-capture-form]").forEach((form) => {
+      form.addEventListener("submit", saveCapture);
+    });
   }
 
   root.addEventListener("focusout", () => {

@@ -72,6 +72,17 @@ function sanitizeText(input, maxLength = 500) {
     .slice(0, maxLength);
 }
 
+function normalizeColor(input, fallback = "#ff5c9a") {
+  const value = String(input || "").trim();
+  if (/^#[0-9a-fA-F]{6}$/.test(value)) {
+    return value.toLowerCase();
+  }
+  if (/^#[0-9a-fA-F]{3}$/.test(value)) {
+    return `#${value.slice(1).split("").map((part) => `${part}${part}`).join("")}`.toLowerCase();
+  }
+  return fallback;
+}
+
 function sanitizeMarkdown(input, maxLength = 20000) {
   return String(input || "")
     .replace(/\r\n/g, "\n")
@@ -165,6 +176,7 @@ function buildProfile(spec) {
     login: spec.login,
     displayName: process.env[spec.nameEnvKey] || spec.displayName,
     avatar: spec.avatar,
+    avatarUrl: "",
     color: spec.color,
     initials: spec.initials,
     passwordEnvKey: spec.passwordEnvKey,
@@ -179,6 +191,7 @@ function publicProfile(profile) {
     login: profile.login,
     displayName: profile.displayName,
     avatar: profile.avatar,
+    avatarUrl: profile.avatarUrl || "",
     color: profile.color,
     initials: profile.initials,
   };
@@ -443,6 +456,8 @@ function createDefaultStore() {
         title: "大猫",
         bio: "记录自己的状态，也记录两个人一起推进的事。",
         likes: "可爱、温暖、简单直接。",
+        longTermGoal: "长期稳定地成长，成为更可靠也更温柔的人。",
+        identityGoal: "能照顾好自己，也能照顾好两个人的生活节奏。",
         notes: "",
         updatedAt: nowIso(),
       },
@@ -451,6 +466,8 @@ function createDefaultStore() {
         title: "小猫",
         bio: "一起看共享首页，也保留自己的小空间。",
         likes: "轻松、清楚、好维护。",
+        longTermGoal: "保持轻松、稳定、清楚的生活状态。",
+        identityGoal: "成为能一起计划、一起完成、一起复盘的人。",
         notes: "",
         updatedAt: nowIso(),
       },
@@ -482,6 +499,9 @@ function ensureStoreShape(store) {
       ...profile,
       displayName: envName || legacyName || fallback.displayName,
       initials: legacyInitials || fallback.initials,
+      avatar: sanitizeText(profile.avatar || fallback.avatar || "pink-cat", 40),
+      avatarUrl: sanitizeText(profile.avatarUrl || "", 500),
+      color: normalizeColor(profile.color, fallback.color || "#ff5c9a"),
     };
   });
   shaped.scheduleItems = Array.isArray(shaped.scheduleItems) ? shaped.scheduleItems : [];
@@ -503,6 +523,8 @@ function ensureStoreShape(store) {
           title: sanitizeText(current.title || profile.displayName, 60) || profile.displayName,
           bio: sanitizeText(current.bio || "", 220),
           likes: sanitizeText(current.likes || "", 220),
+          longTermGoal: sanitizeText(current.longTermGoal || "", 500),
+          identityGoal: sanitizeText(current.identityGoal || "", 500),
           notes: sanitizeText(current.notes || "", 1200),
           updatedAt: current.updatedAt || "",
         },
@@ -652,6 +674,8 @@ function publicPersonalPage(page, profile) {
     title: source.title || profile.displayName,
     bio: source.bio || "",
     likes: source.likes || "",
+    longTermGoal: source.longTermGoal || "",
+    identityGoal: source.identityGoal || "",
     notes: source.notes || "",
     updatedAt: source.updatedAt || "",
   };
@@ -1618,12 +1642,57 @@ function updatePersonalPage(userId, payload) {
       title: sanitizeText(payload.title ?? current.title ?? profile.displayName, 60) || profile.displayName,
       bio: sanitizeText(payload.bio ?? current.bio, 220),
       likes: sanitizeText(payload.likes ?? current.likes, 220),
+      longTermGoal: sanitizeText(payload.longTermGoal ?? current.longTermGoal, 500),
+      identityGoal: sanitizeText(payload.identityGoal ?? current.identityGoal, 500),
       notes: sanitizeText(payload.notes ?? current.notes, 1200),
       updatedAt: nowIso(),
     };
     store.personalPages = store.personalPages || {};
     store.personalPages[userId] = next;
     return publicPersonalPage(next, profile);
+  });
+}
+
+function updateProfile(userId, payload = {}) {
+  return mutateStore((store) => {
+    const profile = store.profiles.find((item) => item.id === userId);
+    if (!profile) {
+      throw new Error("profile not found");
+    }
+
+    const currentName = profile.displayName;
+    const nextName = sanitizeText(payload.displayName ?? profile.displayName, 40) || profile.displayName;
+    profile.displayName = nextName;
+    profile.initials = sanitizeText(payload.initials ?? profile.initials ?? nextName.slice(0, 1), 2) ||
+      nextName.slice(0, 1);
+    profile.color = normalizeColor(payload.color, profile.color || "#ff5c9a");
+
+    const avatar = sanitizeText(payload.avatar ?? profile.avatar ?? "pink-cat", 40);
+    profile.avatar = avatar || "pink-cat";
+    if (payload.avatarAsset?.dataUrl) {
+      const asset = createImageAsset(userId, payload.avatarAsset, {
+        date: formatDate(),
+        idPrefix: "avatar",
+        pathParts: ["avatars", userId],
+        prefix: "avatar",
+      });
+      profile.avatar = "custom";
+      profile.avatarUrl = asset.url;
+    } else if (payload.avatar !== undefined && profile.avatar !== "custom") {
+      profile.avatarUrl = "";
+    } else if (payload.avatarUrl !== undefined) {
+      profile.avatarUrl = sanitizeText(payload.avatarUrl, 500);
+    } else {
+      profile.avatarUrl = sanitizeText(profile.avatarUrl || "", 500);
+    }
+
+    const personalPage = store.personalPages?.[userId];
+    if (personalPage && (!personalPage.title || personalPage.title === currentName)) {
+      personalPage.title = nextName;
+      personalPage.updatedAt = nowIso();
+    }
+
+    return publicProfile(profile);
   });
 }
 
@@ -1659,6 +1728,7 @@ module.exports = {
   toggleScheduleItem,
   toggleTodoItem,
   updatePersonalPage,
+  updateProfile,
   updateDiaryDay,
   upsertCheckinItem,
   upsertDeadlineItem,
