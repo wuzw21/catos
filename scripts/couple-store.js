@@ -18,7 +18,7 @@ const segmentDefinitions = [
 
 const validSegments = new Set(segmentDefinitions.map((item) => item.key));
 const validVisibilities = new Set(["shared", "private"]);
-const validCaptureModes = new Set(["analysis", "todo"]);
+const validCaptureModes = new Set(["save", "analysis", "todo"]);
 const validStatuses = new Set(["todo", "done"]);
 const validPriorities = new Set(["low", "normal", "high"]);
 const validTodoBuckets = new Set(["today", "future"]);
@@ -54,6 +54,16 @@ function normalizePriority(priority) {
 
 function normalizeTodoBucket(bucket) {
   return validTodoBuckets.has(bucket) ? bucket : "today";
+}
+
+function normalizeDailyScore(value, fallback = 0) {
+  const score = Number(value);
+  if (!Number.isFinite(score)) return fallback;
+  return Math.max(0, Math.min(10, Math.round(score)));
+}
+
+function isArchived(item) {
+  return Boolean(item?.archivedAt);
 }
 
 function makeId(prefix) {
@@ -243,6 +253,23 @@ function getWeekDays(dateText) {
   });
 }
 
+function getTimelineDays(dateText) {
+  const selected = parseDate(normalizeDate(dateText)) || new Date();
+
+  return Array.from({ length: 7 }, (_, index) => {
+    const date = new Date(selected);
+    date.setDate(selected.getDate() + index);
+    const id = formatDate(date);
+    return {
+      id,
+      date: id,
+      label: weekdayLabels[date.getDay()],
+      shortLabel: `${pad(date.getMonth() + 1)}-${pad(date.getDate())}`,
+      isToday: id === formatDate(),
+    };
+  });
+}
+
 function getMonthDays(dateText) {
   const selected = parseDate(normalizeDate(dateText)) || new Date();
   const first = new Date(selected.getFullYear(), selected.getMonth(), 1);
@@ -312,6 +339,8 @@ function createScheduleItem(store, payload, userId) {
     updatedBy: userId,
     createdAt: timestamp,
     updatedAt: timestamp,
+    archivedAt: "",
+    archivedBy: "",
   };
 
   if (!item.title) {
@@ -341,6 +370,8 @@ function createTodoItem(store, payload, userId) {
     updatedBy: userId,
     createdAt: timestamp,
     updatedAt: timestamp,
+    archivedAt: "",
+    archivedBy: "",
   };
 
   if (!item.title) {
@@ -637,6 +668,9 @@ function getDiaryDaySnapshot(store, date) {
       focus: current.focus || "",
       note: current.note || "",
       markdown: current.markdown ?? current.note ?? "",
+      dailyScore: normalizeDailyScore(current.dailyScore, 0),
+      happiestThing: current.happiestThing || "",
+      smallAchievement: current.smallAchievement || "",
       images: Array.isArray(current.images) ? current.images.map(publicDiaryAsset).filter(Boolean) : [],
       updatedAt: current.updatedAt || "",
     };
@@ -686,7 +720,7 @@ function publicCapture(capture) {
     id: capture.id || "",
     date: capture.date || "",
     text: capture.text || "",
-    mode: validCaptureModes.has(capture.mode) ? capture.mode : "analysis",
+    mode: validCaptureModes.has(capture.mode) ? capture.mode : "save",
     visibility: validVisibilities.has(capture.visibility) ? capture.visibility : "shared",
     location: capture.location || "",
     assets: Array.isArray(capture.assets) ? capture.assets.map(publicDiaryAsset).filter(Boolean) : [],
@@ -706,6 +740,83 @@ function publicSummaryThing(item) {
     doneUsers: Array.isArray(item.doneUsers) ? item.doneUsers : [],
     pendingUsers: Array.isArray(item.pendingUsers) ? item.pendingUsers : [],
   };
+}
+
+function timelineSideForItem(item, userId) {
+  if (item.ownerId && item.ownerId !== "shared") {
+    return item.ownerId === userId ? "self" : "other";
+  }
+  return item.createdBy === userId ? "self" : "other";
+}
+
+function publicTimelineEntry(item, type, userId, profileIds) {
+  const publicItem =
+    type === "schedule" ? publicScheduleItem(item, profileIds) :
+      type === "todo" ? publicTodoItem(item, profileIds) :
+        publicCapture(item);
+  const label = type === "schedule" ? "日程" : type === "todo" ? "Todo" : "随手记";
+  return {
+    id: `${type}-${publicItem.id}`,
+    type,
+    label,
+    date: publicItem.date,
+    side: timelineSideForItem(publicItem, userId),
+    title: type === "capture" ? publicItem.text : publicItem.title,
+    detail: publicItem.detail || "",
+    ownerId: publicItem.ownerId || "",
+    participants: publicItem.participants || [],
+    visibility: publicItem.visibility || "",
+    createdBy: publicItem.createdBy || "",
+    createdAt: publicItem.createdAt || "",
+    archivedAt: publicItem.archivedAt || "",
+    archivedBy: publicItem.archivedBy || "",
+    statusByUser: publicItem.statusByUser || {},
+    meta: type === "schedule"
+      ? normalizeSegment(publicItem.segment)
+      : type === "todo"
+        ? normalizePriority(publicItem.priority)
+        : publicItem.mode || "analysis",
+  };
+}
+
+function buildTimelineDays(store, userId, selectedDate) {
+  const profileIds = getProfileIds(store);
+  const weekDays = getTimelineDays(selectedDate);
+  const weekDates = new Set(weekDays.map((day) => day.id));
+  const entries = [
+    ...store.scheduleItems
+      .filter((item) => weekDates.has(item.date))
+      .map((item) => publicTimelineEntry(item, "schedule", userId, profileIds)),
+    ...store.todoItems
+      .filter((item) => weekDates.has(normalizeDate(item.date)))
+      .map((item) => publicTimelineEntry(item, "todo", userId, profileIds)),
+    ...store.captures
+      .filter((item) => weekDates.has(item.date))
+      .filter((item) => item.visibility === "shared" || item.createdBy === userId)
+      .map((item) => publicTimelineEntry(item, "capture", userId, profileIds)),
+  ]
+    .filter((item) => item.date)
+    .sort((a, b) => a.date.localeCompare(b.date) || String(a.createdAt).localeCompare(String(b.createdAt)));
+
+  const grouped = new Map(
+    weekDays.map((day) => [
+      day.id,
+      {
+        ...day,
+        date: day.id,
+        left: [],
+        right: [],
+      },
+    ])
+  );
+
+  entries.forEach((entry) => {
+    const group = grouped.get(entry.date);
+    if (!group) return;
+    (entry.side === "self" ? group.left : group.right).push(entry);
+  });
+
+  return weekDays.map((day) => grouped.get(day.id));
 }
 
 function publicDailySummary(summary) {
@@ -759,6 +870,8 @@ function publicScheduleItem(item, profileIds) {
     updatedBy: item.updatedBy || "",
     createdAt: item.createdAt || "",
     updatedAt: item.updatedAt || "",
+    archivedAt: item.archivedAt || "",
+    archivedBy: item.archivedBy || "",
   };
 }
 
@@ -785,6 +898,8 @@ function publicTodoItem(item, profileIds) {
     updatedBy: item.updatedBy || "",
     createdAt: item.createdAt || "",
     updatedAt: item.updatedAt || "",
+    archivedAt: item.archivedAt || "",
+    archivedBy: item.archivedBy || "",
   };
 }
 
@@ -829,10 +944,10 @@ function publicDeadlineItem(item, profileIds) {
 
 function getCompletionForDate(store, date, userId) {
   const scheduleItems = store.scheduleItems.filter(
-    (item) => item.date === date && item.participants?.includes(userId)
+    (item) => !isArchived(item) && item.date === date && item.participants?.includes(userId)
   );
   const todoItems = store.todoItems.filter(
-    (item) => item.date === date && item.bucket !== "future" && item.participants?.includes(userId)
+    (item) => !isArchived(item) && item.date === date && item.bucket !== "future" && item.participants?.includes(userId)
   );
   const checkinItems = store.checkinItems.filter((item) => {
     const createdDate = String(item.createdAt || "").slice(0, 10);
@@ -842,8 +957,15 @@ function getCompletionForDate(store, date, userId) {
   const scheduleDone = scheduleItems.filter((item) => item.statusByUser?.[userId] === "done").length;
   const todoDone = todoItems.filter((item) => item.statusByUser?.[userId] === "done").length;
   const checkinDone = checkinItems.filter((item) => item.statusByDate?.[date]?.[userId] === "done").length;
-  const done = scheduleDone + todoDone + checkinDone;
-  const total = scheduleItems.length + todoItems.length + checkinItems.length;
+  const dailyPulse = store.diaryDays[date]?.userDays?.[userId] || {};
+  const dailyPulseDone = [
+    normalizeDailyScore(dailyPulse.dailyScore, 0) > 0,
+    Boolean(sanitizeText(dailyPulse.happiestThing, 200)),
+    Boolean(sanitizeText(dailyPulse.smallAchievement, 200)),
+  ].filter(Boolean).length;
+  const dailyPulseTotal = 3;
+  const done = scheduleDone + todoDone + checkinDone + dailyPulseDone;
+  const total = scheduleItems.length + todoItems.length + checkinItems.length + dailyPulseTotal;
 
   return {
     done,
@@ -858,8 +980,8 @@ function getCompletionForDate(store, date, userId) {
       total: todoItems.length,
     },
     checkins: {
-      done: checkinDone,
-      total: checkinItems.length,
+      done: checkinDone + dailyPulseDone,
+      total: checkinItems.length + dailyPulseTotal,
     },
   };
 }
@@ -900,12 +1022,13 @@ function getMonthSummary(store, selectedDate) {
     return {
       ...day,
       userStats,
-      eventCount: store.scheduleItems.filter((item) => item.date === day.id).length,
-      todoCount: store.todoItems.filter((item) => item.date === day.id && item.bucket !== "future").length,
+      eventCount: store.scheduleItems.filter((item) => !isArchived(item) && item.date === day.id).length,
+      todoCount: store.todoItems.filter((item) => !isArchived(item) && item.date === day.id && item.bucket !== "future").length,
       captureCount: store.captures.filter((item) => item.date === day.id).length,
       summaryGenerated: Boolean(store.dailySummaries?.[day.id]),
       diaryCount: Object.values(diarySource).filter(
-        (item) => item?.markdown || item?.note || item?.focus || item?.mood
+        (item) => item?.markdown || item?.note || item?.focus || item?.mood ||
+          item?.dailyScore || item?.happiestThing || item?.smallAchievement
       ).length,
     };
   });
@@ -1064,6 +1187,9 @@ function getDailySummaryFacts(store, date, options = {}) {
       mood: day.mood || "",
       energy: Number(day.energy) || 3,
       focus: day.focus || "",
+      dailyScore: normalizeDailyScore(day.dailyScore, 0),
+      happiestThing: day.happiestThing || "",
+      smallAchievement: day.smallAchievement || "",
     };
   });
   const stats = people.reduce(
@@ -1100,6 +1226,7 @@ function getDailySummaryFacts(store, date, options = {}) {
       captures: captures.length,
       photos: photos.length,
       locations: locations.length,
+      dailyPulses: people.filter((person) => person.dailyScore || person.happiestThing || person.smallAchievement).length,
     },
   };
 }
@@ -1216,7 +1343,7 @@ function getState(userId, options = {}) {
       .map((item) => publicTodoItem(item, profileIds))
       .filter((item) => {
         const inWeek = weekDates.has(item.date);
-        const unfinished = Object.values(item.statusByUser || {}).some((status) => status !== "done");
+        const unfinished = !item.archivedAt && Object.values(item.statusByUser || {}).some((status) => status !== "done");
         return inWeek || unfinished;
       })
       .sort((a, b) => {
@@ -1235,6 +1362,7 @@ function getState(userId, options = {}) {
       .sort((a, b) => a.date.localeCompare(b.date) || String(a.createdAt).localeCompare(String(b.createdAt))),
     diaryDay: getDiaryDaySnapshot(store, selectedDate),
     dailySummary: publicDailySummary(store.dailySummaries[selectedDate]),
+    timelineDays: buildTimelineDays(store, userId, selectedDate),
     personalPages: Object.fromEntries(
       store.profiles.map((profile) => [
         profile.id,
@@ -1333,6 +1461,24 @@ function toggleScheduleItem(userId, payload) {
   });
 }
 
+function archiveScheduleItem(userId, payload) {
+  return mutateStore((store) => {
+    const profileIds = getProfileIds(store);
+    const item = store.scheduleItems.find((entry) => entry.id === payload.id);
+    if (!item) {
+      throw new Error("schedule item not found");
+    }
+
+    const timestamp = nowIso();
+    item.archivedAt = item.archivedAt || timestamp;
+    item.archivedBy = item.archivedBy || userId;
+    item.updatedBy = userId;
+    item.updatedAt = timestamp;
+
+    return publicScheduleItem(item, profileIds);
+  });
+}
+
 function deleteScheduleItem(userId, payload) {
   return mutateStore((store) => {
     const index = store.scheduleItems.findIndex((item) => item.id === payload.id);
@@ -1411,6 +1557,24 @@ function toggleTodoItem(userId, payload) {
     };
     item.updatedBy = userId;
     item.updatedAt = nowIso();
+    return publicTodoItem(item, profileIds);
+  });
+}
+
+function archiveTodoItem(userId, payload) {
+  return mutateStore((store) => {
+    const profileIds = getProfileIds(store);
+    const item = store.todoItems.find((entry) => entry.id === payload.id);
+    if (!item) {
+      throw new Error("todo item not found");
+    }
+
+    const timestamp = nowIso();
+    item.archivedAt = item.archivedAt || timestamp;
+    item.archivedBy = item.archivedBy || userId;
+    item.updatedBy = userId;
+    item.updatedAt = timestamp;
+
     return publicTodoItem(item, profileIds);
   });
 }
@@ -1556,6 +1720,9 @@ function updateDiaryDay(userId, payload) {
       focus: sanitizeText(payload.focus ?? userDay.focus, 160),
       note: sanitizeText(payload.note ?? userDay.note, 1200),
       markdown: sanitizeMarkdown(payload.markdown ?? userDay.markdown ?? userDay.note, 20000),
+      dailyScore: normalizeDailyScore(payload.dailyScore ?? userDay.dailyScore, 0),
+      happiestThing: sanitizeText(payload.happiestThing ?? userDay.happiestThing, 220),
+      smallAchievement: sanitizeText(payload.smallAchievement ?? userDay.smallAchievement, 220),
       images: Array.isArray(userDay.images) ? userDay.images.map(publicDiaryAsset).filter(Boolean) : [],
       updatedAt: nowIso(),
     };
@@ -1599,7 +1766,7 @@ function addCapture(userId, payload) {
 
     const date = normalizeDate(payload.date);
     const visibility = validVisibilities.has(payload.visibility) ? payload.visibility : "shared";
-    const mode = validCaptureModes.has(payload.mode) ? payload.mode : "analysis";
+    const mode = validCaptureModes.has(payload.mode) ? payload.mode : "save";
     const assetPayloads = [
       ...(Array.isArray(payload.assets) ? payload.assets : []),
       payload.dataUrl ? { name: payload.name, dataUrl: payload.dataUrl } : null,
@@ -1714,6 +1881,8 @@ function refreshDailySummary(userId, payload = {}) {
 module.exports = {
   addCapture,
   addDiaryAsset,
+  archiveScheduleItem,
+  archiveTodoItem,
   deleteCheckinItem,
   deleteDeadlineItem,
   deleteScheduleItem,

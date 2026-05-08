@@ -19,6 +19,8 @@ const { startNewDay } = require("./start-new-day.js");
 const {
   addCapture: addCoupleCapture,
   addDiaryAsset: addCoupleDiaryAsset,
+  archiveScheduleItem: archiveCoupleScheduleItem,
+  archiveTodoItem: archiveCoupleTodoItem,
   deleteCheckinItem: deleteCoupleCheckinItem,
   deleteDeadlineItem: deleteCoupleDeadlineItem,
   deleteScheduleItem: deleteCoupleScheduleItem,
@@ -552,6 +554,28 @@ async function handleApi(req, res, url) {
     return true;
   }
 
+  if (req.method === "POST" && url.pathname === "/api/couple/schedule/archive") {
+    const session = getCoupleSession(req);
+    if (!session) {
+      sendCoupleAuthRequired(res);
+      return true;
+    }
+
+    try {
+      const bodyText = await readBody(req);
+      const body = bodyText ? JSON.parse(bodyText) : {};
+      const { result } = archiveCoupleScheduleItem(session.userId, body);
+      sendJson(res, 200, {
+        ok: true,
+        item: result,
+        state: getCoupleState(session.userId, { date: body.date || result.date }),
+      });
+    } catch (error) {
+      sendJson(res, 400, { ok: false, error: error.message });
+    }
+    return true;
+  }
+
   if (req.method === "POST" && url.pathname === "/api/couple/schedule/delete") {
     const session = getCoupleSession(req);
     if (!session) {
@@ -607,6 +631,28 @@ async function handleApi(req, res, url) {
       const bodyText = await readBody(req);
       const body = bodyText ? JSON.parse(bodyText) : {};
       const { result } = toggleCoupleTodoItem(session.userId, body);
+      sendJson(res, 200, {
+        ok: true,
+        item: result,
+        state: getCoupleState(session.userId, { date: body.date || result.date }),
+      });
+    } catch (error) {
+      sendJson(res, 400, { ok: false, error: error.message });
+    }
+    return true;
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/couple/todos/archive") {
+    const session = getCoupleSession(req);
+    if (!session) {
+      sendCoupleAuthRequired(res);
+      return true;
+    }
+
+    try {
+      const bodyText = await readBody(req);
+      const body = bodyText ? JSON.parse(bodyText) : {};
+      const { result } = archiveCoupleTodoItem(session.userId, body);
       sendJson(res, 200, {
         ok: true,
         item: result,

@@ -3,7 +3,7 @@
   if (!root) return;
 
   const apiBase = window.location.protocol === "file:" ? "http://127.0.0.1:2333" : window.location.origin;
-  const moods = ["平稳", "开心", "专注", "疲惫", "低落"];
+  const captureSubmitActions = new Set(["save", "analysis", "todo"]);
   const priorityLabels = {
     high: "重要",
     normal: "普通",
@@ -47,6 +47,13 @@
       note: "这里只放具体安排；每天的完成情况在 Dashboard 用短标记显示。",
     },
     {
+      id: "timeline",
+      label: "时间轴",
+      kicker: "Timeline",
+      title: "一周时间轴",
+      note: "左边是当前登录的人，右边是另一位；Todo、日程和随手记按日期排好。",
+    },
+    {
       id: "goals",
       label: "长期目标",
       kicker: "Long Goals",
@@ -75,11 +82,11 @@
     bootstrap: null,
     data: null,
     selectedDate: getToday(),
-    view: "shared",
+    view: "all",
     activePage: getPageFromHash(),
     dashboardMode: "day",
     todoMode: "today",
-    captureMode: "analysis",
+    captureMode: "save",
     pagesMode: "future",
     activeSegment: "evening",
     quickOwner: "shared",
@@ -448,17 +455,6 @@
     };
   }
 
-  function currentDiaryDay() {
-    return state.data?.diaryDay?.userDays?.[currentUser()?.id] || {
-      mood: "",
-      energy: 3,
-      focus: "",
-      note: "",
-      markdown: "",
-      images: [],
-    };
-  }
-
   function ownerToParticipants(ownerId) {
     if (ownerId === "shared") {
       return profiles().map((profile) => profile.id);
@@ -467,9 +463,11 @@
   }
 
   function itemMatchesView(item) {
-    if (state.view === "all") return true;
-    if (state.view === "shared") return item.ownerId === "shared" || item.participants.length > 1;
-    return item.participants.includes(state.view);
+    return Boolean(item);
+  }
+
+  function isArchived(item) {
+    return Boolean(item?.archivedAt);
   }
 
   function itemsForDate(date) {
@@ -571,6 +569,14 @@
       total: items.length,
       percent: items.length ? Math.round((done / items.length) * 100) : 0,
     };
+  }
+
+  function dailyPulseDoneCount(day = {}) {
+    return [
+      Number(day.dailyScore || 0) > 0,
+      Boolean(String(day.happiestThing || "").trim()),
+      Boolean(String(day.smallAchievement || "").trim()),
+    ].filter(Boolean).length;
   }
 
   function renderOwnerOptions(selectedOwner = state.quickOwner) {
@@ -858,24 +864,17 @@
     renderApp();
   }
 
-  async function saveOwnStatus(event) {
-    event.preventDefault();
-    const formData = new FormData(event.currentTarget);
-    const current = currentDiaryDay();
-    const result = await request("/api/couple/status", {
+  async function archiveScheduleItem(itemId, date) {
+    const result = await request("/api/couple/schedule/archive", {
       method: "POST",
       body: {
-        date: state.selectedDate,
-        mood: formData.get("mood") || current.mood,
-        energy: Number(formData.get("energy") || current.energy || 3),
-        focus: formData.get("focus") || "",
-        note: current.note,
-        markdown: current.markdown || current.note || "",
+        id: itemId,
+        date,
       },
     });
     if (!result) return;
     setData(result.state);
-    state.status = "我的状态已更新。";
+    state.status = "日程已归档，仍会用弱色保留在列表里。";
     renderApp();
   }
 
@@ -907,13 +906,14 @@
     const text = String(formData.get("text") || "").trim();
     if (!text) return;
 
-    const submitMode =
-      event.submitter?.dataset?.captureSubmitMode || event.submitter?.value || "";
-    const mode = String(submitMode || formData.get("mode") || state.captureMode || "analysis");
+    const submitMode = event.submitter?.dataset?.captureSubmitMode || event.submitter?.value || "";
+    const modeSource = String(submitMode || formData.get("mode") || state.captureMode || "save");
+    const mode = captureSubmitActions.has(modeSource) ? modeSource : "save";
     const ownerId = String(formData.get("ownerId") || "shared");
     const visibility = formData.get("visibility") || "shared";
     const location = String(formData.get("location") || "").trim();
     const photo = event.currentTarget.querySelector('input[name="photo"]')?.files?.[0] || null;
+    const captureDate = mode === "todo" ? resolveQuickDate(text, state.selectedDate) : state.selectedDate;
 
     try {
       let assets = [];
@@ -933,7 +933,7 @@
       const captureResult = await request("/api/couple/capture", {
         method: "POST",
         body: {
-          date: state.selectedDate,
+          date: captureDate,
           text,
           mode,
           visibility,
@@ -945,11 +945,12 @@
       setData(captureResult.state);
 
       if (mode === "todo") {
-        const title = captureTitle(text);
+        const cleanedTitle = cleanQuickTitle(text);
+        const title = captureTitle(cleanedTitle || text);
         const result = await request("/api/couple/todos/upsert", {
           method: "POST",
           body: {
-            date: state.selectedDate,
+            date: captureDate,
             title,
             detail: captureDetail(text, title),
             bucket: "today",
@@ -960,6 +961,7 @@
         });
         if (!result) return;
         setData(result.state);
+        state.selectedDate = captureDate;
         state.todoMode = "today";
         state.activePage = "todos";
         state.status = "随手记已保存，并生成 Todo。";
@@ -969,7 +971,7 @@
         renderApp();
         return;
       }
-      state.status = "随手记已提交给 Agent。";
+      state.status = mode === "analysis" ? "随手记已提交给 Agent。" : "随手记已记下。";
       renderApp();
     } catch (error) {
       state.status = `随手记保存失败：${error.message}`;
@@ -995,6 +997,24 @@
       state.status = `日总结刷新失败：${error.message}`;
       renderApp();
     }
+  }
+
+  async function saveDailyPulse(event) {
+    event.preventDefault();
+    const formData = new FormData(event.currentTarget);
+    const result = await request("/api/couple/status", {
+      method: "POST",
+      body: {
+        date: state.selectedDate,
+        dailyScore: formData.get("dailyScore") || 0,
+        happiestThing: formData.get("happiestThing") || "",
+        smallAchievement: formData.get("smallAchievement") || "",
+      },
+    });
+    if (!result) return;
+    setData(result.state);
+    state.status = "每日小打卡已保存。";
+    renderApp();
   }
 
   async function savePersonalPage(event) {
@@ -1130,6 +1150,20 @@
     if (!result) return;
     setData(result.state);
     state.status = "Todo 已删除。";
+    renderApp();
+  }
+
+  async function archiveTodo(itemId, date = state.selectedDate) {
+    const result = await request("/api/couple/todos/archive", {
+      method: "POST",
+      body: {
+        id: itemId,
+        date,
+      },
+    });
+    if (!result) return;
+    setData(result.state);
+    state.status = "Todo 已归档，仍会用弱色保留在列表里。";
     renderApp();
   }
 
@@ -1381,6 +1415,7 @@
     if (state.activePage === "capture") return renderCaptureHub();
     if (state.activePage === "daily-summary") return renderDailySummaryPanel();
     if (state.activePage === "schedule") return renderSchedulePage();
+    if (state.activePage === "timeline") return renderTimelinePage();
     if (state.activePage === "todos") return renderTodosPage();
     if (state.activePage === "goals") return renderGoalsPage();
     if (state.activePage === "settings") return renderSettingsPage();
@@ -1431,129 +1466,165 @@
           state.dashboardMode === "month"
             ? renderMonthDashboard()
             : `
-              ${renderDashboardCaptureStrip()}
-              ${renderDashboardFocusRow()}
-              <div class="couple-filter-row">
-                <div class="couple-filter-tabs">
-                  <button class="${state.view === "shared" ? "is-active" : ""}" data-view-filter="shared" type="button">共同</button>
-                  ${profiles()
-                    .map(
-                      (profile) => `
-                        <button class="${state.view === profile.id ? "is-active" : ""}" data-view-filter="${escapeHtml(profile.id)}" type="button">
-                          ${escapeHtml(profile.displayName)}
-                        </button>
-                      `
-                    )
-                    .join("")}
-                  <button class="${state.view === "all" ? "is-active" : ""}" data-view-filter="all" type="button">全部</button>
-                </div>
-              </div>
+              ${renderDashboardChatBox()}
               <div class="couple-person-grid">
                 ${profiles().map((profile) => renderPersonDashboardCard(profile)).join("")}
               </div>
+              ${renderDashboardDeadlinePanel()}
             `
         }
       </section>
     `;
   }
 
-  function renderDashboardFocusRow() {
-    const schedule = scheduleItemsForDate(state.selectedDate).slice(0, 4);
+  function renderDashboardDeadlinePanel() {
     const deadlines = deadlineItemsForView()
       .filter((item) => item.date >= state.selectedDate)
       .slice(0, 4);
     return `
-      <div class="dashboard-focus-row">
-        <section class="dashboard-mini-panel">
-          <div class="dashboard-mini-head">
-            <strong>今天日程</strong>
-            <a href="#schedule">进入日程</a>
-          </div>
-          <div class="dashboard-mini-list">
-            ${
-              schedule.length
-                ? schedule
-                    .map(
-                      (item) => `
-                        <button class="dashboard-mini-item" data-schedule-detail="${escapeHtml(item.id)}" data-schedule-date="${escapeHtml(item.date)}" type="button">
-                          <span>${escapeHtml(segmentLabel(item.segment))}</span>
-                          <strong>${escapeHtml(item.title)}</strong>
-                          <em>${escapeHtml(ownerLabel(item.ownerId))}</em>
-                        </button>
-                      `
-                    )
-                    .join("")
-                : `<div class="pixel-empty">今天还没有日程。</div>`
-            }
-          </div>
-        </section>
-        <section class="dashboard-mini-panel">
-          <div class="dashboard-mini-head">
-            <strong>重要 DDL</strong>
-            <a href="#todos">管理</a>
-          </div>
-          <div class="dashboard-mini-list">
-            ${
-              deadlines.length
-                ? deadlines
-                    .map(
-                      (item) => `
-                        <article class="dashboard-mini-item is-deadline">
-                          <span>${escapeHtml(item.date)}</span>
-                          <strong>${escapeHtml(item.title)}</strong>
-                          <em>${escapeHtml(ownerLabel(item.ownerId))}</em>
-                        </article>
-                      `
-                    )
-                    .join("")
-                : `<div class="pixel-empty">还没有重要 DDL。</div>`
-            }
-          </div>
-        </section>
-      </div>
+      <section class="dashboard-mini-panel dashboard-deadline-panel">
+        <div class="dashboard-mini-head">
+          <strong>重要 DDL</strong>
+          <a href="#todos">管理</a>
+        </div>
+        <div class="dashboard-mini-list">
+          ${
+            deadlines.length
+              ? deadlines
+                  .map(
+                    (item) => `
+                      <article class="dashboard-mini-item is-deadline">
+                        <span>${escapeHtml(item.date)}</span>
+                        <strong>${escapeHtml(item.title)}</strong>
+                        <em>${escapeHtml(ownerLabel(item.ownerId))}</em>
+                      </article>
+                    `
+                  )
+                  .join("")
+              : `<div class="pixel-empty">还没有重要 DDL。</div>`
+          }
+        </div>
+      </section>
     `;
   }
 
-  function renderDashboardCaptureStrip() {
-    const captures = capturesForSelectedDate().slice(0, 3);
+  function renderDashboardChatBox() {
+    const items = dashboardStreamItems();
     return `
-      <div class="dashboard-capture-strip">
-        <form class="capture-form dashboard-capture-form" data-capture-form>
-          <input type="hidden" name="mode" value="analysis" />
-          <textarea name="text" rows="2" placeholder="随手记：一句话、地点、照片线索、待办都可以先放这里"></textarea>
+      <section class="dashboard-chat-panel">
+        <form class="capture-form dashboard-chat-form" data-capture-form>
+          <input type="hidden" name="mode" value="save" />
+          <input type="hidden" name="ownerId" value="shared" />
+          <textarea name="text" rows="3" placeholder="随手记：一句话、Todo、日程线索、地点都先写在这里"></textarea>
           <div class="dashboard-capture-controls">
-            <select name="ownerId" aria-label="归属">
-              ${renderOwnerOptions(state.quickOwner)}
-            </select>
             <select name="visibility" aria-label="可见范围">
               <option value="shared">共享</option>
               <option value="private">仅自己</option>
             </select>
             <input name="location" type="text" placeholder="地点" autocomplete="off" />
-            <button class="pixel-secondary-button" data-capture-submit-mode="todo" type="submit">转 Todo</button>
-            <button class="pixel-primary-button" data-capture-submit-mode="analysis" type="submit">交给 Agent</button>
+            <div class="dashboard-capture-symbols" aria-label="随手记动作">
+              <button class="capture-symbol-button is-save" data-capture-submit-mode="save" type="submit">记下来！</button>
+              <button class="capture-symbol-button" data-capture-submit-mode="todo" type="submit" title="转为 Todo" aria-label="转为 Todo">+Todo</button>
+              <button class="capture-symbol-button is-primary" data-capture-submit-mode="analysis" type="submit">交给 Agent</button>
+            </div>
           </div>
         </form>
-        <div class="dashboard-capture-recent">
-          <div class="dashboard-capture-recent-head">
-            <strong>今天随手记</strong>
-            <a href="#capture">全部 ${capturesForSelectedDate().length}</a>
+        <div class="dashboard-chat-feed">
+          <div class="dashboard-mini-head">
+            <strong>今天的记录</strong>
+            <span>${items.length} 条</span>
           </div>
-          <div class="dashboard-mini-capture-list">
+          <div class="dashboard-stream-list">
             ${
-              captures.length
-                ? captures.map((capture) => renderCaptureNote(capture, "mini")).join("")
-                : `<div class="pixel-empty">还没有随手记。</div>`
+              items.length
+                ? items.map((item) => renderDashboardStreamItem(item)).join("")
+                : `<div class="pixel-empty dashboard-empty-chat">今天还没有记录。先在上面写一句。</div>`
             }
           </div>
         </div>
-      </div>
+      </section>
+    `;
+  }
+
+  function dashboardStreamItems() {
+    const schedules = scheduleItemsForDate(state.selectedDate).map((item) => ({
+      type: "schedule",
+      id: item.id,
+      title: item.title,
+      meta: `${segmentLabel(item.segment)} · ${ownerLabel(item.ownerId)}${isArchived(item) ? " · 已归档" : ""}`,
+      detail: item.detail || "",
+      createdAt: item.createdAt || `${item.date}T00:00:00.000Z`,
+      archived: isArchived(item),
+      item,
+    }));
+    const captures = capturesForSelectedDate().map((capture) => ({
+      type: "capture",
+      id: capture.id,
+      title: capture.text,
+      meta: `${profileName(capture.createdBy)} · ${captureModeLabel(capture.mode)}${capture.location ? ` · ${capture.location}` : ""}`,
+      detail: "",
+      createdAt: capture.createdAt || "",
+      item: capture,
+    }));
+    const todos = (state.data?.todoItems || [])
+      .filter((item) => item.date === state.selectedDate && item.bucket !== "future")
+      .filter(itemMatchesView)
+      .map((item) => ({
+        type: "todo",
+        id: item.id,
+        title: item.title,
+        meta: `${ownerLabel(item.ownerId)} · ${priorityLabels[item.priority] || "普通"}${isArchived(item) ? " · 已归档" : ""}`,
+        detail: item.detail || "",
+        createdAt: item.createdAt || `${item.date}T00:00:00.000Z`,
+        archived: isArchived(item),
+        item,
+      }));
+    return [...schedules, ...captures, ...todos]
+      .sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)))
+      .slice(0, 10);
+  }
+
+  function renderDashboardStreamItem(entry) {
+    if (entry.type === "schedule") {
+      return `
+        <button class="dashboard-stream-item is-schedule${entry.archived ? " is-archived" : ""}" data-schedule-detail="${escapeHtml(entry.id)}" data-schedule-date="${escapeHtml(entry.item.date)}" type="button">
+          <span>日</span>
+          <div>
+            <strong>${escapeHtml(entry.title)}</strong>
+            <em>${escapeHtml(entry.meta)}</em>
+            ${entry.detail ? `<small>${escapeHtml(entry.detail)}</small>` : ""}
+          </div>
+        </button>
+      `;
+    }
+    if (entry.type === "todo") {
+      const doneCount = Object.values(entry.item.statusByUser || {}).filter((status) => status === "done").length;
+      const totalCount = entry.item.participants?.length || 1;
+      return `
+        <article class="dashboard-stream-item is-todo${entry.archived ? " is-archived" : ""}">
+          <span>T</span>
+          <div>
+            <strong>${escapeHtml(entry.title)}</strong>
+            <em>${escapeHtml(entry.meta)} · ${doneCount}/${totalCount}</em>
+            ${entry.detail ? `<small>${escapeHtml(entry.detail)}</small>` : ""}
+          </div>
+        </article>
+      `;
+    }
+    return `
+      <article class="dashboard-stream-item is-capture">
+        <span>记</span>
+        <div>
+          <strong>${escapeHtml(entry.title)}</strong>
+          <em>${escapeHtml(entry.meta)}</em>
+        </div>
+      </article>
     `;
   }
 
   function renderPersonDashboardCard(profile) {
     const stats = getCompletion(profile.id);
-    const day = state.data.diaryDay.userDays[profile.id] || {};
+    const day = state.data?.diaryDay?.userDays?.[profile.id] || {};
     const things = getProfileDayThings(profile.id).slice(0, 5);
 
     return `
@@ -1569,12 +1640,7 @@
         <div class="pixel-progress">
           <span style="width: ${stats.percent}%"></span>
         </div>
-        <div class="person-card-facts">
-          <span>状态：${escapeHtml(day.mood || "未标记")}</span>
-          <span>能量：${escapeHtml(day.energy || 3)}/5</span>
-          <span>重点：${escapeHtml(day.focus || "未填写")}</span>
-        </div>
-        ${profile.id === currentUser()?.id ? renderOwnStatusEditor(day) : ""}
+        ${renderDailyPulseCard(profile, day)}
         <div class="person-thing-list">
           ${
             things.length
@@ -1595,26 +1661,34 @@
     `;
   }
 
-  function renderOwnStatusEditor(day) {
+  function renderDailyPulseCard(profile, day = {}) {
+    const score = Number(day.dailyScore || 0);
+    const doneCount = dailyPulseDoneCount(day);
+    const isOwn = profile.id === currentUser()?.id;
+
+    if (isOwn) {
+      return `
+        <form class="daily-pulse-form" data-daily-pulse-form style="--person-color: ${escapeHtml(profile.color)}">
+          <div class="daily-pulse-score">
+            <label>
+              <span>今日打分</span>
+              <input name="dailyScore" type="number" min="1" max="10" value="${score || ""}" placeholder="/10" />
+            </label>
+            <em>${doneCount}/3</em>
+          </div>
+          <input name="happiestThing" type="text" value="${escapeHtml(day.happiestThing || "")}" placeholder="最开心的事" autocomplete="off" />
+          <input name="smallAchievement" type="text" value="${escapeHtml(day.smallAchievement || "")}" placeholder="小成就" autocomplete="off" />
+          <button class="pixel-secondary-button" type="submit">打卡</button>
+        </form>
+      `;
+    }
+
     return `
-      <form class="status-edit-form" data-own-status-form>
-        <select name="mood" aria-label="我的状态">
-          <option value="">状态</option>
-          ${moods
-            .map(
-              (mood) => `
-                <option value="${escapeHtml(mood)}"${day.mood === mood ? " selected" : ""}>${escapeHtml(mood)}</option>
-              `
-            )
-            .join("")}
-        </select>
-        <label>
-          <span>能量</span>
-          <input name="energy" type="range" min="1" max="5" value="${escapeHtml(day.energy || 3)}" />
-        </label>
-        <input name="focus" type="text" value="${escapeHtml(day.focus || "")}" placeholder="今天重点" />
-        <button class="pixel-secondary-button" type="submit">保存状态</button>
-      </form>
+      <div class="daily-pulse-readonly" style="--person-color: ${escapeHtml(profile.color)}">
+        <span>今日打分：${score ? `${score}/10` : "未填写"}</span>
+        <span>最开心：${escapeHtml(day.happiestThing || "未填写")}</span>
+        <span>小成就：${escapeHtml(day.smallAchievement || "未填写")}</span>
+      </div>
     `;
   }
 
@@ -1764,7 +1838,6 @@
           <div class="couple-filter-tabs">
             <button class="${state.todoMode === "today" ? "is-active" : ""}" data-todo-mode="today" type="button">今天 ${todayCount}</button>
             <button class="${state.todoMode === "future" ? "is-active" : ""}" data-todo-mode="future" type="button">未来 ${futureCount}</button>
-            <button class="${state.todoMode === "all" ? "is-active" : ""}" data-todo-mode="all" type="button">全部</button>
           </div>
         </div>
         <form class="todo-create-form" id="todo-create-form">
@@ -1828,20 +1901,22 @@
       `;
     }
 
+    const archived = isArchived(item);
     const allDone = item.participants.every((id) => item.statusByUser?.[id] === "done");
     return `
-      <article class="thing-row todo-row ${allDone ? "is-done" : ""}">
+      <article class="thing-row todo-row ${allDone ? "is-done" : ""}${archived ? " is-archived" : ""}">
         <div class="thing-row-main">
           <span class="thing-kind">${escapeHtml(thingClass(item))}</span>
           <strong>${escapeHtml(item.title)}</strong>
           ${item.detail ? `<p>${escapeHtml(item.detail)}</p>` : ""}
-          <em>${escapeHtml(ownerLabel(item.ownerId))} · ${escapeHtml(priorityLabels[item.priority] || "普通")} · ${item.bucket === "future" ? "未来想做" : escapeHtml(item.date)}</em>
+          <em>${escapeHtml(ownerLabel(item.ownerId))} · ${escapeHtml(priorityLabels[item.priority] || "普通")} · ${item.bucket === "future" ? "未来想做" : escapeHtml(item.date)}${archived ? " · 已归档" : ""}</em>
         </div>
         <div class="thing-row-actions">
           ${item.participants
             .map((userId) => renderStatusControl(item, userId, "todo"))
             .join("")}
           <button class="thing-edit-button" data-edit-todo="${escapeHtml(item.id)}" type="button">编辑</button>
+          ${archived ? "" : `<button class="thing-archive-button" data-archive-todo="${escapeHtml(item.id)}" data-archive-date="${escapeHtml(item.date)}" type="button">归档</button>`}
           <button class="thing-delete-button" data-delete-todo="${escapeHtml(item.id)}" type="button">删除</button>
         </div>
       </article>
@@ -1903,27 +1978,29 @@
   }
 
   function renderScheduleListItem(item) {
+    const archived = isArchived(item);
     const allDone = item.participants.every((id) => item.statusByUser?.[id] === "done");
     return `
       <button
-        class="schedule-list-item${state.selectedScheduleId === item.id ? " is-selected" : ""}${allDone ? " is-done" : ""}"
+        class="schedule-list-item${state.selectedScheduleId === item.id ? " is-selected" : ""}${allDone ? " is-done" : ""}${archived ? " is-archived" : ""}"
         data-schedule-detail="${escapeHtml(item.id)}"
         data-schedule-date="${escapeHtml(item.date)}"
         type="button"
       >
         <span>${escapeHtml(segmentLabel(item.segment))}</span>
         <strong>${escapeHtml(item.title)}</strong>
-        <em>${escapeHtml(ownerLabel(item.ownerId))}</em>
+        <em>${escapeHtml(ownerLabel(item.ownerId))}${archived ? " · 已归档" : ""}</em>
       </button>
     `;
   }
 
   function renderScheduleDetail(item) {
+    const archived = isArchived(item);
     return `
-      <article class="schedule-detail-card">
+      <article class="schedule-detail-card${archived ? " is-archived" : ""}">
         <div class="schedule-detail-top">
           <div>
-            <span>${escapeHtml(item.date)} · ${escapeHtml(segmentLabel(item.segment))}</span>
+            <span>${escapeHtml(item.date)} · ${escapeHtml(segmentLabel(item.segment))}${archived ? " · 已归档" : ""}</span>
             <h3>${escapeHtml(item.title)}</h3>
           </div>
           <span class="thing-kind">${escapeHtml(thingClass(item))}</span>
@@ -1937,7 +2014,232 @@
           ${item.participants
             .map((userId) => renderStatusControl(item, userId, "schedule"))
             .join("")}
+          ${archived ? "" : `<button class="thing-archive-button" data-archive-item="${escapeHtml(item.id)}" data-archive-date="${escapeHtml(item.date)}" type="button">归档</button>`}
           <button class="thing-delete-button" data-delete-item="${escapeHtml(item.id)}" data-delete-date="${escapeHtml(item.date)}" type="button">删除</button>
+        </div>
+      </article>
+    `;
+  }
+
+  function timelineDaysOrdered() {
+    const days = state.data?.timelineDays || [];
+    if (!days.length) return [];
+    const selectedIndex = days.findIndex((day) => (day.date || day.id) === state.selectedDate);
+    if (selectedIndex < 0) return days;
+    return [
+      days[selectedIndex],
+      ...days.slice(selectedIndex + 1),
+      ...days.slice(0, selectedIndex),
+    ];
+  }
+
+  function timelinePeople() {
+    const current = currentUser();
+    const other = profiles().find((profile) => profile.id !== current?.id) || profiles()[0] || null;
+    return {
+      self: current,
+      other,
+    };
+  }
+
+  function timelineDayEntries(day) {
+    return [...(day?.left || []), ...(day?.right || [])]
+      .sort((a, b) => timelineEntrySortKey(a).localeCompare(timelineEntrySortKey(b)));
+  }
+
+  function timelineEntrySortKey(entry) {
+    const segmentRank = {
+      allDay: "0",
+      morning: "1",
+      noon: "2",
+      afternoon: "3",
+      evening: "4",
+    };
+    return [
+      segmentRank[timelineSegmentKey(entry)] || "9",
+      String(entry.createdAt || ""),
+      String(entry.title || ""),
+    ].join("|");
+  }
+
+  function timelineSegmentKey(entry) {
+    if (entry.type === "schedule") return entry.meta || "allDay";
+    if (entry.type === "capture" && entry.createdAt) {
+      const hour = Number(String(entry.createdAt).slice(11, 13));
+      if (Number.isFinite(hour)) {
+        if (hour < 11) return "morning";
+        if (hour < 14) return "noon";
+        if (hour < 18) return "afternoon";
+        return "evening";
+      }
+    }
+    return "allDay";
+  }
+
+  function timelineTimeLabel(entry, options = {}) {
+    if (entry.type === "schedule") return segmentLabel(entry.meta);
+    if (entry.type === "capture" && entry.createdAt) {
+      const time = String(entry.createdAt).slice(11, 16);
+      return /^\d{2}:\d{2}$/.test(time) ? time : "";
+    }
+    return options.showAllDay ? "全天" : "";
+  }
+
+  function timelineTypeLabel(entry) {
+    if (entry.type === "schedule") return "日程";
+    if (entry.type === "todo") return "Todo";
+    if (entry.type === "capture") return "随手记";
+    return "事项";
+  }
+
+  function timelineTypeMark(entry) {
+    if (entry.type === "schedule") return "日";
+    if (entry.type === "todo") return "T";
+    if (entry.type === "capture") return "记";
+    return "事";
+  }
+
+  function timelineIsShared(entry) {
+    return entry.ownerId === "shared" || entry.visibility === "shared" || (entry.participants || []).length > 1;
+  }
+
+  function captureModeLabel(mode) {
+    if (mode === "todo") return "Todo";
+    if (mode === "analysis") return "Agent";
+    return "记下来";
+  }
+
+  function renderTimelinePage() {
+    const orderedDays = timelineDaysOrdered();
+    const focusDay = orderedDays[0];
+    const restDays = orderedDays.slice(1, 7);
+    const people = timelinePeople();
+
+    return `
+      <section class="couple-panel timeline-panel dashboard-wide" id="timeline">
+        <div class="couple-panel-head">
+          <div>
+            <p class="couple-kicker">Timeline</p>
+            <h2>一周事项时间轴</h2>
+          </div>
+          <span class="selected-day-count">最多 7 天</span>
+        </div>
+        <div class="timeline-split-head">
+          <span style="--person-color: ${escapeHtml(people.self?.color || "#ff5c9a")}">${escapeHtml(people.self?.displayName || "我的")}</span>
+          <span style="--person-color: ${escapeHtml(people.other?.color || "#8a6cff")}">${escapeHtml(people.other?.displayName || "对方")}</span>
+        </div>
+        ${focusDay ? renderTimelineFocusDay(focusDay) : `<div class="pixel-empty">这一周还没有事项。</div>`}
+        <div class="timeline-rest-list">
+          ${restDays.map((day) => renderTimelineCompactDay(day)).join("")}
+        </div>
+      </section>
+    `;
+  }
+
+  function renderTimelineFocusDay(day) {
+    const date = day.date || day.id;
+    const entries = timelineDayEntries(day);
+    const segments = (state.data?.segments || [])
+      .map((segment) => ({
+        ...segment,
+        left: (day.left || []).filter((entry) => timelineSegmentKey(entry) === segment.key),
+        right: (day.right || []).filter((entry) => timelineSegmentKey(entry) === segment.key),
+      }))
+      .filter((segment) => segment.left.length || segment.right.length);
+
+    return `
+      <article class="timeline-focus-day${day.isToday ? " is-today" : ""}">
+        <div class="timeline-focus-title">
+          <div>
+            <span>${escapeHtml(day.label || "")}</span>
+            <strong>${escapeHtml(date)}</strong>
+          </div>
+          <em>${entries.length} 件事</em>
+        </div>
+        ${
+          segments.length
+            ? segments.map((segment) => renderTimelineFocusSegment(segment)).join("")
+            : `<div class="pixel-empty">这一天还没有 Todo、日程或随手记。</div>`
+        }
+      </article>
+    `;
+  }
+
+  function renderTimelineFocusSegment(segment) {
+    return `
+      <section class="timeline-focus-segment">
+        <div class="timeline-segment-label">${escapeHtml(segment.label)}</div>
+        <div class="timeline-side-grid">
+          <div class="timeline-side-column is-self">
+            ${
+              segment.left.length
+                ? segment.left.map((entry) => renderTimelineEntry(entry, "focus")).join("")
+                : `<span class="timeline-side-empty">这边暂无</span>`
+            }
+          </div>
+          <div class="timeline-side-column is-other">
+            ${
+              segment.right.length
+                ? segment.right.map((entry) => renderTimelineEntry(entry, "focus")).join("")
+                : `<span class="timeline-side-empty">这边暂无</span>`
+            }
+          </div>
+        </div>
+      </section>
+    `;
+  }
+
+  function renderTimelineCompactDay(day) {
+    const date = day.date || day.id;
+    const left = day.left || [];
+    const right = day.right || [];
+    return `
+      <article class="timeline-compact-day${day.isToday ? " is-today" : ""}">
+        <div class="timeline-compact-date">
+          <strong>${escapeHtml(date)}</strong>
+          <span>${escapeHtml(day.label || "")}</span>
+        </div>
+        <div class="timeline-side-grid">
+          <div class="timeline-side-column is-self">
+            ${
+              left.length
+                ? left.map((entry) => renderTimelineEntry(entry, "compact", date)).join("")
+                : `<span class="timeline-side-empty">无</span>`
+            }
+          </div>
+          <div class="timeline-side-column is-other">
+            ${
+              right.length
+                ? right.map((entry) => renderTimelineEntry(entry, "compact", date)).join("")
+                : `<span class="timeline-side-empty">无</span>`
+            }
+          </div>
+        </div>
+      </article>
+    `;
+  }
+
+  function renderTimelineEntry(entry, variant = "focus", date = "") {
+    const archived = isArchived(entry);
+    const shared = timelineIsShared(entry);
+    const time = timelineTimeLabel(entry, { showAllDay: variant === "focus" });
+    const prefix = variant === "compact"
+      ? [date, time].filter(Boolean).join(" · ")
+      : time;
+    return `
+      <article class="timeline-entry is-${escapeHtml(entry.type)}${variant === "compact" ? " is-compact" : ""}${archived ? " is-archived" : ""}${shared ? " is-shared" : ""}">
+        <span class="timeline-entry-mark">${escapeHtml(timelineTypeMark(entry))}</span>
+        <div>
+          <div class="timeline-entry-line">
+            ${prefix ? `<time>${escapeHtml(prefix)}</time>` : ""}
+            <strong>${escapeHtml(entry.title || "未命名事项")}</strong>
+          </div>
+          <div class="timeline-entry-meta">
+            <span>${escapeHtml(timelineTypeLabel(entry))}</span>
+            ${shared ? `<span>共同</span>` : ""}
+            ${archived ? `<span>已归档</span>` : ""}
+          </div>
+          ${variant === "focus" && entry.detail ? `<p>${escapeHtml(entry.detail)}</p>` : ""}
         </div>
       </article>
     `;
@@ -2066,7 +2368,7 @@
   function renderDailyPeople(people) {
     return `
       <div class="daily-people-list">
-        <strong>两个人状态</strong>
+        <strong>每日小打卡</strong>
         ${
           people.length
             ? people
@@ -2075,7 +2377,7 @@
                     <span style="--person-color: ${escapeHtml(person.color)}">
                       <b>${escapeHtml(person.displayName)}</b>
                       <em>${escapeHtml(person.percent || 0)}%</em>
-                      <small>${escapeHtml(person.mood || "未标记")} · 能量 ${escapeHtml(person.energy || 3)}/5</small>
+                      <small>${escapeHtml(person.dailyScore ? `${person.dailyScore}/10` : "未打分")} · ${escapeHtml(person.happiestThing || "最开心未填")} · ${escapeHtml(person.smallAchievement || "小成就未填")}</small>
                     </span>
                   `
                 )
@@ -2445,6 +2747,7 @@
 
   function renderCaptureHub() {
     const modeLabels = {
+      save: "记下来！",
       analysis: "提交给 Agent",
       todo: "直接添加 Todo",
     };
@@ -2470,7 +2773,7 @@
         <div class="capture-hub-layout">
           <form class="capture-form capture-hub-form" id="capture-form" data-capture-form>
             <input type="hidden" name="mode" value="${escapeHtml(state.captureMode)}" />
-            <textarea name="text" rows="3" placeholder="先写下来，后台交给 Agent 分析。"></textarea>
+            <textarea name="text" rows="3" placeholder="先写下来。记下来只保存，交给 Agent 会进入分析流。"></textarea>
             <div class="capture-extra-row">
               <input name="location" type="text" placeholder="地点，可留空" autocomplete="off" />
               <label class="capture-photo-button">
@@ -2512,7 +2815,7 @@
   function renderCaptureNote(capture, variant = "") {
     return `
       <article class="capture-note ${variant === "mini" ? "is-mini" : ""} ${capture.visibility === "private" ? "is-private" : ""}">
-        <span>${escapeHtml(profileName(capture.createdBy))} · ${capture.mode === "todo" ? "Todo" : "Agent"} · ${capture.visibility === "private" ? "仅自己" : "共享"}${capture.location ? ` · ${escapeHtml(capture.location)}` : ""}</span>
+        <span>${escapeHtml(profileName(capture.createdBy))} · ${escapeHtml(captureModeLabel(capture.mode))} · ${capture.visibility === "private" ? "仅自己" : "共享"}${capture.location ? ` · ${escapeHtml(capture.location)}` : ""}</span>
         <p>${escapeHtml(capture.text)}</p>
         ${
           capture.assets?.length && variant !== "mini"
@@ -2547,12 +2850,6 @@
         renderApp();
       });
     });
-    root.querySelectorAll("[data-view-filter]").forEach((button) => {
-      button.addEventListener("click", () => {
-        state.view = button.dataset.viewFilter;
-        renderApp();
-      });
-    });
     root.querySelectorAll("[data-todo-mode]").forEach((button) => {
       button.addEventListener("click", () => {
         state.todoMode = button.dataset.todoMode;
@@ -2562,7 +2859,7 @@
     });
     root.querySelectorAll("[data-capture-mode]").forEach((button) => {
       button.addEventListener("click", () => {
-        state.captureMode = button.dataset.captureMode || "analysis";
+        state.captureMode = button.dataset.captureMode || "save";
         renderApp();
       });
     });
@@ -2575,6 +2872,9 @@
     root.querySelectorAll("[data-refresh-summary]").forEach((button) => {
       button.addEventListener("click", refreshDailySummary);
     });
+    root.querySelectorAll("[data-daily-pulse-form]").forEach((form) => {
+      form.addEventListener("submit", saveDailyPulse);
+    });
     root.querySelector("#quick-add-form")?.addEventListener("submit", addScheduleFromForm);
     root.querySelector("#quick-owner")?.addEventListener("change", (event) => {
       state.quickOwner = event.currentTarget.value;
@@ -2585,9 +2885,6 @@
     root.querySelector("#todo-create-form")?.addEventListener("submit", saveTodo);
     root.querySelectorAll(".todo-edit-form").forEach((form) => {
       form.addEventListener("submit", saveTodo);
-    });
-    root.querySelectorAll("[data-own-status-form]").forEach((form) => {
-      form.addEventListener("submit", saveOwnStatus);
     });
     root.querySelectorAll("[data-personal-page-form]").forEach((form) => {
       form.addEventListener("submit", savePersonalPage);
@@ -2619,6 +2916,12 @@
         deleteScheduleItem(button.dataset.deleteItem, button.dataset.deleteDate);
       });
     });
+    root.querySelectorAll("[data-archive-item]").forEach((button) => {
+      button.addEventListener("click", (event) => {
+        event.stopPropagation();
+        archiveScheduleItem(button.dataset.archiveItem, button.dataset.archiveDate);
+      });
+    });
     root.querySelectorAll("[data-toggle-todo]").forEach((button) => {
       button.addEventListener("click", (event) => {
         event.stopPropagation();
@@ -2641,6 +2944,12 @@
       button.addEventListener("click", (event) => {
         event.stopPropagation();
         deleteTodo(button.dataset.deleteTodo);
+      });
+    });
+    root.querySelectorAll("[data-archive-todo]").forEach((button) => {
+      button.addEventListener("click", (event) => {
+        event.stopPropagation();
+        archiveTodo(button.dataset.archiveTodo, button.dataset.archiveDate);
       });
     });
     root.querySelectorAll("[data-toggle-checkin]").forEach((button) => {
