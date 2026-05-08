@@ -4205,6 +4205,54 @@ body.couple-home .couple-date-bar {
   margin: 12px 0 18px;
 }
 
+body.couple-home .workspace-page-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 0 0 16px;
+  padding: 8px;
+  border: 1px solid rgba(86, 50, 68, 0.14);
+  border-radius: 18px;
+  background: rgba(255, 250, 246, 0.76);
+}
+
+body.couple-home .workspace-page-tabs a {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 38px;
+  padding: 8px 12px;
+  border: 1px solid rgba(86, 50, 68, 0.16);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.82);
+  color: rgba(86, 50, 68, 0.76);
+  font-size: 0.9rem;
+  font-weight: 900;
+  text-decoration: none;
+  transition:
+    background 160ms ease,
+    border-color 160ms ease,
+    box-shadow 160ms ease,
+    color 160ms ease,
+    transform 160ms ease;
+}
+
+body.couple-home .workspace-page-tabs a:hover {
+  box-shadow: 0 5px 0 rgba(86, 50, 68, 0.1);
+  transform: translateY(-1px);
+}
+
+body.couple-home .workspace-page-tabs a.is-active {
+  border-color: rgba(233, 77, 142, 0.36);
+  background: var(--pixel-yellow);
+  color: var(--pixel-ink);
+}
+
+body.couple-home .couple-page-view {
+  display: grid;
+  gap: 18px;
+}
+
 body.couple-home .couple-status-line {
   flex: 1;
   min-width: 220px;
@@ -4455,11 +4503,45 @@ body.couple-home .month-grid {
 
 body.couple-home .month-day-cell {
   display: grid;
-  gap: 6px;
-  min-height: 142px;
-  padding: 10px;
+  align-content: start;
+  gap: 7px;
+  min-height: 94px;
+  padding: 9px;
   text-align: left;
   background: rgba(255, 255, 255, 0.78);
+}
+
+body.couple-home .month-day-cell.is-empty-day {
+  opacity: 0.68;
+}
+
+body.couple-home .month-day-cell.is-strong-day {
+  border-color: rgba(145, 221, 196, 0.56);
+  background: rgba(236, 255, 249, 0.82);
+}
+
+body.couple-home .month-day-cell.is-steady-day {
+  border-color: rgba(255, 190, 119, 0.5);
+  background: rgba(255, 250, 230, 0.86);
+}
+
+body.couple-home .month-day-cell.is-light-day,
+body.couple-home .month-day-cell.is-note-day {
+  border-color: rgba(255, 190, 119, 0.34);
+  background: rgba(255, 248, 236, 0.76);
+}
+
+body.couple-home .month-day-cell.is-zero-day {
+  border-color: rgba(233, 77, 142, 0.18);
+}
+
+body.couple-home .month-day-cell.is-plan-day {
+  border-color: rgba(130, 173, 222, 0.28);
+  background: rgba(244, 249, 255, 0.72);
+}
+
+body.couple-home .month-day-cell.is-future-day {
+  color: rgba(86, 50, 68, 0.56);
 }
 
 body.couple-home .month-day-cell.is-active {
@@ -4475,23 +4557,127 @@ body.couple-home .month-day-number {
   font-weight: 800;
 }
 
+body.couple-home .month-day-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
 body.couple-home .month-day-cell strong {
   color: var(--pixel-pink-deep);
   font-size: 1.05rem;
 }
 
-body.couple-home .month-day-cell em,
-body.couple-home .month-day-cell i {
-  color: rgba(86, 50, 68, 0.58);
-  font-size: 0.75rem;
-  font-style: normal;
-  line-height: 1.35;
+body.couple-home .month-status-pill {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 2.4em;
+  height: 24px;
+  padding: 0 7px;
+  border: 1px solid rgba(86, 50, 68, 0.1);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.7);
+  color: var(--pixel-pink-deep);
+  font-size: 0.76rem;
+  font-weight: 900;
+  line-height: 1;
 }
 
 body.couple-home .month-person-stats {
   display: grid;
   gap: 5px;
   margin-top: 2px;
+}
+
+body.couple-home .month-person-dots {
+  display: flex;
+  gap: 6px;
+  min-height: 22px;
+}
+
+body.couple-home .month-person-dot {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border: 1px solid color-mix(in srgb, var(--person-color, var(--pixel-pink)) 36%, rgba(86, 50, 68, 0.12));
+  border-radius: 7px;
+  background: rgba(255, 255, 255, 0.78);
+  color: var(--person-color, var(--pixel-pink));
+  font-size: 0.72rem;
+  font-weight: 900;
+  line-height: 1;
+}
+
+body.couple-home .month-person-dot.is-strong {
+  background: color-mix(in srgb, var(--person-color, var(--pixel-pink)) 22%, #fff);
+  box-shadow: inset 0 -4px 0 color-mix(in srgb, var(--person-color, var(--pixel-pink)) 44%, transparent);
+}
+
+body.couple-home .month-person-dot.is-steady {
+  background: color-mix(in srgb, var(--person-color, var(--pixel-pink)) 13%, #fff);
+  box-shadow: inset 0 -3px 0 color-mix(in srgb, var(--person-color, var(--pixel-pink)) 28%, transparent);
+}
+
+body.couple-home .month-person-dot.is-light {
+  background: rgba(255, 255, 255, 0.86);
+  box-shadow: inset 0 -2px 0 color-mix(in srgb, var(--person-color, var(--pixel-pink)) 22%, transparent);
+}
+
+body.couple-home .month-person-dot.is-zero {
+  color: rgba(86, 50, 68, 0.34);
+  background: rgba(255, 255, 255, 0.58);
+}
+
+body.couple-home .month-person-dot.is-empty,
+body.couple-home .month-person-dot.is-future {
+  border-style: dashed;
+  color: rgba(86, 50, 68, 0.3);
+  background: rgba(255, 255, 255, 0.46);
+}
+
+body.couple-home .month-day-markers {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  min-height: 24px;
+  align-items: flex-end;
+}
+
+body.couple-home .month-day-markers i {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 20px;
+  height: 20px;
+  padding: 0 6px;
+  border-radius: 7px;
+  background: rgba(255, 228, 239, 0.72);
+  color: rgba(86, 50, 68, 0.68);
+  font-size: 0.7rem;
+  font-style: normal;
+  font-weight: 900;
+  line-height: 1;
+}
+
+body.couple-home .month-day-markers i.is-schedule {
+  background: rgba(235, 248, 255, 0.86);
+}
+
+body.couple-home .month-day-markers i.is-capture {
+  background: rgba(255, 247, 217, 0.88);
+}
+
+body.couple-home .month-day-markers i.is-summary {
+  background: rgba(239, 255, 247, 0.88);
+}
+
+body.couple-home .month-day-markers i.is-muted {
+  background: rgba(86, 50, 68, 0.06);
+  color: rgba(86, 50, 68, 0.38);
 }
 
 body.couple-home .month-person-stat {

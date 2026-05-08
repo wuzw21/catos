@@ -17,6 +17,51 @@
     { key: "evening", words: ["晚上", "今晚", "夜里"] },
   ];
   const weekdayIndex = { 一: 0, 二: 1, 三: 2, 四: 3, 五: 4, 六: 5, 日: 6, 天: 6 };
+  const pageDefinitions = [
+    {
+      id: "dashboard",
+      label: "Dashboard",
+      kicker: "Shared Dashboard",
+      title: "今天两个人怎么样",
+      note: "先看两个人当天和本月完成情况，再进入具体页面处理事项。",
+    },
+    {
+      id: "capture",
+      label: "随手记",
+      kicker: "Quick Capture",
+      title: "随手记",
+      note: "把临时想法、地点、照片先放进这里，再选择交给 Agent 或直接生成 Todo。",
+    },
+    {
+      id: "todos",
+      label: "Todo",
+      kicker: "Todo & Check-in",
+      title: "Todo 和打卡",
+      note: "处理今天要推进的事、共同打卡和重要日期。",
+    },
+    {
+      id: "schedule",
+      label: "日程",
+      kicker: "Schedule",
+      title: "日程",
+      note: "这里只放具体安排；每天的完成情况在 Dashboard 用短标记显示。",
+    },
+    {
+      id: "daily-summary",
+      label: "日总结",
+      kicker: "Daily Story",
+      title: "自动日总结",
+      note: "由随手记、Todo、日程、打卡、地点和照片自动整理。",
+    },
+    {
+      id: "pages",
+      label: "小页面",
+      kicker: "Personal Pages",
+      title: "未来想做和个人资料",
+      note: "把未来想做、个人信息和偏好放到独立页面里。",
+    },
+  ];
+  const pageIds = new Set(pageDefinitions.map((page) => page.id));
 
   const state = {
     authenticated: false,
@@ -24,6 +69,7 @@
     data: null,
     selectedDate: getToday(),
     view: "shared",
+    activePage: getPageFromHash(),
     dashboardMode: "day",
     todoMode: "today",
     captureMode: "analysis",
@@ -78,6 +124,41 @@
 
   function escapeRegExp(input) {
     return String(input).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  }
+
+  function normalizePageId(value) {
+    const pageId = String(value || "").replace(/^#/, "");
+    return pageIds.has(pageId) ? pageId : "dashboard";
+  }
+
+  function getPageFromHash() {
+    return normalizePageId(window.location.hash || "dashboard");
+  }
+
+  function activePageSpec() {
+    return pageDefinitions.find((page) => page.id === state.activePage) || pageDefinitions[0];
+  }
+
+  function setActivePage(pageId) {
+    const nextPage = normalizePageId(pageId);
+    if (state.activePage === nextPage) {
+      syncTopNavigation();
+      return;
+    }
+    state.activePage = nextPage;
+    state.editTodoId = "";
+    renderApp();
+  }
+
+  function syncTopNavigation() {
+    document.querySelectorAll(".couple-nav a").forEach((link) => {
+      const pageId = normalizePageId(link.getAttribute("href"));
+      if (pageId === state.activePage) {
+        link.setAttribute("aria-current", "page");
+      } else {
+        link.removeAttribute("aria-current");
+      }
+    });
   }
 
   function isTyping() {
@@ -1141,6 +1222,7 @@
         renderLogin();
       });
     });
+    syncTopNavigation();
   }
 
   function renderError(message) {
@@ -1163,13 +1245,14 @@
     }
 
     const day = selectedDay();
+    const page = activePageSpec();
     root.innerHTML = `
       <section class="couple-shell couple-app-v2">
         <div class="couple-workspace-head">
           <div class="workspace-title-block">
-            <p class="couple-kicker">Shared Home</p>
-            <h1>${escapeHtml(data.space.name)}</h1>
-            <p class="couple-headline-note">先把事情写进随手记，再沉淀成 Todo、日程、自动日总结和完成情况。</p>
+            <p class="couple-kicker">${escapeHtml(page.kicker)}</p>
+            <h1>${escapeHtml(page.title)}</h1>
+            <p class="couple-headline-note">${escapeHtml(page.note)}</p>
           </div>
           <div class="couple-session-card">
             <span class="pixel-person-cat" ${profileStyle(currentUser().id)} aria-hidden="true"></span>
@@ -1195,26 +1278,67 @@
           <div class="couple-status-line">${escapeHtml(state.status || `Revision ${data.revision} · ${data.updatedAt || ""}`)}</div>
         </div>
 
-        ${renderDashboard()}
-        ${renderCaptureHub()}
-        ${renderDailySummaryPanel()}
-
-        <div class="couple-dashboard-layout">
-          <main class="couple-main-column">
-            ${renderTodoPanel()}
-            ${renderScheduleBoard()}
-          </main>
-          <aside class="couple-side-column">
-            ${renderMemoryPagesPanel()}
-            ${renderQuickAdd()}
-            ${renderCheckinPanel()}
-            ${renderDeadlinePanel()}
-          </aside>
+        ${renderWorkspaceTabs()}
+        <div class="couple-page-view" data-page-view="${escapeHtml(state.activePage)}">
+          ${renderCurrentPage()}
         </div>
       </section>
     `;
 
     bindAppEvents();
+    syncTopNavigation();
+  }
+
+  function renderWorkspaceTabs() {
+    return `
+      <nav class="workspace-page-tabs" aria-label="工作区分页">
+        ${pageDefinitions
+          .map(
+            (page) => `
+              <a class="${state.activePage === page.id ? "is-active" : ""}" href="#${escapeHtml(page.id)}">
+                ${escapeHtml(page.label)}
+              </a>
+            `
+          )
+          .join("")}
+      </nav>
+    `;
+  }
+
+  function renderCurrentPage() {
+    if (state.activePage === "capture") return renderCaptureHub();
+    if (state.activePage === "daily-summary") return renderDailySummaryPanel();
+    if (state.activePage === "schedule") return renderSchedulePage();
+    if (state.activePage === "todos") return renderTodosPage();
+    if (state.activePage === "pages") return renderMemoryPagesPanel();
+    return renderDashboard();
+  }
+
+  function renderTodosPage() {
+    return `
+      <div class="couple-dashboard-layout todo-page-layout">
+        <main class="couple-main-column">
+          ${renderTodoPanel()}
+        </main>
+        <aside class="couple-side-column">
+          ${renderCheckinPanel()}
+          ${renderDeadlinePanel()}
+        </aside>
+      </div>
+    `;
+  }
+
+  function renderSchedulePage() {
+    return `
+      <div class="couple-dashboard-layout schedule-page-layout">
+        <main class="couple-main-column">
+          ${renderScheduleBoard()}
+        </main>
+        <aside class="couple-side-column">
+          ${renderQuickAdd()}
+        </aside>
+      </div>
+    `;
   }
 
   function renderDashboard() {
@@ -1327,6 +1451,7 @@
 
   function renderMonthDashboard() {
     const summary = state.data.monthSummary || { days: [], totalsByUser: {}, month: state.selectedDate.slice(0, 7) };
+    const todayId = state.data?.today || getToday();
     return `
       <div class="month-dashboard">
         <div class="month-total-row">
@@ -1347,18 +1472,46 @@
           ${summary.days
             .map((day) => {
               const selected = day.id === state.selectedDate;
+              const isFuture = Boolean(day.isFuture || day.id > todayId);
               const totalDone = profiles().reduce((sum, profile) => sum + (day.userStats?.[profile.id]?.done || 0), 0);
               const totalCount = profiles().reduce((sum, profile) => sum + (day.userStats?.[profile.id]?.total || 0), 0);
               const combinedPercent = totalCount ? Math.round((totalDone / totalCount) * 100) : 0;
+              const markers = dayCompletionMarkers(day);
+              const status = dayCompletionStatus(combinedPercent, totalCount, isFuture, markers.length);
+              const detailTitle = isFuture
+                ? markers.length ? "已有计划" : "未来日期"
+                : totalCount ? `${totalDone}/${totalCount} 完成` : "暂无完成项";
               return `
-                <button class="month-day-cell${selected ? " is-active" : ""}${day.isToday ? " is-today" : ""}" data-month-date="${escapeHtml(day.id)}" type="button">
-                  <span class="month-day-number">${day.dayNumber}</span>
-                  <strong>${combinedPercent}%</strong>
-                  <em>${totalDone}/${totalCount} 完成 · ${day.todoCount || 0} Todo · ${day.eventCount || 0} 日程</em>
-                  <span class="month-person-stats">
-                    ${profiles().map((profile) => renderMonthPersonStat(profile, day)).join("")}
+                <button
+                  class="month-day-cell${selected ? " is-active" : ""}${day.isToday ? " is-today" : ""}${isFuture ? " is-future-day" : ""} ${completionTone(combinedPercent, totalCount, isFuture, markers.length)}"
+                  data-month-date="${escapeHtml(day.id)}"
+                  type="button"
+                  title="${escapeHtml(`${day.id} · ${status.title} · ${detailTitle}`)}"
+                >
+                  <span class="month-day-top">
+                    <span class="month-day-number">${day.dayNumber}</span>
+                    <strong class="month-status-pill">${escapeHtml(status.label)}</strong>
                   </span>
-                  <i>${day.captureCount || 0} 条随手记 · ${day.todoCount || 0} 个 Todo${day.summaryGenerated ? " · 已总结" : ""}</i>
+                  <span class="month-person-dots" aria-label="${escapeHtml(`${day.id} 成员完成情况`)}">
+                    ${profiles().map((profile) => renderMonthPersonDot(profile, day, isFuture)).join("")}
+                  </span>
+                  <span class="month-day-markers">
+                    ${
+                      markers.length
+                        ? markers
+                            .map(
+                              (marker) => `
+                                <i class="${escapeHtml(marker.kind)}" title="${escapeHtml(marker.title)}">
+                                  ${escapeHtml(marker.label)}
+                                </i>
+                              `
+                            )
+                            .join("")
+                        : isFuture
+                          ? ""
+                          : `<i class="is-muted">空</i>`
+                    }
+                  </span>
                 </button>
               `;
             })
@@ -1368,15 +1521,60 @@
     `;
   }
 
-  function renderMonthPersonStat(profile, day) {
+  function completionTone(percent, total, isFuture, markerCount = 0) {
+    if (isFuture) return markerCount ? "is-plan-day" : "is-empty-day";
+    if (!total && markerCount) return "is-note-day";
+    if (!total) return "is-empty-day";
+    if (percent >= 80) return "is-strong-day";
+    if (percent >= 50) return "is-steady-day";
+    if (percent > 0) return "is-light-day";
+    return "is-zero-day";
+  }
+
+  function dayCompletionStatus(percent, total, isFuture, markerCount = 0) {
+    if (isFuture) {
+      return markerCount
+        ? { label: "计划", title: "未来已有安排" }
+        : { label: "-", title: "未来还没有安排" };
+    }
+    if (!total && markerCount) return { label: "记", title: "有随手记或日程记录" };
+    if (!total) return { label: "空", title: "这天还没有记录" };
+    if (percent >= 80) return { label: "好", title: "完成良好" };
+    if (percent >= 50) return { label: "稳", title: "完成过半" };
+    if (percent > 0) return { label: "少", title: "有少量推进" };
+    return { label: "待", title: "还没有完成标记" };
+  }
+
+  function dayCompletionMarkers(day) {
+    const markers = [];
+    if (day.todoCount) markers.push({ kind: "is-todo", label: "T", title: `Todo ${day.todoCount}` });
+    if (day.eventCount) markers.push({ kind: "is-schedule", label: "日", title: `日程 ${day.eventCount}` });
+    if (day.captureCount) markers.push({ kind: "is-capture", label: "记", title: `随手记 ${day.captureCount}` });
+    if (day.summaryGenerated) markers.push({ kind: "is-summary", label: "结", title: "已生成日总结" });
+    return markers.slice(0, 4);
+  }
+
+  function renderMonthPersonDot(profile, day, isFuture) {
     const stat = day.userStats?.[profile.id] || { done: 0, total: 0, percent: 0 };
+    const tone = isFuture
+      ? "is-future"
+      : !stat.total
+        ? "is-empty"
+        : stat.percent >= 80
+          ? "is-strong"
+          : stat.percent >= 50
+            ? "is-steady"
+            : stat.percent > 0
+              ? "is-light"
+              : "is-zero";
+    const title = isFuture ? `${profile.displayName} · 计划中` : `${profile.displayName} · ${stat.done}/${stat.total}`;
     return `
-      <span class="month-person-stat" style="--person-color: ${escapeHtml(profile.color)}">
-        <b>${escapeHtml(profile.displayName)}</b>
-        <small>${stat.done}/${stat.total}</small>
-        <span class="month-mini-progress" aria-hidden="true">
-          <span style="width: ${Math.max(0, Math.min(100, stat.percent || 0))}%"></span>
-        </span>
+      <span
+        class="month-person-dot ${tone}"
+        style="--person-color: ${escapeHtml(profile.color)}"
+        title="${escapeHtml(title)}"
+      >
+        <span>${escapeHtml(profile.initials || profile.displayName?.slice(0, 1) || "?")}</span>
       </span>
     `;
   }
@@ -1488,8 +1686,8 @@
       <section class="couple-panel schedule-board-panel" id="schedule">
         <div class="couple-panel-head">
           <div>
-            <p class="couple-kicker">Weekly Schedule</p>
-            <h2>本周日程</h2>
+            <p class="couple-kicker">Schedule</p>
+            <h2>具体安排</h2>
           </div>
           <div class="week-jump-row">
             ${data.weekDays
@@ -2167,6 +2365,15 @@
       applyPendingRemoteState();
       refreshState({ silent: true });
       startCollaborationSync();
+    }
+  });
+
+  window.addEventListener("hashchange", () => {
+    const nextPage = getPageFromHash();
+    if (nextPage !== state.activePage) {
+      setActivePage(nextPage);
+    } else {
+      syncTopNavigation();
     }
   });
 

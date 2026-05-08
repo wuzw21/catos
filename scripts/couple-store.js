@@ -234,16 +234,19 @@ function getMonthDays(dateText) {
   const selected = parseDate(normalizeDate(dateText)) || new Date();
   const first = new Date(selected.getFullYear(), selected.getMonth(), 1);
   const last = new Date(selected.getFullYear(), selected.getMonth() + 1, 0);
+  const today = formatDate();
 
   return Array.from({ length: last.getDate() }, (_, index) => {
     const date = new Date(first);
     date.setDate(index + 1);
+    const id = formatDate(date);
     return {
-      id: formatDate(date),
+      id,
       label: weekdayLabels[date.getDay()],
       shortLabel: `${pad(date.getMonth() + 1)}-${pad(date.getDate())}`,
       dayNumber: index + 1,
-      isToday: formatDate(date) === formatDate(),
+      isToday: id === today,
+      isFuture: id > today,
     };
   });
 }
@@ -840,6 +843,14 @@ function getCompletionForDate(store, date, userId) {
 function getMonthSummary(store, selectedDate) {
   const monthDays = getMonthDays(selectedDate);
   const totalsByUser = {};
+  const emptyCompletion = {
+    done: 0,
+    total: 0,
+    percent: 0,
+    schedule: { done: 0, total: 0 },
+    todos: { done: 0, total: 0 },
+    checkins: { done: 0, total: 0 },
+  };
 
   store.profiles.forEach((profile) => {
     totalsByUser[profile.id] = {
@@ -854,10 +865,12 @@ function getMonthSummary(store, selectedDate) {
     const userStats = {};
 
     store.profiles.forEach((profile) => {
-      const completion = getCompletionForDate(store, day.id, profile.id);
+      const completion = day.isFuture ? emptyCompletion : getCompletionForDate(store, day.id, profile.id);
       userStats[profile.id] = completion;
-      totalsByUser[profile.id].done += completion.done;
-      totalsByUser[profile.id].total += completion.total;
+      if (!day.isFuture) {
+        totalsByUser[profile.id].done += completion.done;
+        totalsByUser[profile.id].total += completion.total;
+      }
     });
 
     return {
