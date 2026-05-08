@@ -1,0 +1,22 @@
+{
+  "type": "object",
+  "properties": {
+    "title": {
+      "type": "string"
+    },
+    "narrative": {
+      "type": "string"
+    },
+    "quality_label": {
+      "type": "string"
+    },
+    "quality_note": {
+      "type": "string"
+    },
+    "next_step": {
+      "type": "string"
+    }
+  },
+  "required": ["title", "narrative", "quality_label", "quality_note", "next_step"],
+  "additionalProperties": false
+}

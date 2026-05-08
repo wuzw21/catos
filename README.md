@@ -81,7 +81,7 @@ PEOS 不只是笔记仓库，也不只是 Todo 工具。
 - Todo
 - 领域
 - 日程
-- 日记
+- 自动日总结
 - 和猫
 - 照片
 
@@ -137,6 +137,52 @@ PEOS_CONTENT_ROOT=/absolute/path/to/your-private-content npm run sync
 更完整的拆分建议见 [OPEN_SOURCE.md](./OPEN_SOURCE.md)。
 
 ## 怎么打开
+
+双人共享首页和云端部署说明见 [DEPLOYMENT.md](./DEPLOYMENT.md)。
+
+### 本地双人测试版
+
+当前首页已经切到双人共享工作台，数据写入 `private/couple-workspace.json`：
+
+```bash
+npm run serve
+```
+
+打开：
+
+```text
+http://127.0.0.1:2333/web/index.html
+```
+
+默认本地测试账号：
+
+```text
+you / 1314
+partner / 5200
+```
+
+首页支持：
+
+- 登录：两个人独立账号，Web Cookie + 移动端 Bearer token
+- 协作同步：基于 revision 的长轮询，另一端写入后自动刷新
+- 随手记：作为首页核心入口，可提交给 Agent 分析，也可用简单模式直接生成 Todo；支持地点和照片
+- Dashboard：日/月完成情况，每个人颜色、昵称、状态分开显示
+- 自动日总结：按天汇总随手记、Todo、日程、打卡、地点和照片，凌晨 4 点自动刷新
+- 日程：按周列表展示，点击后查看详情和完成状态
+- Todo：个人事项、共同事项、未来想做，支持编辑和分别完成
+- 打卡：同一个共享打卡区展示，两个人分别标记自己的完成状态
+- 重要日期：共同或个人都可记录
+- 小页面：展示未来想做和两个人的个人资料页，当前登录者可编辑自己的资料
+
+部署前建议设置：
+
+```bash
+PEOS_COUPLE_SESSION_SECRET=一段很长的随机字符串
+PEOS_COUPLE_YOU_PASSWORD=你的强访问码
+PEOS_COUPLE_PARTNER_PASSWORD=对方强访问码
+# 可选：让凌晨 4 点自动总结调用 Codex/Agent；不配置时使用本地规则生成
+PEOS_COUPLE_DAILY_SUMMARY_AGENT=1
+```
 
 ### 推荐方式
 

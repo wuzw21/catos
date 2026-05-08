@@ -1,15 +1,37 @@
 (function bootstrapPersonalOS() {
   const serverOrigin = "http://127.0.0.1:2333";
+  const legacyPages = new Set([
+    "cat.html",
+    "detail.html",
+    "diary.html",
+    "input.html",
+    "iterations.html",
+    "photos.html",
+    "schedule.html",
+    "system.html",
+    "todo.html",
+  ]);
+
+  function isLegacyWebPage() {
+    const filename = window.location.pathname.split("/").pop();
+    return legacyPages.has(filename);
+  }
 
   function getServerPageUrl() {
     const marker = "/web/";
     const index = window.location.pathname.lastIndexOf(marker);
     const relativePath = index >= 0 ? window.location.pathname.slice(index) : "/web/index.html";
-    return `${serverOrigin}${relativePath}${window.location.search}${window.location.hash}`;
+    const canonicalPath = isLegacyWebPage() ? "/web/index.html" : relativePath;
+    return `${serverOrigin}${canonicalPath}${window.location.search}${window.location.hash}`;
   }
 
   async function ensureWritableMode() {
     if (window.location.protocol !== "file:") {
+      return;
+    }
+
+    if (isLegacyWebPage()) {
+      window.location.replace(`./index.html${window.location.search}${window.location.hash}`);
       return;
     }
 
