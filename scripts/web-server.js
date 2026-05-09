@@ -19,8 +19,10 @@ const { startNewDay } = require("./start-new-day.js");
 const {
   addCapture: addCoupleCapture,
   addDiaryAsset: addCoupleDiaryAsset,
+  analyzeCapture: analyzeCoupleCapture,
   archiveScheduleItem: archiveCoupleScheduleItem,
   archiveTodoItem: archiveCoupleTodoItem,
+  createLifeCardsFromConfirmation: createCoupleLifeCardsFromConfirmation,
   deleteCheckinItem: deleteCoupleCheckinItem,
   deleteDeadlineItem: deleteCoupleDeadlineItem,
   deleteScheduleItem: deleteCoupleScheduleItem,
@@ -31,6 +33,7 @@ const {
   readRevision: readCoupleRevision,
   refreshDailySummary: refreshCoupleDailySummary,
   toggleCheckinItem: toggleCoupleCheckinItem,
+  toggleDeadlineItem: toggleCoupleDeadlineItem,
   toggleScheduleItem: toggleCoupleScheduleItem,
   toggleTodoItem: toggleCoupleTodoItem,
   updateDiaryDay: updateCoupleDiaryDay,
@@ -140,6 +143,20 @@ function resolveStaticPath(pathname) {
   }
 
   return normalizedFilePath;
+}
+
+function shouldServeAppFallback(req, pathname) {
+  if (pathname.startsWith("/__content/") || pathname.startsWith("/web/assets/")) {
+    return false;
+  }
+
+  const extension = path.extname(pathname);
+  if (extension && extension !== ".html") {
+    return false;
+  }
+
+  const accept = String(req.headers.accept || "");
+  return !accept || accept.includes("text/html") || accept.includes("*/*");
 }
 
 function createJob(runner) {
@@ -774,6 +791,28 @@ async function handleApi(req, res, url) {
     return true;
   }
 
+  if (req.method === "POST" && url.pathname === "/api/couple/deadlines/toggle") {
+    const session = getCoupleSession(req);
+    if (!session) {
+      sendCoupleAuthRequired(res);
+      return true;
+    }
+
+    try {
+      const bodyText = await readBody(req);
+      const body = bodyText ? JSON.parse(bodyText) : {};
+      const { result } = toggleCoupleDeadlineItem(session.userId, body);
+      sendJson(res, 200, {
+        ok: true,
+        item: result,
+        state: getCoupleState(session.userId, { date: body.date || result.date }),
+      });
+    } catch (error) {
+      sendJson(res, 400, { ok: false, error: error.message });
+    }
+    return true;
+  }
+
   if (req.method === "POST" && url.pathname === "/api/couple/deadlines/delete") {
     const session = getCoupleSession(req);
     if (!session) {
@@ -877,6 +916,49 @@ async function handleApi(req, res, url) {
         ok: true,
         capture: result,
         state: getCoupleState(session.userId, { date: body.date || result.date }),
+      });
+    } catch (error) {
+      sendJson(res, 400, { ok: false, error: error.message });
+    }
+    return true;
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/couple/capture/analyze") {
+    const session = getCoupleSession(req);
+    if (!session) {
+      sendCoupleAuthRequired(res);
+      return true;
+    }
+
+    try {
+      const bodyText = await readBody(req);
+      const body = bodyText ? JSON.parse(bodyText) : {};
+      const confirmation = analyzeCoupleCapture(session.userId, body);
+      sendJson(res, 200, {
+        ok: true,
+        confirmation,
+      });
+    } catch (error) {
+      sendJson(res, 400, { ok: false, error: error.message });
+    }
+    return true;
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/couple/life-cards/from-confirmation") {
+    const session = getCoupleSession(req);
+    if (!session) {
+      sendCoupleAuthRequired(res);
+      return true;
+    }
+
+    try {
+      const bodyText = await readBody(req);
+      const body = bodyText ? JSON.parse(bodyText) : {};
+      const { result } = createCoupleLifeCardsFromConfirmation(session.userId, body);
+      sendJson(res, 200, {
+        ok: true,
+        cards: result,
+        state: getCoupleState(session.userId, { date: body.date }),
       });
     } catch (error) {
       sendJson(res, 400, { ok: false, error: error.message });
@@ -1202,7 +1284,28 @@ const server = http.createServer(async (req, res) => {
 
   const filePath = resolveStaticPath(url.pathname);
   if (!filePath || !fs.existsSync(filePath) || !fs.statSync(filePath).isFile()) {
-    sendText(res, 404, "Not Found");
+    if (!shouldServeAppFallback(req, url.pathname)) {
+      sendText(res, 404, "Not Found");
+      return;
+    }
+
+    const appFilePath = resolveStaticPath("/web/index.html");
+    if (!appFilePath || !fs.existsSync(appFilePath) || !fs.statSync(appFilePath).isFile()) {
+      sendText(res, 404, "Not Found");
+      return;
+    }
+
+    res.writeHead(200, {
+      "Cache-Control": "no-store",
+      "Content-Type": mimeTypes[".html"],
+    });
+
+    if (req.method === "HEAD") {
+      res.end();
+      return;
+    }
+
+    fs.createReadStream(appFilePath).pipe(res);
     return;
   }
 

@@ -3,12 +3,23 @@
   if (!root) return;
 
   const apiBase = window.location.protocol === "file:" ? "http://127.0.0.1:2333" : window.location.origin;
-  const captureSubmitActions = new Set(["save", "analysis", "todo"]);
-  const priorityLabels = {
-    high: "重要",
-    normal: "普通",
-    low: "低优先级",
+  const captureSubmitActions = new Set(["save", "analysis"]);
+  const scheduleItemTypeLabels = {
+    thing: "事情",
+    date: "约会",
+    purchase: "购买",
+    reminder: "提醒",
+    checkin: "打卡",
+    habit: "习惯",
   };
+  const scheduleItemTypeOptions = [
+    ["thing", "事情"],
+    ["date", "约会"],
+    ["purchase", "购买"],
+    ["reminder", "提醒"],
+    ["checkin", "打卡"],
+    ["habit", "习惯"],
+  ];
   const segmentAliases = [
     { key: "allDay", words: ["全天", "整天", "这天"] },
     { key: "morning", words: ["上午", "早上", "早晨", "今早"] },
@@ -20,57 +31,29 @@
   const pageDefinitions = [
     {
       id: "dashboard",
-      label: "Dashboard",
-      kicker: "Shared Dashboard",
-      title: "今天两个人怎么样",
-      note: "先看两个人当天和本月完成情况，再进入具体页面处理事项。",
-    },
-    {
-      id: "capture",
-      label: "随手记",
-      kicker: "Quick Capture",
-      title: "随手记",
-      note: "把临时想法、地点、照片先放进这里，再选择交给 Agent 或直接生成 Todo。",
-    },
-    {
-      id: "todos",
-      label: "Todo",
-      kicker: "Todo & Check-in",
-      title: "Todo 和打卡",
-      note: "处理今天要推进的事、共同打卡和重要日期。",
-    },
-    {
-      id: "schedule",
-      label: "日程",
-      kicker: "Schedule",
-      title: "日程",
-      note: "这里只放具体安排；每天的完成情况在 Dashboard 用短标记显示。",
-    },
-    {
-      id: "timeline",
-      label: "时间轴",
-      kicker: "Timeline",
-      title: "一周时间轴",
-      note: "左边是当前登录的人，右边是另一位；Todo、日程和随手记按日期排好。",
+      label: "首页",
+      kicker: "",
+      title: "",
+      note: "",
     },
     {
       id: "goals",
-      label: "长期目标",
-      kicker: "Long Goals",
-      title: "长期目标",
-      note: "记录想成为什么样的人，以及未来想一起做的事情。",
+      label: "长期记忆",
+      kicker: "长期记忆",
+      title: "长期记忆",
+      note: "把关系偏好、目标、重要清单和未来想做放在一个记忆板里。",
     },
     {
       id: "daily-summary",
       label: "日总结",
-      kicker: "Daily Story",
-      title: "自动日总结",
-      note: "由随手记、Todo、日程、打卡、地点和照片自动整理。",
+      kicker: "回忆页",
+      title: "AI 回忆页",
+      note: "这一天为什么值得记住，由记录、生活卡、照片、地点和每日状态整理。",
     },
     {
       id: "settings",
       label: "设置",
-      kicker: "Settings",
+      kicker: "设置",
       title: "设置",
       note: "调整自己的昵称、头像和代表颜色。",
     },
@@ -82,16 +65,15 @@
     bootstrap: null,
     data: null,
     selectedDate: getToday(),
-    view: "all",
     activePage: getPageFromHash(),
-    dashboardMode: "day",
-    todoMode: "today",
-    captureMode: "save",
-    pagesMode: "future",
     activeSegment: "evening",
     quickOwner: "shared",
-    editTodoId: "",
-    selectedScheduleId: "",
+    editCardId: "",
+    scheduleFilter: "open",
+    scheduleViewStyle: "line",
+    expandedScheduleGroups: new Set(),
+    monthViewOpen: true,
+    captureConfirmation: null,
     login: {
       login: "",
       error: "",
@@ -101,9 +83,8 @@
       active: false,
       pendingState: null,
       pendingDate: "",
-      message: "协作同步准备中",
+      message: "",
     },
-    loading: false,
   };
 
   function getToday() {
@@ -128,6 +109,16 @@
     return formatDate(date);
   }
 
+  function addMonths(dateText, offset) {
+    const date = parseDate(dateText) || new Date();
+    const originalDay = date.getDate();
+    date.setDate(1);
+    date.setMonth(date.getMonth() + offset);
+    const lastDay = new Date(date.getFullYear(), date.getMonth() + 1, 0).getDate();
+    date.setDate(Math.min(originalDay, lastDay));
+    return formatDate(date);
+  }
+
   function escapeHtml(input) {
     return String(input == null ? "" : input)
       .replace(/&/g, "&amp;")
@@ -136,13 +127,10 @@
       .replace(/"/g, "&quot;");
   }
 
-  function escapeRegExp(input) {
-    return String(input).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  }
-
   function normalizePageId(value) {
     const pageId = String(value || "").replace(/^#/, "");
     if (pageId === "pages") return "goals";
+    if (pageId === "capture" || pageId === "todos" || pageId === "schedule" || pageId === "timeline") return "dashboard";
     return pageIds.has(pageId) ? pageId : "dashboard";
   }
 
@@ -161,8 +149,8 @@
       return;
     }
     state.activePage = nextPage;
-    state.editTodoId = "";
     renderApp();
+    window.scrollTo(0, 0);
   }
 
   function syncTopNavigation() {
@@ -182,8 +170,8 @@
   }
 
   function syncMessage() {
-    if (state.sync.pendingState) return "有新更新，输入结束后同步";
-    return state.sync.message || "协作同步已开启";
+    if (state.sync.pendingState) return "有新更新";
+    return state.sync.message || "";
   }
 
   async function request(path, options = {}) {
@@ -226,11 +214,11 @@
     }
   }
 
-  function applyRemoteState(nextState, message = "已同步对方的更新。") {
+  function applyRemoteState(nextState, message = "") {
     setData(nextState);
     state.sync.pendingState = null;
     state.sync.pendingDate = "";
-    state.sync.message = "协作同步已开启";
+    state.sync.message = "";
     state.status = message;
     renderApp();
   }
@@ -238,7 +226,7 @@
   function queueRemoteState(nextState) {
     state.sync.pendingState = nextState;
     state.sync.pendingDate = nextState.selectedDate || state.selectedDate;
-    state.sync.message = "有新更新，输入结束后同步";
+    state.sync.message = "有新更新";
   }
 
   function applyPendingRemoteState() {
@@ -251,17 +239,17 @@
     if (Number(state.sync.pendingState.revision || 0) <= Number(state.data?.revision || 0)) {
       state.sync.pendingState = null;
       state.sync.pendingDate = "";
-      state.sync.message = "协作同步已开启";
+      state.sync.message = "";
       return false;
     }
-    applyRemoteState(state.sync.pendingState, "已同步输入期间收到的更新。");
+    applyRemoteState(state.sync.pendingState, "");
     return true;
   }
 
   function startCollaborationSync() {
     if (state.sync.active) return;
     state.sync.active = true;
-    state.sync.message = "协作同步已开启";
+    state.sync.message = "";
     window.setTimeout(collaborationSyncLoop, 350);
   }
 
@@ -299,11 +287,11 @@
             applyRemoteState(result.state);
           }
         } else {
-          state.sync.message = "协作同步已开启";
+          state.sync.message = "";
         }
       } catch (error) {
         if (!state.authenticated) break;
-        state.sync.message = `协作同步暂时断开：${error.message}`;
+        state.sync.message = `连接暂时中断：${error.message}`;
         await delay(3000);
       }
 
@@ -352,21 +340,11 @@
       const result = await request(`/api/couple/state?date=${encodeURIComponent(state.selectedDate)}`);
       if (!result) return;
       setData(result.state);
-      if (!options.silent) {
-        state.status = "已同步最新数据。";
-      }
       renderApp();
     } catch (error) {
       state.status = `同步失败：${error.message}`;
       renderApp();
     }
-  }
-
-  async function selectDate(date) {
-    state.selectedDate = date;
-    state.editTodoId = "";
-    state.selectedScheduleId = "";
-    await refreshState();
   }
 
   async function login(event) {
@@ -390,7 +368,7 @@
       if (!result) return;
       setData(result.state);
       startCollaborationSync();
-      state.status = "登录成功，正在查看共享首页。";
+      state.status = "";
       renderApp();
     } catch (error) {
       state.login.error = error.message === "invalid login or password" ? "登录名或访问码不对。" : error.message;
@@ -422,7 +400,7 @@
   }
 
   function profileName(userId) {
-    return getProfile(userId)?.displayName || "未知";
+    return getProfile(userId)?.displayName || "成员";
   }
 
   function profileStyle(userId) {
@@ -430,21 +408,116 @@
     return profile ? `style="--person-color: ${escapeHtml(profile.color)}"` : "";
   }
 
+  function iconSvg(name) {
+    const icons = {
+      check: '<path d="M20 7 10 17l-4-4" />',
+      undo: '<path d="M8 8H4v4" /><path d="M4 12a8 8 0 1 0 2.2-5.4" />',
+      edit: '<path d="M5 19h4" /><path d="m13.5 5.5 5 5L8 21H3v-5Z" />',
+      trash: '<path d="M5 7h14" /><path d="M9 7V5h6v2" /><path d="M8 7.5V19h8V7.5" />',
+      sparkles: '<path d="M12 3.5l1.6 4.4L18 9.5l-4.4 1.6L12 15.5l-1.6-4.4L6 9.5l4.4-1.6Z" /><path d="M18 13l.9 2.6L21.5 16l-2.6.9L18 19.5l-.9-2.6L14.5 16l2.6-.4Z" />',
+      bookmark: '<path d="M7 5h10v14l-5-3-5 3Z" />',
+      plus: '<path d="M12 5v14" /><path d="M5 12h14" />',
+      x: '<path d="m6 6 12 12" /><path d="m18 6-12 12" />',
+      refresh: '<path d="M18.5 7.5A8 8 0 0 0 6.7 6.7" /><path d="M5.5 6.5v4h4" /><path d="M5.5 16.5A8 8 0 0 0 17.3 17.3" /><path d="M18.5 17.5v-4h-4" />',
+      logout: '<path d="M10 5H6a1 1 0 0 0-1 1v12a1 1 0 0 0 1 1h4" /><path d="M14 9l4 3-4 3" /><path d="M18 12H10" />',
+      chevronLeft: '<path d="m14 6-6 6 6 6" />',
+      chevronRight: '<path d="m10 6 6 6-6 6" />',
+      chevronDown: '<path d="m6 9 6 6 6-6" />',
+      chevronUp: '<path d="m18 15-6-6-6 6" />',
+      calendar: '<rect x="4" y="6" width="16" height="14" rx="3" /><path d="M8 4v4M16 4v4M4 10h16" />',
+      clock: '<circle cx="12" cy="12" r="8" /><path d="M12 8v4l3 2" />',
+      camera: '<path d="M5 8h4l2-2h2l2 2h4a2 2 0 0 1 2 2v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-7a2 2 0 0 1 2-2Z" /><circle cx="12" cy="13" r="3" />',
+      image: '<rect x="4" y="5" width="16" height="14" rx="3" /><path d="m7 15 3-3 3 3 2-2 2 2" />',
+      userGroup: '<path d="M8 11a3 3 0 1 0 0-6 3 3 0 0 0 0 6Z" /><path d="M16 12a2.5 2.5 0 1 0 0-5 2.5 2.5 0 0 0 0 5Z" /><path d="M4.5 18a3.5 3.5 0 0 1 7 0" /><path d="M12.5 18a3 3 0 0 1 6 0" />',
+      rows: '<path d="M5 7h14" /><path d="M5 12h14" /><path d="M5 17h14" />',
+      cards: '<rect x="5" y="5" width="6" height="6" rx="1.5" /><rect x="13" y="5" width="6" height="6" rx="1.5" /><rect x="5" y="13" width="6" height="6" rx="1.5" /><rect x="13" y="13" width="6" height="6" rx="1.5" />',
+      circle: '<circle cx="12" cy="12" r="7" />',
+      star: '<path d="m12 4 2.3 4.7 5.2.8-3.8 3.7.9 5.2-4.6-2.5-4.6 2.5.9-5.2-3.8-3.7 5.2-.8Z" />',
+    };
+    return `
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        ${icons[name] || icons.check}
+      </svg>
+    `;
+  }
+
+  function renderIconButton({ icon, label, className = "", type = "button", attrs = "", active = false }) {
+    return `
+      <button
+        class="icon-button${className ? ` ${className}` : ""}${active ? " is-active" : ""}"
+        type="${escapeHtml(type)}"
+        aria-label="${escapeHtml(label)}"
+        title="${escapeHtml(label)}"
+        ${attrs}
+      >
+        ${iconSvg(icon)}
+        <span class="sr-only">${escapeHtml(label)}</span>
+      </button>
+    `;
+  }
+
+  function avatarPresetColor(avatar, fallbackColor) {
+    const colors = {
+      "pink-cat": "#ff78ad",
+      "violet-cat": "#8b79ff",
+      "mint-cat": "#24b99a",
+      "yellow-cat": "#e0a72e",
+    };
+    return colors[avatar] || fallbackColor || "#ff78ad";
+  }
+
   function renderAvatar(profileOrUserId, className = "", options = {}) {
     const profile = typeof profileOrUserId === "string" ? getProfile(profileOrUserId) : profileOrUserId;
     if (!profile) {
       return `<span class="pixel-person-cat person-avatar ${escapeHtml(className)}" aria-hidden="true"></span>`;
     }
-    const style = `style="--person-color: ${escapeHtml(profile.color)}"`;
+    const style = `style="--person-color: ${escapeHtml(profile.color)}; --avatar-color: ${escapeHtml(avatarPresetColor(profile.avatar, profile.color))}"`;
+    const avatarClass = `${className} avatar-${String(profile.avatar || "pink-cat").replace(/[^\w-]/g, "")}`;
     const label = escapeHtml(profile.displayName || "成员头像");
     if (profile.avatarUrl && options.allowImage !== false) {
       return `
-        <span class="person-avatar has-image ${escapeHtml(className)}" ${style}>
+        <span class="person-avatar has-image ${escapeHtml(avatarClass)}" ${style}>
           <img src="${escapeHtml(profile.avatarUrl)}" alt="${label}" />
         </span>
       `;
     }
-    return `<span class="pixel-person-cat person-avatar ${escapeHtml(className)}" ${style} aria-hidden="true"></span>`;
+    return `<span class="pixel-person-cat person-avatar ${escapeHtml(avatarClass)}" ${style} aria-hidden="true"></span>`;
+  }
+
+  function scheduleCardAvatarIds(card) {
+    const participantIds = Array.isArray(card.participants) ? card.participants.filter(Boolean) : [];
+    const currentId = currentUser()?.id;
+    if (card.ownerId === "shared" || participantIds.length > 1) {
+      const ids = participantIds.slice(0, 2);
+      if (ids.length < 2 && profiles().length) {
+        profiles().forEach((profile) => {
+          if (ids.length < 2 && !ids.includes(profile.id)) ids.push(profile.id);
+        });
+      }
+      return ids.slice(0, 2);
+    }
+    return [card.ownerId || currentId].filter(Boolean).slice(0, 2);
+  }
+
+  function renderScheduleCardAvatars(card) {
+    const ids = scheduleCardAvatarIds(card);
+    return `
+      <div class="schedule-card-avatar-stack${ids.length > 1 ? " is-paired" : ""}" aria-hidden="true">
+        ${ids
+          .map((userId) => renderAvatar(userId, "schedule-card-avatar"))
+          .join("")}
+      </div>
+    `;
+  }
+
+  function renderCoupleCatPair(className = "") {
+    const pair = profiles().slice(0, 2);
+    if (!pair.length) return "";
+    return `
+      <div class="couple-cat-pair ${escapeHtml(className)}" aria-label="${escapeHtml(pair.map((profile) => profile.displayName).join("和"))}">
+        ${pair.map((profile) => renderAvatar(profile, "couple-pair-avatar")).join("")}
+      </div>
+    `;
   }
 
   function selectedDay() {
@@ -462,113 +535,20 @@
     return [ownerId || currentUser()?.id].filter(Boolean);
   }
 
-  function itemMatchesView(item) {
-    return Boolean(item);
-  }
-
   function isArchived(item) {
     return Boolean(item?.archivedAt);
-  }
-
-  function itemsForDate(date) {
-    return (state.data?.scheduleItems || []).filter((item) => item.date === date);
   }
 
   function capturesForSelectedDate() {
     return state.data?.captures || [];
   }
 
-  function todoItemsForMode() {
-    return (state.data?.todoItems || [])
-      .filter(itemMatchesView)
-      .filter((item) => {
-        if (state.todoMode === "future") return item.bucket === "future";
-        if (state.todoMode === "all") return true;
-        return item.bucket !== "future" && item.date === state.selectedDate;
-      });
-  }
-
   function futureItems() {
-    return (state.data?.todoItems || [])
-      .filter((item) => item.bucket === "future")
-      .filter(itemMatchesView);
-  }
-
-  function checkinItemsForView() {
-    return state.data?.checkinItems || [];
-  }
-
-  function deadlineItemsForView() {
-    return (state.data?.deadlineItems || []).filter(itemMatchesView);
-  }
-
-  function visibleItemsForCell(date, segment) {
-    return (state.data?.scheduleItems || [])
-      .filter((item) => item.date === date && item.segment === segment)
-      .filter(itemMatchesView);
-  }
-
-  function scheduleItemsForWeek() {
-    return (state.data?.scheduleItems || []).filter(itemMatchesView);
-  }
-
-  function scheduleItemsForDate(date) {
-    return scheduleItemsForWeek().filter((item) => item.date === date);
-  }
-
-  function selectedScheduleItem() {
-    const items = scheduleItemsForWeek();
-    return items.find((item) => item.id === state.selectedScheduleId) ||
-      scheduleItemsForDate(state.selectedDate)[0] ||
-      items[0] ||
-      null;
+    return (state.data?.todoItems || []).filter((item) => item?.bucket === "future");
   }
 
   function segmentLabel(segmentKey) {
     return state.data?.segments?.find((segment) => segment.key === segmentKey)?.label || "全天";
-  }
-
-  function getProfileDayThings(userId, date = state.selectedDate) {
-    const schedule = itemsForDate(date)
-      .filter((item) => item.participants.includes(userId))
-      .map((item) => ({
-        id: item.id,
-        kind: "日程",
-        title: item.title,
-        done: item.statusByUser?.[userId] === "done",
-      }));
-    const todos = (state.data?.todoItems || [])
-      .filter((item) => item.date === date && item.bucket !== "future" && item.participants.includes(userId))
-      .map((item) => ({
-        id: item.id,
-        kind: "Todo",
-        title: item.title,
-        done: item.statusByUser?.[userId] === "done",
-      }));
-    const checkins = (state.data?.checkinItems || [])
-      .filter((item) => item.participants.includes(userId))
-      .map((item) => ({
-        id: item.id,
-        kind: "打卡",
-        title: item.title,
-        done: item.statusByUser?.[userId] === "done",
-      }));
-    return [...todos, ...schedule, ...checkins];
-  }
-
-  function getCompletion(userId, date = state.selectedDate) {
-    const monthDay = state.data?.monthSummary?.days?.find((day) => day.id === date);
-    if (monthDay?.userStats?.[userId]) {
-      return monthDay.userStats[userId];
-    }
-
-    const items = getProfileDayThings(userId, date);
-    const done = items.filter((item) => item.done).length;
-    return {
-      done,
-      total: items.length,
-      percent: items.length ? Math.round((done / items.length) * 100) : 0,
-    };
   }
 
   function dailyPulseDoneCount(day = {}) {
@@ -594,8 +574,131 @@
     `;
   }
 
-  function ownerLabel(ownerId) {
-    return ownerId === "shared" ? "共同" : profileName(ownerId);
+  function ownerShortLabel(ownerId) {
+    if (ownerId === "shared") return "共同";
+    if (ownerId === currentUser()?.id) return "我";
+    return "对方";
+  }
+
+  function renderItemTypeOptions(selectedType = "thing") {
+    return scheduleItemTypeOptions
+      .map(
+        ([value, label]) => `
+          <option value="${escapeHtml(value)}"${selectedType === value ? " selected" : ""}>${escapeHtml(label)}</option>
+        `
+      )
+      .join("");
+  }
+
+  function normalizeCardItemType(itemType) {
+    return scheduleItemTypeLabels[itemType] ? itemType : "thing";
+  }
+
+  function allScheduleItemCards() {
+    return Array.isArray(state.data?.scheduleItemCards) ? state.data.scheduleItemCards : [];
+  }
+
+  function findScheduleItemCard(cardId) {
+    return allScheduleItemCards().find((card) => card.id === cardId);
+  }
+
+  function groupedScheduleCards(cards) {
+    return cards.reduce((groups, card) => {
+      if (!groups.has(card.date)) {
+        groups.set(card.date, []);
+      }
+      groups.get(card.date).push(card);
+      return groups;
+    }, new Map());
+  }
+
+  function cardTimeSummary(card) {
+    const datePart = card.bucket === "future" ? "未来" : card.date;
+    const timePart = card.timeLabel || (card.repeatRule ? card.repeatRule : "");
+    return [datePart, timePart].filter(Boolean).join(" · ");
+  }
+
+  function scheduleCardTitle(card) {
+    return String(card.title || card.sourceCaptureSummary || "记录").trim();
+  }
+
+  function cardPriorityRank(card) {
+    if (isArchived(card)) return 5;
+    if (card.completion?.allDone) return 4;
+    if (card.priority === "high") return 0;
+    if (card.sourceType === "insight") return 1;
+    if (card.priority === "low") return 3;
+    return 2;
+  }
+
+  function sortScheduleCardsForView(cards) {
+    const segmentWeight = { morning: 0, noon: 1, afternoon: 2, evening: 3, allDay: 4 };
+    return [...cards].sort((a, b) => {
+      const dateSort = String(a.date || "").localeCompare(String(b.date || ""));
+      if (dateSort !== 0) return dateSort;
+      const prioritySort = cardPriorityRank(a) - cardPriorityRank(b);
+      if (prioritySort !== 0) return prioritySort;
+      const segmentSort = (segmentWeight[a.segment] ?? 5) - (segmentWeight[b.segment] ?? 5);
+      if (segmentSort !== 0) return segmentSort;
+      return String(a.createdAt || "").localeCompare(String(b.createdAt || ""));
+    });
+  }
+
+  function filterScheduleCardsForView(cards) {
+    const selectedDate = state.selectedDate;
+    const filter = state.scheduleFilter || "open";
+    if (filter === "all") return cards;
+    if (filter === "date") return cards.filter((card) => card.date === selectedDate);
+    if (filter === "important") {
+      return cards.filter((card) => card.priority === "high" || card.sourceType === "insight");
+    }
+    return cards.filter((card) => !isArchived(card) && !card.completion?.allDone);
+  }
+
+  function cardSummaryLine(card) {
+    const time = cardTimeSummary(card);
+    const detail = String(card.detail || "")
+      .replace("这是第一条共享日程，可以直接改掉。", "")
+      .replace("这是第一张共享生活卡，可以直接改掉。", "")
+      .replace("这是第一张共享生活卡，可以直接改。", "")
+      .trim();
+    const source = String(card.sourceCaptureSummary || "").trim();
+    const pieces = time ? [time] : [];
+
+    if (detail && detail !== card.timeLabel && detail !== card.repeatRule) {
+      pieces.push(detail);
+    }
+    if (source) {
+      pieces.push(`${card.sourceType === "insight" ? "后台记住" : "来源"}：${source}`);
+    }
+    if (isArchived(card)) {
+      pieces.push("已归档");
+    }
+
+    return pieces.filter(Boolean).join(" · ");
+  }
+
+  function splitCardsForDay(cards) {
+    const visibleIds = new Set();
+    cards.forEach((card, index) => {
+      if (index < 3 || card.priority === "high" || card.sourceType === "insight") {
+        visibleIds.add(card.id);
+      }
+    });
+    return {
+      visible: cards.filter((card) => visibleIds.has(card.id)),
+      folded: cards.filter((card) => !visibleIds.has(card.id)),
+    };
+  }
+
+  function cardStatusText(card) {
+    if (card.statusLabel) return card.statusLabel;
+    const done = Number(card.completion?.done || 0);
+    const total = Number(card.completion?.total || card.participants?.length || 0);
+    if (!total) return "未开始";
+    if (done >= total) return "已完成";
+    if (done > 0) return `${done}/${total} 完成`;
+    return "待完成";
   }
 
   function thingClass(item) {
@@ -603,36 +706,152 @@
     return item.ownerId === "shared" || item.participants.length > 1 ? "双人" : "单人";
   }
 
-  function renderStatusControl(item, userId, type) {
-    const done = item.statusByUser?.[userId] === "done";
-    const profile = getProfile(userId);
-    const label = type === "schedule" || type === "checkin" ? profile?.initials || "?" : profileName(userId);
-    const dataAttrs =
-      type === "todo"
-        ? `data-toggle-todo="${escapeHtml(item.id)}" data-toggle-user="${escapeHtml(userId)}" data-toggle-date="${escapeHtml(item.date)}"`
-        : type === "schedule"
-          ? `data-toggle-item="${escapeHtml(item.id)}" data-toggle-user="${escapeHtml(userId)}" data-toggle-date="${escapeHtml(item.date)}"`
-          : `data-toggle-checkin="${escapeHtml(item.id)}" data-toggle-user="${escapeHtml(userId)}"`;
+  function renderScheduleItemCard(card, options = {}) {
+    const itemType = normalizeCardItemType(card.itemType);
+    const isDone = Boolean(card.completion?.allDone);
+    const isCurrentDone = Boolean(card.completion?.currentUserDone);
+    const archived = isArchived(card);
+    const readOnly = Boolean(card.readOnly || card.sourceType === "insight");
+    const ownerStyle = card.ownerId && card.ownerId !== "shared" ? profileStyle(card.ownerId) : "";
+    const title = scheduleCardTitle(card);
+    const summary = cardSummaryLine(card);
+    const compact = Boolean(options.compact || options.viewStyle === "line");
+    const compactClass = compact ? " is-compact" : "";
+    const lineClass = options.viewStyle === "line" ? " is-line" : "";
+    const status = cardStatusText(card);
 
-    if (userId !== currentUser()?.id) {
+    if (!readOnly && state.editCardId === card.id) {
+      return renderScheduleItemEditForm(card);
+    }
+
+    if (compact) {
       return `
-        <span class="person-status-badge${done ? " is-done" : ""}" ${profileStyle(userId)} title="${escapeHtml(profileName(userId))}">
-          ${escapeHtml(label)}${type === "todo" ? (done ? " 已完成" : " 待完成") : ""}
-        </span>
+        <article class="schedule-item-card is-compact${lineClass} is-${escapeHtml(itemType)} is-source-${escapeHtml(card.sourceType || "item")}${readOnly ? " is-readonly" : ""}${isDone ? " is-done" : ""}${archived ? " is-archived" : ""}" data-card-id="${escapeHtml(card.id)}">
+          ${renderScheduleCardAvatars(card)}
+          <div class="schedule-compact-copy">
+            <div class="schedule-card-meta-row">
+              <span class="schedule-card-type">${escapeHtml(scheduleItemTypeLabels[itemType])}</span>
+              <span class="schedule-card-owner" ${ownerStyle}>${escapeHtml(ownerShortLabel(card.ownerId))}</span>
+              <span class="schedule-card-status">${escapeHtml(status)}</span>
+            </div>
+            <strong>${escapeHtml(title)}</strong>
+            ${summary ? `<small>${escapeHtml(summary)}</small>` : ""}
+          </div>
+          ${
+            readOnly
+              ? ""
+              : `<div class="schedule-card-actions schedule-card-actions-line">
+                  ${renderIconButton({
+                    icon: isCurrentDone ? "undo" : "check",
+                    label: isCurrentDone ? "取消完成" : "完成",
+                    className: `is-primary${isCurrentDone ? " is-done" : ""}`,
+                    attrs: `data-card-toggle="${escapeHtml(card.id)}"`,
+                  })}
+                </div>`
+          }
+        </article>
       `;
     }
 
     return `
-      <button
-        class="person-toggle ${type === "todo" ? "todo-toggle" : ""}${done ? " is-done" : ""}"
-        ${profileStyle(userId)}
-        ${dataAttrs}
-        type="button"
-        title="${escapeHtml(profileName(userId))}${done ? "已完成" : "待完成"}"
-      >
-        ${type === "todo" ? `<span aria-hidden="true"></span>` : ""}
-        ${escapeHtml(label)}
-      </button>
+      <article class="schedule-item-card is-${escapeHtml(itemType)} is-source-${escapeHtml(card.sourceType || "item")}${readOnly ? " is-readonly" : ""}${isDone ? " is-done" : ""}${archived ? " is-archived" : ""}${compactClass}" data-card-id="${escapeHtml(card.id)}">
+        ${renderScheduleCardAvatars(card)}
+        <div class="schedule-card-main">
+          <div class="schedule-card-head">
+            <div class="schedule-card-head-copy">
+              <div class="schedule-card-meta-row">
+                <span class="schedule-card-type">${escapeHtml(scheduleItemTypeLabels[itemType])}</span>
+                <span class="schedule-card-owner" ${ownerStyle}>${escapeHtml(ownerShortLabel(card.ownerId))}</span>
+                <span class="schedule-card-status">${escapeHtml(status)}</span>
+              </div>
+              <div class="schedule-card-title-row">
+                <h3>${escapeHtml(title)}</h3>
+              </div>
+            </div>
+            ${
+              readOnly
+                ? ""
+                : `
+                  <div class="schedule-card-actions">
+                    ${renderIconButton({
+                      icon: isCurrentDone ? "undo" : "check",
+                      label: isCurrentDone ? "取消完成" : "完成",
+                      className: `is-primary${isCurrentDone ? " is-done" : ""}`,
+                      attrs: `data-card-toggle="${escapeHtml(card.id)}"`,
+                    })}
+                    ${renderIconButton({
+                      icon: "edit",
+                      label: "编辑",
+                      attrs: `data-card-edit="${escapeHtml(card.id)}"`,
+                    })}
+                  </div>
+                `
+            }
+          </div>
+          ${summary ? `<p class="schedule-card-summary">${escapeHtml(summary)}</p>` : ""}
+        </div>
+      </article>
+    `;
+  }
+
+  function renderScheduleItemEditForm(card) {
+    const itemType = normalizeCardItemType(card.itemType);
+    const canDate = card.sourceType !== "checkin";
+    const detailLabel = card.sourceType === "checkin" ? "时段" : "细节";
+    return `
+      <article class="schedule-item-card is-editing is-${escapeHtml(itemType)}" data-card-id="${escapeHtml(card.id)}">
+        <form class="schedule-card-edit-form" data-card-edit-form>
+          <input type="hidden" name="cardId" value="${escapeHtml(card.id)}" />
+          <div class="schedule-card-edit-head">
+            ${renderScheduleCardAvatars(card)}
+            <div class="schedule-card-edit-copy">
+              <span class="schedule-card-type">${escapeHtml(scheduleItemTypeLabels[itemType])}</span>
+              <input name="title" type="text" value="${escapeHtml(card.title || "")}" placeholder="标题" />
+            </div>
+          </div>
+          <textarea name="detail" rows="2" placeholder="${escapeHtml(detailLabel)}">${escapeHtml(card.detail || card.slot || "")}</textarea>
+          <div class="schedule-card-edit-grid">
+            <select name="itemType">${renderItemTypeOptions(itemType)}</select>
+            ${canDate ? `<input name="date" type="date" value="${escapeHtml(card.date)}" />` : `<input name="date" type="hidden" value="${escapeHtml(card.date)}" />`}
+            ${
+              card.sourceType === "schedule"
+                ? `
+                  <select name="segment">
+                    ${(state.data?.segments || [])
+                      .map((segment) => `<option value="${escapeHtml(segment.key)}"${card.segment === segment.key ? " selected" : ""}>${escapeHtml(segment.label)}</option>`)
+                      .join("")}
+                  </select>
+                `
+                : `<input name="segment" type="hidden" value="${escapeHtml(card.segment || "allDay")}" />`
+            }
+            ${
+              card.sourceType !== "checkin"
+                ? `<select name="ownerId">${renderOwnerOptions(card.ownerId)}</select>`
+                : `<input name="ownerId" type="hidden" value="shared" />`
+            }
+            <input name="repeatRule" type="text" value="${escapeHtml(card.repeatRule || "")}" placeholder="周期，可留空" />
+          </div>
+          <div class="schedule-card-inline-actions">
+            ${renderIconButton({
+              icon: "check",
+              label: "保存",
+              className: "is-primary",
+              type: "submit",
+            })}
+            ${renderIconButton({
+              icon: "x",
+              label: "取消",
+              attrs: `data-card-cancel-edit`,
+            })}
+            ${renderIconButton({
+              icon: "trash",
+              label: "删除",
+              className: "is-danger",
+              attrs: `data-card-delete="${escapeHtml(card.id)}"`,
+            })}
+          </div>
+        </form>
+      </article>
     `;
   }
 
@@ -649,6 +868,16 @@
       return `${selected.getFullYear()}-${String(monthDay[1]).padStart(2, "0")}-${String(monthDay[2]).padStart(2, "0")}`;
     }
 
+    const nextWeekDay = raw.match(/下周([一二三四五六日天])/);
+    if (nextWeekDay) {
+      const selected = parseDate(fallbackDate || state.selectedDate) || new Date();
+      const target = nextWeekDay[1] === "日" || nextWeekDay[1] === "天" ? 0 : weekdayIndex[nextWeekDay[1]] + 1;
+      const offset = ((target - selected.getDay() + 7) % 7) + 7;
+      selected.setDate(selected.getDate() + offset);
+      return formatDate(selected);
+    }
+    if (/下周/.test(raw)) return addDays(fallbackDate || state.selectedDate, 7);
+
     const weekDay = raw.match(/周([一二三四五六日天])/);
     if (weekDay && state.data?.weekDays?.length) {
       return state.data.weekDays[weekdayIndex[weekDay[1]]]?.id || state.selectedDate;
@@ -663,6 +892,77 @@
       state.activeSegment;
   }
 
+  function inferItemTypeFromText(raw) {
+    const text = String(raw || "");
+    if (/买|购|下单|采购|补货/.test(text)) return "purchase";
+    if (/提醒|记得|别忘|ddl|截止|deadline|纪念日|生日|周年|答辩|考试|面试/i.test(text)) return "reminder";
+    if (/习惯|每天|每日|每周|周期|固定/.test(text)) return "habit";
+    if (/打卡|签到|记录/.test(text)) return "checkin";
+    if (/约|见|聚|电影|吃饭|咖啡|一起|日料|散步|看日落|海边/.test(text)) return "date";
+    return "thing";
+  }
+
+  function inferCaptureDecision(raw) {
+    const text = String(raw || "");
+    if (/偏好|边界|喜欢|不喜欢|讨厌|雷区|好闻|安静|太吵|重要的是|长期|目标|以后要|未来想|记住|答应|承诺|说好|帮你|我来|下次带你|谢谢|感谢|吵架|争执|生气|委屈/.test(text)) {
+      return "memory";
+    }
+    if (/今天|明天|周[一二三四五六日天]|上午|中午|下午|晚上|今晚|\d{4}-\d{2}-\d{2}|\d{1,2}[./-]\d{1,2}|提醒|买|约|打卡|习惯|答辩|考试|面试|ddl|截止/i.test(text)) {
+      return "schedule";
+    }
+    return "capture";
+  }
+
+  function captureConfirmationFor(capture, payload = {}) {
+    const text = capture?.text || payload.text || "";
+    const decision = inferCaptureDecision(text);
+    const itemType = inferItemTypeFromText(text);
+    const date = resolveQuickDate(text, state.selectedDate);
+    const segment = resolveQuickSegment(text, "allDay");
+    const ownerId = payload.ownerId || state.quickOwner || "shared";
+    const title = captureTitle(cleanQuickTitle(text) || text);
+    const detail = captureDetail(text, title);
+    return {
+      captureId: capture?.id || "",
+      text,
+      decision,
+      itemType,
+      date,
+      segment,
+      ownerId,
+      title,
+      detail,
+      repeatRule: itemType === "habit" ? "daily" : "",
+      relatedItems: [],
+    };
+  }
+
+  async function analyzeRawCapture(capture, payload = {}) {
+    const result = await request("/api/couple/capture/analyze", {
+      method: "POST",
+      body: {
+        captureId: capture?.id || "",
+        text: payload.text || capture?.text || "",
+        date: payload.date || state.selectedDate,
+        ownerId: payload.ownerId || state.quickOwner || "shared",
+      },
+    });
+    return result?.confirmation || captureConfirmationFor(capture, payload);
+  }
+
+  function confirmationDecisionLabel(decision) {
+    if (decision === "memory") return "长期记忆";
+    if (decision === "capture") return "仅记录";
+    return "生活卡";
+  }
+
+  function confirmationTimeLabel(confirmation) {
+    if (!confirmation) return "";
+    if (confirmation.decision === "memory") return "记忆线索";
+    if (confirmation.decision !== "schedule") return "只保存记录";
+    return [confirmation.date, segmentLabel(confirmation.segment)].filter(Boolean).join(" · ");
+  }
+
   function cleanQuickTitle(raw) {
     return raw
       .replace(/\d{4}-\d{2}-\d{2}/g, "")
@@ -675,147 +975,6 @@
       .trim();
   }
 
-  function safeUrl(url) {
-    const value = String(url || "").trim();
-    if (/^\/__content\//.test(value) || /^https?:\/\//i.test(value)) {
-      return value;
-    }
-    return "";
-  }
-
-  function renderInlineMarkdown(input) {
-    let html = escapeHtml(input);
-    html = html.replace(/`([^`]+)`/g, "<code>$1</code>");
-    html = html.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
-    html = html.replace(/\*([^*]+)\*/g, "<em>$1</em>");
-    html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (match, label, url) => {
-      const href = safeUrl(url);
-      if (!href) return label;
-      return `<a href="${escapeHtml(href)}" target="_blank" rel="noreferrer">${label}</a>`;
-    });
-    return html;
-  }
-
-  function renderMarkdown(markdown) {
-    const lines = String(markdown || "").split("\n");
-    const html = [];
-    let inList = false;
-
-    function closeList() {
-      if (inList) {
-        html.push("</ul>");
-        inList = false;
-      }
-    }
-
-    lines.forEach((line) => {
-      const raw = line.trim();
-      if (!raw) {
-        closeList();
-        return;
-      }
-
-      const imageMatch = raw.match(/^!\[([^\]]*)\]\(([^)]+)\)$/);
-      if (imageMatch) {
-        closeList();
-        const src = safeUrl(imageMatch[2]);
-        if (src) {
-          html.push(`
-            <figure>
-              <img src="${escapeHtml(src)}" alt="${escapeHtml(imageMatch[1] || "diary image")}" />
-              ${imageMatch[1] ? `<figcaption>${escapeHtml(imageMatch[1])}</figcaption>` : ""}
-            </figure>
-          `);
-        }
-        return;
-      }
-
-      if (raw.startsWith("### ")) {
-        closeList();
-        html.push(`<h4>${renderInlineMarkdown(raw.slice(4))}</h4>`);
-        return;
-      }
-      if (raw.startsWith("## ")) {
-        closeList();
-        html.push(`<h3>${renderInlineMarkdown(raw.slice(3))}</h3>`);
-        return;
-      }
-      if (raw.startsWith("# ")) {
-        closeList();
-        html.push(`<h2>${renderInlineMarkdown(raw.slice(2))}</h2>`);
-        return;
-      }
-      if (/^[-*]\s+/.test(raw)) {
-        if (!inList) {
-          html.push("<ul>");
-          inList = true;
-        }
-        html.push(`<li>${renderInlineMarkdown(raw.replace(/^[-*]\s+/, ""))}</li>`);
-        return;
-      }
-
-      closeList();
-      html.push(`<p>${renderInlineMarkdown(raw)}</p>`);
-    });
-
-    closeList();
-    return html.length ? html.join("") : `<p class="markdown-empty">还没有写正文。</p>`;
-  }
-
-  async function addScheduleFromForm(event) {
-    event.preventDefault();
-    const formData = new FormData(event.currentTarget);
-    const raw = String(formData.get("title") || "").trim();
-    if (!raw) return;
-
-    const ownerId = String(formData.get("ownerId") || state.quickOwner || "shared");
-    const fallbackDate = String(formData.get("date") || state.selectedDate);
-    const fallbackSegment = String(formData.get("segment") || state.activeSegment);
-    const date = resolveQuickDate(raw, fallbackDate);
-    const segment = resolveQuickSegment(raw, fallbackSegment);
-    const title = cleanQuickTitle(raw) || raw;
-    const detail = String(formData.get("detail") || "").trim();
-
-    state.loading = true;
-    state.status = "正在写入共享日程 ...";
-    renderApp();
-
-    try {
-      const result = await request("/api/couple/schedule/upsert", {
-        method: "POST",
-        body: {
-          date,
-          segment,
-          title,
-          detail,
-          ownerId,
-          participants: ownerToParticipants(ownerId),
-        },
-      });
-      if (!result) return;
-      setData(result.state);
-      state.selectedDate = date;
-      state.activeSegment = segment;
-      state.quickOwner = ownerId;
-      state.selectedScheduleId = result.item?.id || "";
-      state.status = `已加入日程：${title}`;
-      state.loading = false;
-      renderApp();
-    } catch (error) {
-      state.loading = false;
-      state.status = `添加失败：${error.message}`;
-      renderApp();
-    }
-  }
-
-  async function addScheduleFromCell(date, segment) {
-    state.selectedDate = date;
-    state.activeSegment = segment;
-    state.status = "已选中这个日程格，右侧可以直接快速添加。";
-    renderApp();
-    window.setTimeout(() => document.querySelector("#quick-title")?.focus(), 0);
-  }
-
   async function toggleScheduleItem(itemId, targetUserId, date) {
     const item = state.data?.scheduleItems?.find((entry) => entry.id === itemId);
     if (item) {
@@ -824,7 +983,7 @@
         ...(item.statusByUser || {}),
         [targetUserId]: current === "done" ? "todo" : "done",
       };
-      state.status = "日程状态已更新。";
+      state.status = "生活卡状态已更新。";
       renderApp();
     }
 
@@ -839,7 +998,7 @@
       });
       if (!result) return;
       setData(result.state);
-      state.status = "日程状态已同步。";
+      state.status = "生活卡状态已同步。";
       renderApp();
     } catch (error) {
       state.status = `更新失败：${error.message}`;
@@ -857,24 +1016,7 @@
     });
     if (!result) return;
     setData(result.state);
-    if (state.selectedScheduleId === itemId) {
-      state.selectedScheduleId = "";
-    }
-    state.status = "已删除这条日程。";
-    renderApp();
-  }
-
-  async function archiveScheduleItem(itemId, date) {
-    const result = await request("/api/couple/schedule/archive", {
-      method: "POST",
-      body: {
-        id: itemId,
-        date,
-      },
-    });
-    if (!result) return;
-    setData(result.state);
-    state.status = "日程已归档，仍会用弱色保留在列表里。";
+    state.status = "已删除这张生活卡。";
     renderApp();
   }
 
@@ -892,12 +1034,59 @@
       .split("\n")
       .map((line) => line.trim())
       .find(Boolean)
-      ?.slice(0, 120) || "随手记";
+      ?.slice(0, 120) || "记录";
   }
 
   function captureDetail(text, title) {
     const value = String(text || "").trim();
     return value === title ? "" : value;
+  }
+
+  async function persistCaptureRecord(confirmation, statusText, modeOverride = "") {
+    if (confirmation.captureId) {
+      state.captureConfirmation = null;
+      state.status = statusText;
+      renderApp();
+      return true;
+    }
+
+    const result = await request("/api/couple/capture", {
+      method: "POST",
+      body: {
+        date: confirmation.captureDate || state.selectedDate,
+        text: confirmation.text || "",
+        mode: modeOverride || (confirmation.decision === "memory" ? "analysis" : "save"),
+        visibility: confirmation.visibility || "shared",
+        location: confirmation.location || "",
+        assets: confirmation.assets || [],
+      },
+    });
+    if (!result) return false;
+    setData(result.state);
+    state.captureConfirmation = null;
+    state.status = statusText;
+    renderApp();
+    return true;
+  }
+
+  async function saveRawCapture(payload) {
+    const result = await request("/api/couple/capture", {
+      method: "POST",
+      body: {
+        date: payload.date || state.selectedDate,
+        text: payload.text || "",
+        mode: "save",
+        visibility: payload.visibility || "shared",
+        location: payload.location || "",
+        assets: payload.assets || [],
+        rawKind: "raw",
+        rawFormat: payload.assets?.length ? "markdown+photo" : "markdown",
+        analysisIntent: payload.mode === "analysis" ? "agent" : "",
+      },
+    });
+    if (!result) return null;
+    setData(result.state);
+    return result.capture || null;
   }
 
   async function saveCapture(event) {
@@ -907,19 +1096,19 @@
     if (!text) return;
 
     const submitMode = event.submitter?.dataset?.captureSubmitMode || event.submitter?.value || "";
-    const modeSource = String(submitMode || formData.get("mode") || state.captureMode || "save");
+    const modeSource = String(submitMode || formData.get("mode") || "save");
     const mode = captureSubmitActions.has(modeSource) ? modeSource : "save";
     const ownerId = String(formData.get("ownerId") || "shared");
     const visibility = formData.get("visibility") || "shared";
     const location = String(formData.get("location") || "").trim();
     const photo = event.currentTarget.querySelector('input[name="photo"]')?.files?.[0] || null;
-    const captureDate = mode === "todo" ? resolveQuickDate(text, state.selectedDate) : state.selectedDate;
+    const captureDate = state.selectedDate;
 
     try {
       let assets = [];
       if (photo) {
         if (photo.size > 5 * 1024 * 1024) {
-          state.status = "随手记图片不能超过 5MB。";
+          state.status = "图片不能超过 5MB。";
           renderApp();
           return;
         }
@@ -930,57 +1119,113 @@
           },
         ];
       }
-      const captureResult = await request("/api/couple/capture", {
-        method: "POST",
-        body: {
+
+      if (mode === "analysis") {
+        const rawCapture = await saveRawCapture({
           date: captureDate,
           text,
-          mode,
+          mode: "analysis",
           visibility,
           location,
           assets,
-        },
-      });
-      if (!captureResult) return;
-      setData(captureResult.state);
-
-      if (mode === "todo") {
-        const cleanedTitle = cleanQuickTitle(text);
-        const title = captureTitle(cleanedTitle || text);
-        const result = await request("/api/couple/todos/upsert", {
-          method: "POST",
-          body: {
-            date: captureDate,
-            title,
-            detail: captureDetail(text, title),
-            bucket: "today",
-            priority: "normal",
-            ownerId,
-            participants: ownerToParticipants(ownerId),
-          },
         });
-        if (!result) return;
-        setData(result.state);
-        state.selectedDate = captureDate;
-        state.todoMode = "today";
-        state.activePage = "todos";
-        state.status = "随手记已保存，并生成 Todo。";
-        if (window.location.hash !== "#todos") {
-          window.location.hash = "#todos";
-        }
+        if (!rawCapture) return;
+        const confirmation = await analyzeRawCapture(rawCapture, {
+          date: captureDate,
+          text,
+          ownerId,
+        });
+        state.captureConfirmation = {
+          ...confirmation,
+          captureDate: state.selectedDate,
+          visibility,
+          location,
+          assets,
+          rawSaved: true,
+        };
+        state.status = "";
         renderApp();
         return;
       }
-      state.status = mode === "analysis" ? "随手记已提交给 Agent。" : "随手记已记下。";
+
+      const captureResult = await saveRawCapture({
+        date: captureDate,
+        text,
+        mode,
+        visibility,
+        location,
+        assets,
+      });
+      if (!captureResult) return;
+      state.captureConfirmation = null;
+      state.status = "";
       renderApp();
     } catch (error) {
-      state.status = `随手记保存失败：${error.message}`;
+      state.status = `保存失败：${error.message}`;
+      renderApp();
+    }
+  }
+
+  async function submitCaptureConfirmation(event) {
+    event.preventDefault();
+    if (!state.captureConfirmation) return;
+    const formData = new FormData(event.currentTarget);
+    const confirmation = {
+      ...state.captureConfirmation,
+      title: String(formData.get("title") || state.captureConfirmation.title || "").trim(),
+      itemType: normalizeCardItemType(String(formData.get("itemType") || state.captureConfirmation.itemType || "thing")),
+      date: String(formData.get("date") || state.captureConfirmation.date || state.selectedDate),
+      segment: String(formData.get("segment") || state.captureConfirmation.segment || "allDay"),
+      ownerId: String(formData.get("ownerId") || state.captureConfirmation.ownerId || "shared"),
+      repeatRule: String(formData.get("repeatRule") || state.captureConfirmation.repeatRule || ""),
+    };
+
+    if (confirmation.decision !== "schedule") {
+      try {
+        await persistCaptureRecord(
+          confirmation,
+          confirmation.decision === "memory" ? "已保存为长期记忆线索。" : "已仅保存为记录。"
+        );
+      } catch (error) {
+        state.status = `保存失败：${error.message}`;
+        renderApp();
+      }
+      return;
+    }
+
+    if (!confirmation.title) return;
+    try {
+      const result = await request("/api/couple/life-cards/from-confirmation", {
+        method: "POST",
+        body: {
+          ...confirmation,
+          sourceCaptureId: confirmation.captureId || confirmation.sourceCaptureId || "",
+        },
+      });
+      if (!result) return;
+      setData(result.state);
+      state.captureConfirmation = null;
+      state.selectedDate = confirmation.date;
+      state.status = "";
+      renderApp();
+    } catch (error) {
+      state.status = `确认失败：${error.message}`;
+      renderApp();
+    }
+  }
+
+  async function dismissCaptureConfirmation() {
+    if (!state.captureConfirmation) return;
+    try {
+      await persistCaptureRecord(state.captureConfirmation, "已仅保存为记录。", "save");
+    } catch (error) {
+      state.status = `保存失败：${error.message}`;
       renderApp();
     }
   }
 
   async function refreshDailySummary() {
-    state.status = "正在刷新自动日总结 ...";
+    state.status = "正在刷新 AI 回忆页 ...";
     renderApp();
     try {
       const result = await request("/api/couple/daily-summary/refresh", {
@@ -991,10 +1236,10 @@
       });
       if (!result) return;
       setData(result.state);
-      state.status = "自动日总结已刷新。";
+      state.status = "AI 回忆页已刷新。";
       renderApp();
     } catch (error) {
-      state.status = `日总结刷新失败：${error.message}`;
+      state.status = `回忆页刷新失败：${error.message}`;
       renderApp();
     }
   }
@@ -1077,35 +1322,206 @@
     }
   }
 
-  async function saveTodo(event) {
+  function sourceTypeForItemType(itemType) {
+    if (itemType === "checkin" || itemType === "habit") return "checkin";
+    if (itemType === "purchase" || itemType === "thing") return "todo";
+    return "schedule";
+  }
+
+  function baseCardPayload(card, overrides = {}) {
+    const ownerId = overrides.ownerId ?? card.ownerId ?? "shared";
+    return {
+      id: card.sourceId,
+      date: overrides.date ?? card.date ?? state.selectedDate,
+      title: overrides.title ?? card.title ?? "",
+      detail: overrides.detail ?? card.detail ?? "",
+      itemType: overrides.itemType ?? card.itemType ?? "thing",
+      sourceCaptureId: overrides.sourceCaptureId ?? card.sourceCaptureId ?? "",
+      repeatRule: overrides.repeatRule ?? card.repeatRule ?? "",
+      ownerId,
+      participants: ownerToParticipants(ownerId),
+    };
+  }
+
+  async function upsertScheduleCard(card, overrides = {}) {
+    if (card.readOnly || card.sourceType === "insight") {
+      state.status = "后台建议会随数据自动更新。";
+      renderApp();
+      return null;
+    }
+    const payload = baseCardPayload(card, overrides);
+    let endpoint = "/api/couple/schedule/upsert";
+    let body = {
+      ...payload,
+      segment: overrides.segment ?? card.segment ?? "allDay",
+    };
+
+    if (card.sourceType === "todo") {
+      endpoint = "/api/couple/todos/upsert";
+      body = {
+        ...payload,
+        bucket: overrides.bucket ?? card.bucket ?? "today",
+        priority: overrides.priority ?? card.priority ?? "normal",
+      };
+    } else if (card.sourceType === "checkin") {
+      endpoint = "/api/couple/checkins/upsert";
+      body = {
+        ...payload,
+        slot: overrides.slot ?? overrides.detail ?? card.slot ?? card.detail ?? "",
+        ownerId: "shared",
+        participants: profiles().map((profile) => profile.id),
+      };
+    } else if (card.sourceType === "deadline") {
+      endpoint = "/api/couple/deadlines/upsert";
+      body = payload;
+    }
+
+    const result = await request(endpoint, {
+      method: "POST",
+      body,
+    });
+    if (!result) return null;
+    setData(result.state);
+    return result;
+  }
+
+  async function createScheduleCard(payload) {
+    const itemType = normalizeCardItemType(payload.itemType);
+    const sourceType = sourceTypeForItemType(itemType);
+    let endpoint = "/api/couple/schedule/upsert";
+    let body = {
+      date: payload.date || state.selectedDate,
+      title: payload.title,
+      detail: payload.detail || "",
+      itemType,
+      segment: payload.segment || "allDay",
+      ownerId: payload.ownerId || "shared",
+      participants: ownerToParticipants(payload.ownerId || "shared"),
+      sourceCaptureId: payload.sourceCaptureId || "",
+      repeatRule: payload.repeatRule || "",
+    };
+
+    if (sourceType === "todo") {
+      endpoint = "/api/couple/todos/upsert";
+      body = {
+        ...body,
+        bucket: payload.bucket || "today",
+        priority: payload.priority || "normal",
+      };
+    } else if (sourceType === "checkin") {
+      endpoint = "/api/couple/checkins/upsert";
+      body = {
+        date: payload.date || state.selectedDate,
+        title: payload.title,
+        slot: payload.detail || payload.slot || "",
+        itemType,
+        sourceCaptureId: payload.sourceCaptureId || "",
+        repeatRule: payload.repeatRule || (itemType === "habit" ? "daily" : ""),
+        ownerId: "shared",
+        participants: profiles().map((profile) => profile.id),
+      };
+    }
+
+    const result = await request(endpoint, {
+      method: "POST",
+      body,
+    });
+    if (!result) return null;
+    setData(result.state);
+    return result;
+  }
+
+  async function saveScheduleCardEdit(event) {
     event.preventDefault();
     const formData = new FormData(event.currentTarget);
+    const card = findScheduleItemCard(String(formData.get("cardId") || ""));
+    if (!card) return;
     const title = String(formData.get("title") || "").trim();
     if (!title) return;
 
-    const bucket = String(formData.get("bucket") || "today");
-    const ownerId = String(formData.get("ownerId") || "shared");
-    const date = String(formData.get("date") || state.selectedDate);
-    const id = String(formData.get("id") || "");
-    const result = await request("/api/couple/todos/upsert", {
-      method: "POST",
-      body: {
-        id: id || undefined,
-        date,
+    try {
+      await upsertScheduleCard(card, {
         title,
         detail: formData.get("detail") || "",
-        bucket,
-        priority: formData.get("priority") || "normal",
-        ownerId,
-        participants: ownerToParticipants(ownerId),
-      },
-    });
-    if (!result) return;
-    setData(result.state);
-    state.todoMode = bucket === "future" ? "future" : "today";
-    state.editTodoId = "";
-    state.status = id ? "Todo 已更新。" : bucket === "future" ? "已加入未来想做。" : "Todo 已保存。";
-    renderApp();
+        slot: formData.get("detail") || "",
+        itemType: formData.get("itemType") || card.itemType,
+        date: formData.get("date") || card.date,
+        segment: formData.get("segment") || card.segment,
+        ownerId: formData.get("ownerId") || card.ownerId,
+        repeatRule: formData.get("repeatRule") || "",
+      });
+      state.editCardId = "";
+      state.status = "生活卡已更新。";
+      renderApp();
+    } catch (error) {
+      state.status = `生活卡保存失败：${error.message}`;
+      renderApp();
+    }
+  }
+
+  async function toggleScheduleCard(cardId) {
+    const card = findScheduleItemCard(cardId);
+    const userId = currentUser()?.id;
+    if (!card || !userId) return;
+    if (card.readOnly || card.sourceType === "insight") {
+      state.status = "后台建议不需要手动完成。";
+      renderApp();
+      return;
+    }
+
+    if (card.sourceType === "schedule") {
+      await toggleScheduleItem(card.sourceId, userId, card.date);
+      return;
+    }
+    if (card.sourceType === "todo") {
+      await toggleTodo(card.sourceId, userId, card.date);
+      return;
+    }
+    if (card.sourceType === "checkin") {
+      await toggleCheckin(card.sourceId, userId);
+      return;
+    }
+
+    try {
+      const result = await request("/api/couple/deadlines/toggle", {
+        method: "POST",
+        body: {
+          id: card.sourceId,
+          targetUserId: userId,
+          date: card.date,
+        },
+      });
+      if (!result) return;
+      setData(result.state);
+      state.status = "提醒状态已同步。";
+      renderApp();
+    } catch (error) {
+      state.status = `提醒更新失败：${error.message}`;
+      await refreshState();
+    }
+  }
+
+  async function deleteScheduleCard(cardId) {
+    const card = findScheduleItemCard(cardId);
+    if (!card) return;
+    if (card.readOnly || card.sourceType === "insight") {
+      state.status = "后台建议会随记录和生活卡自动变化。";
+      renderApp();
+      return;
+    }
+    if (card.sourceType === "schedule") {
+      await deleteScheduleItem(card.sourceId, card.date);
+      return;
+    }
+    if (card.sourceType === "todo") {
+      await deleteTodo(card.sourceId, card.date);
+      return;
+    }
+    if (card.sourceType === "checkin") {
+      await deleteCheckin(card.sourceId);
+      return;
+    }
+    await deleteDeadline(card.sourceId, card.date);
   }
 
   async function toggleTodo(itemId, targetUserId, date) {
@@ -1116,7 +1532,7 @@
         ...(item.statusByUser || {}),
         [targetUserId]: current === "done" ? "todo" : "done",
       };
-      state.status = "Todo 状态已更新。";
+      state.status = "生活卡状态已更新。";
       renderApp();
     }
 
@@ -1131,30 +1547,16 @@
       });
       if (!result) return;
       setData(result.state);
-      state.status = "Todo 状态已同步。";
+      state.status = "生活卡状态已同步。";
       renderApp();
     } catch (error) {
-      state.status = `Todo 更新失败：${error.message}`;
+      state.status = `生活卡更新失败：${error.message}`;
       await refreshState();
     }
   }
 
-  async function deleteTodo(itemId) {
+  async function deleteTodo(itemId, date = state.selectedDate) {
     const result = await request("/api/couple/todos/delete", {
-      method: "POST",
-      body: {
-        id: itemId,
-        date: state.selectedDate,
-      },
-    });
-    if (!result) return;
-    setData(result.state);
-    state.status = "Todo 已删除。";
-    renderApp();
-  }
-
-  async function archiveTodo(itemId, date = state.selectedDate) {
-    const result = await request("/api/couple/todos/archive", {
       method: "POST",
       body: {
         id: itemId,
@@ -1163,29 +1565,7 @@
     });
     if (!result) return;
     setData(result.state);
-    state.status = "Todo 已归档，仍会用弱色保留在列表里。";
-    renderApp();
-  }
-
-  async function saveCheckin(event) {
-    event.preventDefault();
-    const formData = new FormData(event.currentTarget);
-    const title = String(formData.get("title") || "").trim();
-    if (!title) return;
-
-    const result = await request("/api/couple/checkins/upsert", {
-      method: "POST",
-      body: {
-        date: state.selectedDate,
-        title,
-        slot: formData.get("slot") || "",
-        ownerId: "shared",
-        participants: profiles().map((profile) => profile.id),
-      },
-    });
-    if (!result) return;
-    setData(result.state);
-    state.status = "打卡项已保存。";
+    state.status = "生活卡已删除。";
     renderApp();
   }
 
@@ -1234,36 +1614,12 @@
     renderApp();
   }
 
-  async function saveDeadline(event) {
-    event.preventDefault();
-    const formData = new FormData(event.currentTarget);
-    const title = String(formData.get("title") || "").trim();
-    const date = String(formData.get("date") || "").trim();
-    if (!title || !date) return;
-
-    const ownerId = String(formData.get("ownerId") || "shared");
-    const result = await request("/api/couple/deadlines/upsert", {
-      method: "POST",
-      body: {
-        date,
-        title,
-        detail: formData.get("detail") || "",
-        ownerId,
-        participants: ownerToParticipants(ownerId),
-      },
-    });
-    if (!result) return;
-    setData(result.state);
-    state.status = "重要日期已保存。";
-    renderApp();
-  }
-
-  async function deleteDeadline(itemId) {
+  async function deleteDeadline(itemId, date = state.selectedDate) {
     const result = await request("/api/couple/deadlines/delete", {
       method: "POST",
       body: {
         id: itemId,
-        date: state.selectedDate,
+        date,
       },
     });
     if (!result) return;
@@ -1273,7 +1629,7 @@
   }
 
   function renderLogin() {
-    const bootstrap = state.bootstrap || { profiles: [], space: { name: "我们的共同日程" } };
+    const bootstrap = state.bootstrap || { profiles: [], space: { name: "我们的共同首页" } };
     const selectedLogin = state.login.login || bootstrap.profiles?.[0]?.login || "";
 
     root.innerHTML = `
@@ -1281,14 +1637,7 @@
         <div class="couple-login-copy">
           <span class="pixel-cat-mark pixel-cat-mark-large" aria-hidden="true"></span>
           <p class="couple-kicker">Pink Cat Workspace</p>
-          <h1>${escapeHtml(bootstrap.space?.name || "我们的共同日程")}</h1>
-          <p>两个人共用的电脑端首页：随手记是主入口，Todo、日程、打卡和自动日总结都从这里沉淀。</p>
-          <div class="couple-api-note">
-            <strong>Backend API</strong>
-            <span>/api/couple/state</span>
-            <span>/api/couple/todos/upsert</span>
-            <span>/api/couple/daily-summary/refresh</span>
-          </div>
+          <h1>${escapeHtml(bootstrap.space?.name || "我们的共同首页")}</h1>
         </div>
         <form class="couple-login-form" id="couple-login-form">
           <div class="login-profile-grid">
@@ -1315,8 +1664,12 @@
             <input name="password" type="password" autocomplete="current-password" placeholder="输入你的访问码" autofocus />
           </label>
           ${state.login.error ? `<p class="couple-form-error">${escapeHtml(state.login.error)}</p>` : ""}
-          <button class="pixel-primary-button" type="submit">进入共享首页</button>
-          <p class="couple-form-help">本地默认账号是 you / partner；部署前用环境变量替换访问码。</p>
+          ${renderIconButton({
+            icon: "chevronRight",
+            label: "进入首页",
+            className: "is-primary",
+            type: "submit",
+          })}
         </form>
       </section>
     `;
@@ -1335,9 +1688,14 @@
     root.innerHTML = `
       <section class="couple-loading couple-error">
         <span class="pixel-cat-mark pixel-cat-mark-large" aria-hidden="true"></span>
-        <h1>Backend 没有连上</h1>
+        <h1>首页暂时打不开</h1>
         <p>${escapeHtml(message)}</p>
-        <button class="pixel-primary-button" id="retry-load" type="button">重试</button>
+        ${renderIconButton({
+          icon: "refresh",
+          label: "重试",
+          className: "is-primary",
+          attrs: 'id="retry-load"',
+        })}
       </section>
     `;
     root.querySelector("#retry-load")?.addEventListener("click", loadSession);
@@ -1354,37 +1712,52 @@
     const page = activePageSpec();
     root.innerHTML = `
       <section class="couple-shell couple-app-v2">
-        <div class="couple-workspace-head">
-          <div class="workspace-title-block">
-            <p class="couple-kicker">${escapeHtml(page.kicker)}</p>
-            <h1>${escapeHtml(page.title)}</h1>
-            <p class="couple-headline-note">${escapeHtml(page.note)}</p>
-          </div>
+        <div class="couple-workspace-head${state.activePage === "dashboard" ? " is-dashboard" : ""}">
+          ${
+            state.activePage === "dashboard"
+              ? `<div class="workspace-cats-only">${renderCoupleCatPair("dashboard-head-pair")}</div>`
+              : `
+                <div class="workspace-title-block">
+                  <p class="couple-kicker">${escapeHtml(page.kicker)}</p>
+                  <h1>${escapeHtml(page.title)}</h1>
+                  <p class="couple-headline-note">${escapeHtml(page.note)}</p>
+                </div>
+              `
+          }
           <div class="couple-session-card">
             ${renderAvatar(currentUser(), "session-avatar")}
             <div>
               <strong>${escapeHtml(currentUser().displayName)}</strong>
               <span>当前登录</span>
             </div>
-            <button class="pixel-secondary-button" id="logout-button" type="button">退出</button>
+            ${renderIconButton({
+              icon: "logout",
+              label: "退出",
+              attrs: 'id="logout-button"',
+            })}
           </div>
         </div>
 
         <div class="couple-date-bar">
-          <button class="pixel-secondary-button" data-date-offset="-1" type="button">上一天</button>
-          <button class="couple-date-now" data-jump-today type="button">
-            <strong>${escapeHtml(day.label || "")} ${escapeHtml(day.shortLabel || state.selectedDate)}</strong>
-            <span>${escapeHtml(state.selectedDate)}</span>
-          </button>
-          <button class="pixel-secondary-button" data-date-offset="1" type="button">下一天</button>
-          <div class="couple-sync-line${state.sync.pendingState ? " is-pending" : ""}">
-            <span aria-hidden="true"></span>
-            ${escapeHtml(syncMessage())}
-          </div>
-          <div class="couple-status-line">${escapeHtml(state.status || `Revision ${data.revision} · ${data.updatedAt || ""}`)}</div>
+          ${renderIconButton({
+            icon: "chevronLeft",
+            label: "上一天",
+            attrs: 'data-date-offset="-1"',
+          })}
+          <label class="couple-date-now">
+            ${iconSvg("calendar")}
+            <div class="couple-date-copy">
+              <strong>${escapeHtml(day.label || "")} ${escapeHtml(day.shortLabel || state.selectedDate)}</strong>
+              <span>${escapeHtml(state.selectedDate)}</span>
+            </div>
+            <input class="couple-date-input" type="date" value="${escapeHtml(state.selectedDate)}" aria-label="选择日期" data-date-picker />
+          </label>
+          ${renderIconButton({
+            icon: "chevronRight",
+            label: "下一天",
+            attrs: 'data-date-offset="1"',
+          })}
         </div>
-
-        ${renderWorkspaceTabs()}
         <div class="couple-page-view" data-page-view="${escapeHtml(state.activePage)}">
           ${renderCurrentPage()}
         </div>
@@ -1395,269 +1768,281 @@
     syncTopNavigation();
   }
 
-  function renderWorkspaceTabs() {
-    return `
-      <nav class="workspace-page-tabs" aria-label="工作区分页">
-        ${pageDefinitions
-          .map(
-            (page) => `
-              <a class="${state.activePage === page.id ? "is-active" : ""}" href="#${escapeHtml(page.id)}">
-                ${escapeHtml(page.label)}
-              </a>
-            `
-          )
-          .join("")}
-      </nav>
-    `;
-  }
-
   function renderCurrentPage() {
-    if (state.activePage === "capture") return renderCaptureHub();
     if (state.activePage === "daily-summary") return renderDailySummaryPanel();
-    if (state.activePage === "schedule") return renderSchedulePage();
-    if (state.activePage === "timeline") return renderTimelinePage();
-    if (state.activePage === "todos") return renderTodosPage();
     if (state.activePage === "goals") return renderGoalsPage();
     if (state.activePage === "settings") return renderSettingsPage();
     return renderDashboard();
   }
 
-  function renderTodosPage() {
-    return `
-      <div class="couple-dashboard-layout todo-page-layout">
-        <main class="couple-main-column">
-          ${renderTodoPanel()}
-        </main>
-        <aside class="couple-side-column">
-          ${renderCheckinPanel()}
-          ${renderDeadlinePanel()}
-        </aside>
-      </div>
-    `;
-  }
-
-  function renderSchedulePage() {
-    return `
-      <div class="couple-dashboard-layout schedule-page-layout">
-        <main class="couple-main-column">
-          ${renderScheduleBoard()}
-        </main>
-        <aside class="couple-side-column">
-          ${renderQuickAdd()}
-        </aside>
-      </div>
-    `;
-  }
-
   function renderDashboard() {
     return `
       <section class="couple-panel diary-dashboard-panel dashboard-wide" id="dashboard">
-        <div class="couple-panel-head">
-          <div>
-            <p class="couple-kicker">Dashboard</p>
-            <h2>${state.dashboardMode === "month" ? "本月完成情况" : "今天两个人怎么样"}</h2>
-          </div>
-          <div class="couple-filter-tabs">
-            <button class="${state.dashboardMode === "day" ? "is-active" : ""}" data-dashboard-mode="day" type="button">日</button>
-            <button class="${state.dashboardMode === "month" ? "is-active" : ""}" data-dashboard-mode="month" type="button">月</button>
-          </div>
+        ${renderDashboardChatBox()}
+        ${renderMonthView()}
+        ${renderScheduleTimeline({
+          cards: allScheduleItemCards(),
+          title: "生活卡",
+          empty: "还没有生活卡。先在上面写一句。",
+        })}
+      </section>
+    `;
+  }
+
+  function renderMonthView() {
+    const summary = state.data?.monthSummary || { month: state.selectedDate.slice(0, 7), days: [] };
+    const monthLabel = summary.month || state.selectedDate.slice(0, 7);
+    const days = Array.isArray(summary.days) ? summary.days : [];
+
+    return `
+      <section class="month-dashboard is-compact${state.monthViewOpen ? "" : " is-collapsed"}" aria-label="月视图">
+        <div class="month-dashboard-head">
+          ${renderIconButton({
+            icon: "chevronLeft",
+            label: "上个月",
+            attrs: 'data-month-offset="-1"',
+          })}
+          <strong>${escapeHtml(monthLabel)}</strong>
+          ${renderIconButton({
+            icon: "chevronRight",
+            label: "下个月",
+            attrs: 'data-month-offset="1"',
+          })}
+          ${renderIconButton({
+            icon: state.monthViewOpen ? "chevronUp" : "chevronDown",
+            label: state.monthViewOpen ? "收起月视图" : "展开月视图",
+            attrs: "data-month-toggle",
+          })}
         </div>
         ${
-          state.dashboardMode === "month"
-            ? renderMonthDashboard()
-            : `
-              ${renderDashboardChatBox()}
-              <div class="couple-person-grid">
-                ${profiles().map((profile) => renderPersonDashboardCard(profile)).join("")}
+          state.monthViewOpen
+            ? `
+              <div class="month-grid is-picker">
+                ${days.map((day) => renderMonthDay(day)).join("")}
               </div>
-              ${renderDashboardDeadlinePanel()}
             `
+            : ""
         }
       </section>
     `;
   }
 
-  function renderDashboardDeadlinePanel() {
-    const deadlines = deadlineItemsForView()
-      .filter((item) => item.date >= state.selectedDate)
-      .slice(0, 4);
+  function renderMonthDay(day) {
+    const cardCount = Number(day.eventCount || 0) + Number(day.todoCount || 0);
+    const captureCount = Number(day.captureCount || 0);
+    const hasSummary = Boolean(day.summaryGenerated);
+    const active = day.id === state.selectedDate;
+    const className = [
+      "month-day-cell",
+      "is-picker-day",
+      active ? "is-active" : "",
+      day.isToday ? "is-today" : "",
+      day.isFuture ? "is-future-day" : "",
+      cardCount ? "is-plan-day" : "",
+      captureCount ? "is-note-day" : "",
+      hasSummary ? "is-summary-day" : "",
+    ]
+      .filter(Boolean)
+      .join(" ");
+
     return `
-      <section class="dashboard-mini-panel dashboard-deadline-panel">
-        <div class="dashboard-mini-head">
-          <strong>重要 DDL</strong>
-          <a href="#todos">管理</a>
-        </div>
-        <div class="dashboard-mini-list">
-          ${
-            deadlines.length
-              ? deadlines
-                  .map(
-                    (item) => `
-                      <article class="dashboard-mini-item is-deadline">
-                        <span>${escapeHtml(item.date)}</span>
-                        <strong>${escapeHtml(item.title)}</strong>
-                        <em>${escapeHtml(ownerLabel(item.ownerId))}</em>
-                      </article>
-                    `
-                  )
-                  .join("")
-              : `<div class="pixel-empty">还没有重要 DDL。</div>`
-          }
-        </div>
-      </section>
+      <button class="${className}" type="button" data-date-select="${escapeHtml(day.id)}" aria-label="${escapeHtml(day.id)}">
+        <span class="month-day-top">
+          <b class="month-day-number">${escapeHtml(day.dayNumber || day.id.slice(-2))}</b>
+          ${active ? `<em>选中</em>` : ""}
+        </span>
+        <span class="month-day-markers" aria-hidden="true">
+          ${cardCount ? `<i class="is-schedule">${escapeHtml(cardCount)}</i>` : ""}
+          ${captureCount ? `<i class="is-capture">${escapeHtml(captureCount)}</i>` : ""}
+          ${hasSummary ? `<i class="is-summary"></i>` : ""}
+        </span>
+      </button>
     `;
   }
 
   function renderDashboardChatBox() {
-    const items = dashboardStreamItems();
     return `
       <section class="dashboard-chat-panel">
         <form class="capture-form dashboard-chat-form" data-capture-form>
           <input type="hidden" name="mode" value="save" />
           <input type="hidden" name="ownerId" value="shared" />
-          <textarea name="text" rows="3" placeholder="随手记：一句话、Todo、日程线索、地点都先写在这里"></textarea>
+          <input type="hidden" name="visibility" value="shared" />
+          <textarea name="text" rows="1" aria-label="写一句记录" placeholder="写一句就好：她想吃日料 / 周六吃饭"></textarea>
           <div class="dashboard-capture-controls">
-            <select name="visibility" aria-label="可见范围">
-              <option value="shared">共享</option>
-              <option value="private">仅自己</option>
-            </select>
-            <input name="location" type="text" placeholder="地点" autocomplete="off" />
-            <div class="dashboard-capture-symbols" aria-label="随手记动作">
-              <button class="capture-symbol-button is-save" data-capture-submit-mode="save" type="submit">记下来！</button>
-              <button class="capture-symbol-button" data-capture-submit-mode="todo" type="submit" title="转为 Todo" aria-label="转为 Todo">+Todo</button>
-              <button class="capture-symbol-button is-primary" data-capture-submit-mode="analysis" type="submit">交给 Agent</button>
+            <div class="dashboard-capture-symbols" aria-label="记录动作">
+              ${renderIconButton({
+                icon: "bookmark",
+                label: "记下来",
+                className: "is-save",
+                attrs: 'data-capture-submit-mode="save"',
+                type: "submit",
+              })}
+              ${renderIconButton({
+                icon: "sparkles",
+                label: "交给 Agent",
+                className: "is-primary",
+                attrs: 'data-capture-submit-mode="analysis"',
+                type: "submit",
+              })}
             </div>
           </div>
         </form>
-        <div class="dashboard-chat-feed">
-          <div class="dashboard-mini-head">
-            <strong>今天的记录</strong>
-            <span>${items.length} 条</span>
-          </div>
-          <div class="dashboard-stream-list">
-            ${
-              items.length
-                ? items.map((item) => renderDashboardStreamItem(item)).join("")
-                : `<div class="pixel-empty dashboard-empty-chat">今天还没有记录。先在上面写一句。</div>`
-            }
-          </div>
-        </div>
+        ${renderCaptureConfirmation()}
       </section>
     `;
   }
 
-  function dashboardStreamItems() {
-    const schedules = scheduleItemsForDate(state.selectedDate).map((item) => ({
-      type: "schedule",
-      id: item.id,
-      title: item.title,
-      meta: `${segmentLabel(item.segment)} · ${ownerLabel(item.ownerId)}${isArchived(item) ? " · 已归档" : ""}`,
-      detail: item.detail || "",
-      createdAt: item.createdAt || `${item.date}T00:00:00.000Z`,
-      archived: isArchived(item),
-      item,
-    }));
-    const captures = capturesForSelectedDate().map((capture) => ({
-      type: "capture",
-      id: capture.id,
-      title: capture.text,
-      meta: `${profileName(capture.createdBy)} · ${captureModeLabel(capture.mode)}${capture.location ? ` · ${capture.location}` : ""}`,
-      detail: "",
-      createdAt: capture.createdAt || "",
-      item: capture,
-    }));
-    const todos = (state.data?.todoItems || [])
-      .filter((item) => item.date === state.selectedDate && item.bucket !== "future")
-      .filter(itemMatchesView)
-      .map((item) => ({
-        type: "todo",
-        id: item.id,
-        title: item.title,
-        meta: `${ownerLabel(item.ownerId)} · ${priorityLabels[item.priority] || "普通"}${isArchived(item) ? " · 已归档" : ""}`,
-        detail: item.detail || "",
-        createdAt: item.createdAt || `${item.date}T00:00:00.000Z`,
-        archived: isArchived(item),
-        item,
-      }));
-    return [...schedules, ...captures, ...todos]
-      .sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)))
-      .slice(0, 10);
-  }
+  function renderCaptureConfirmation() {
+    const confirmation = state.captureConfirmation;
+    if (!confirmation) {
+      return "";
+    }
 
-  function renderDashboardStreamItem(entry) {
-    if (entry.type === "schedule") {
-      return `
-        <button class="dashboard-stream-item is-schedule${entry.archived ? " is-archived" : ""}" data-schedule-detail="${escapeHtml(entry.id)}" data-schedule-date="${escapeHtml(entry.item.date)}" type="button">
-          <span>日</span>
-          <div>
-            <strong>${escapeHtml(entry.title)}</strong>
-            <em>${escapeHtml(entry.meta)}</em>
-            ${entry.detail ? `<small>${escapeHtml(entry.detail)}</small>` : ""}
-          </div>
-        </button>
-      `;
-    }
-    if (entry.type === "todo") {
-      const doneCount = Object.values(entry.item.statusByUser || {}).filter((status) => status === "done").length;
-      const totalCount = entry.item.participants?.length || 1;
-      return `
-        <article class="dashboard-stream-item is-todo${entry.archived ? " is-archived" : ""}">
-          <span>T</span>
-          <div>
-            <strong>${escapeHtml(entry.title)}</strong>
-            <em>${escapeHtml(entry.meta)} · ${doneCount}/${totalCount}</em>
-            ${entry.detail ? `<small>${escapeHtml(entry.detail)}</small>` : ""}
-          </div>
-        </article>
-      `;
-    }
+    const isSchedule = confirmation.decision === "schedule";
+    const relatedCount = Array.isArray(confirmation.relatedItems) ? confirmation.relatedItems.length : 0;
     return `
-      <article class="dashboard-stream-item is-capture">
-        <span>记</span>
-        <div>
-          <strong>${escapeHtml(entry.title)}</strong>
-          <em>${escapeHtml(entry.meta)}</em>
+      <form class="capture-confirmation-bar is-${escapeHtml(confirmation.decision)}" data-capture-confirm-form>
+        <div class="capture-confirm-copy">
+          <strong>
+            识别为：${escapeHtml(confirmationDecisionLabel(confirmation.decision))}
+            ${isSchedule ? ` · ${escapeHtml(scheduleItemTypeLabels[normalizeCardItemType(confirmation.itemType)])}` : ""}
+            · ${escapeHtml(confirmationTimeLabel(confirmation))}
+            · ${escapeHtml(ownerShortLabel(confirmation.ownerId))}
+            ${relatedCount ? ` · +${escapeHtml(relatedCount)} 相关` : ""}
+          </strong>
+          <span>${escapeHtml(confirmation.text)}</span>
         </div>
-      </article>
+        <div class="capture-confirm-actions">
+          ${renderIconButton({
+            icon: "check",
+            label: "确认",
+            className: "is-primary",
+            type: "submit",
+          })}
+          ${renderIconButton({
+            icon: "bookmark",
+            label: "仅记录",
+            attrs: 'data-confirm-record-only',
+          })}
+        </div>
+      </form>
     `;
   }
 
-  function renderPersonDashboardCard(profile) {
-    const stats = getCompletion(profile.id);
-    const day = state.data?.diaryDay?.userDays?.[profile.id] || {};
-    const things = getProfileDayThings(profile.id).slice(0, 5);
+  function renderScheduleTimeline(options = {}) {
+    const sourceCards = Array.isArray(options.cards) ? options.cards : allScheduleItemCards();
+    const cards = sortScheduleCardsForView(filterScheduleCardsForView(sourceCards));
+    const grouped = groupedScheduleCards(cards);
+    const days = [...grouped.keys()].sort((a, b) => a.localeCompare(b));
+    const title = options.title || "生活卡";
+    const empty = options.empty || "还没有生活卡。";
+    const viewStyle = state.scheduleViewStyle || "line";
 
     return `
-      <article class="person-dashboard-card" style="--person-color: ${escapeHtml(profile.color)}">
-        <div class="person-card-top">
-          ${renderAvatar(profile, "dashboard-avatar")}
-          <div>
-            <strong>${escapeHtml(profile.displayName)}</strong>
-            <span>${stats.done}/${stats.total} 已完成</span>
+      <section class="schedule-timeline-panel">
+        <div class="dashboard-mini-head schedule-toolbar">
+          <div class="schedule-toolbar-title">
+            <strong>${escapeHtml(title)}</strong>
+            <span>${cards.length}/${sourceCards.length}</span>
           </div>
-          <em>${stats.percent}%</em>
+          <div class="schedule-toolbar-actions">
+            <div class="schedule-icon-group" aria-label="筛选生活卡">
+              ${renderIconButton({
+                icon: "circle",
+                label: "未完成",
+                attrs: 'data-schedule-filter="open"',
+                active: state.scheduleFilter === "open",
+              })}
+              ${renderIconButton({
+                icon: "calendar",
+                label: "选中日期",
+                attrs: 'data-schedule-filter="date"',
+                active: state.scheduleFilter === "date",
+              })}
+              ${renderIconButton({
+                icon: "star",
+                label: "重要",
+                attrs: 'data-schedule-filter="important"',
+                active: state.scheduleFilter === "important",
+              })}
+              ${renderIconButton({
+                icon: "rows",
+                label: "全部",
+                attrs: 'data-schedule-filter="all"',
+                active: state.scheduleFilter === "all",
+              })}
+            </div>
+            <div class="schedule-icon-group" aria-label="切换显示样式">
+              ${renderIconButton({
+                icon: "rows",
+                label: "紧凑行",
+                attrs: 'data-schedule-view="line"',
+                active: viewStyle === "line",
+              })}
+              ${renderIconButton({
+                icon: "cards",
+                label: "卡片",
+                attrs: 'data-schedule-view="card"',
+                active: viewStyle === "card",
+              })}
+            </div>
+          </div>
         </div>
-        <div class="pixel-progress">
-          <span style="width: ${stats.percent}%"></span>
-        </div>
-        ${renderDailyPulseCard(profile, day)}
-        <div class="person-thing-list">
+        <div class="schedule-timeline">
           ${
-            things.length
-              ? things
-                  .map(
-                    (thing) => `
-                      <span class="${thing.done ? "is-done" : ""}">
-                        <em>${escapeHtml(thing.kind)}</em>
-                        ${escapeHtml(thing.title)}
-                      </span>
-                    `
-                  )
+            days.length
+              ? days
+                  .map((date) => {
+                    const day = (state.data?.timelineDays || state.data?.weekDays || []).find((entry) => (entry.date || entry.id) === date);
+                    const label = date === state.data?.today ? "今天" : day?.label || "";
+                    const dayCards = grouped.get(date) || [];
+                    const compactDay = date !== (state.data?.today || state.selectedDate);
+                    const expanded = state.expandedScheduleGroups.has(date);
+                    const split = splitCardsForDay(dayCards);
+                    const visibleCards = expanded ? dayCards : split.visible;
+                    const foldedCards = expanded ? [] : split.folded;
+                    return `
+                      <section class="schedule-timeline-day${date === state.selectedDate ? " is-selected" : ""}${date === state.data?.today ? " is-today" : ""}">
+                        <div class="schedule-timeline-date">
+                          <strong>${escapeHtml(label || date.slice(5))}</strong>
+                          <span>${escapeHtml(date)}</span>
+                        </div>
+                        <div class="schedule-timeline-cards">
+                          ${visibleCards.map((card) => renderScheduleItemCard(card, { compact: options.compact || compactDay, viewStyle })).join("")}
+                          ${
+                            foldedCards.length
+                              ? `
+                                <div class="schedule-fold-row">
+                                  <span>已收起 ${foldedCards.length} 张次要生活卡</span>
+                                  ${renderIconButton({
+                                    icon: "chevronDown",
+                                    label: "展开次要生活卡",
+                                    attrs: `data-schedule-fold-toggle="${escapeHtml(date)}"`,
+                                  })}
+                                </div>
+                              `
+                              : expanded && split.folded.length
+                                ? `
+                                  <div class="schedule-fold-row">
+                                    <span>已展开全部生活卡</span>
+                                    ${renderIconButton({
+                                      icon: "chevronUp",
+                                      label: "收起次要生活卡",
+                                      attrs: `data-schedule-fold-toggle="${escapeHtml(date)}"`,
+                                    })}
+                                  </div>
+                                `
+                                : ""
+                          }
+                        </div>
+                      </section>
+                    `;
+                  })
                   .join("")
-              : `<span class="is-empty">这一天还没有具体事项。</span>`
+              : `<div class="pixel-empty">${escapeHtml(empty)}</div>`
           }
         </div>
-      </article>
+      </section>
     `;
   }
 
@@ -1678,570 +2063,22 @@
           </div>
           <input name="happiestThing" type="text" value="${escapeHtml(day.happiestThing || "")}" placeholder="最开心的事" autocomplete="off" />
           <input name="smallAchievement" type="text" value="${escapeHtml(day.smallAchievement || "")}" placeholder="小成就" autocomplete="off" />
-          <button class="pixel-secondary-button" type="submit">打卡</button>
+          ${renderIconButton({
+            icon: "check",
+            label: "保存打卡",
+            className: "is-primary",
+            type: "submit",
+          })}
         </form>
       `;
     }
 
     return `
       <div class="daily-pulse-readonly" style="--person-color: ${escapeHtml(profile.color)}">
-        <span>今日打分：${score ? `${score}/10` : "未填写"}</span>
-        <span>最开心：${escapeHtml(day.happiestThing || "未填写")}</span>
-        <span>小成就：${escapeHtml(day.smallAchievement || "未填写")}</span>
+        ${score ? `<span>今日打分：${score}/10</span>` : ""}
+        ${day.happiestThing ? `<span>最开心：${escapeHtml(day.happiestThing)}</span>` : ""}
+        ${day.smallAchievement ? `<span>小成就：${escapeHtml(day.smallAchievement)}</span>` : ""}
       </div>
-    `;
-  }
-
-  function renderMonthDashboard() {
-    const summary = state.data.monthSummary || { days: [], totalsByUser: {}, month: state.selectedDate.slice(0, 7) };
-    const todayId = state.data?.today || getToday();
-    return `
-      <div class="month-dashboard">
-        <div class="month-total-row">
-          ${profiles()
-            .map((profile) => {
-              const stat = summary.totalsByUser?.[profile.id] || { done: 0, total: 0, percent: 0 };
-              return `
-                <div class="month-total-card" style="--person-color: ${escapeHtml(profile.color)}">
-                  <span>${escapeHtml(profile.displayName)}</span>
-                  <strong>${stat.percent}%</strong>
-                  <em>${stat.done}/${stat.total} 本月完成</em>
-                </div>
-              `;
-            })
-            .join("")}
-        </div>
-        <div class="month-grid">
-          ${summary.days
-            .map((day) => {
-              const selected = day.id === state.selectedDate;
-              const isFuture = Boolean(day.isFuture || day.id > todayId);
-              const totalDone = profiles().reduce((sum, profile) => sum + (day.userStats?.[profile.id]?.done || 0), 0);
-              const totalCount = profiles().reduce((sum, profile) => sum + (day.userStats?.[profile.id]?.total || 0), 0);
-              const combinedPercent = totalCount ? Math.round((totalDone / totalCount) * 100) : 0;
-              const markers = dayCompletionMarkers(day);
-              const status = dayCompletionStatus(combinedPercent, totalCount, isFuture, markers.length);
-              const detailTitle = isFuture
-                ? markers.length ? "已有计划" : "未来日期"
-                : totalCount ? `${totalDone}/${totalCount} 完成` : "暂无完成项";
-              return `
-                <button
-                  class="month-day-cell${selected ? " is-active" : ""}${day.isToday ? " is-today" : ""}${isFuture ? " is-future-day" : ""} ${completionTone(combinedPercent, totalCount, isFuture, markers.length)}"
-                  data-month-date="${escapeHtml(day.id)}"
-                  type="button"
-                  title="${escapeHtml(`${day.id} · ${status.title} · ${detailTitle}`)}"
-                >
-                  <span class="month-day-top">
-                    <span class="month-day-number">${day.dayNumber}</span>
-                    <strong class="month-status-pill">${escapeHtml(status.label)}</strong>
-                  </span>
-                  <span class="month-person-dots" aria-label="${escapeHtml(`${day.id} 成员完成情况`)}">
-                    ${profiles().map((profile) => renderMonthPersonDot(profile, day, isFuture)).join("")}
-                  </span>
-                  <span class="month-day-markers">
-                    ${
-                      markers.length
-                        ? markers
-                            .map(
-                              (marker) => `
-                                <i class="${escapeHtml(marker.kind)}" title="${escapeHtml(marker.title)}">
-                                  ${escapeHtml(marker.label)}
-                                </i>
-                              `
-                            )
-                            .join("")
-                        : isFuture
-                          ? ""
-                          : `<i class="is-muted">空</i>`
-                    }
-                  </span>
-                </button>
-              `;
-            })
-            .join("")}
-        </div>
-      </div>
-    `;
-  }
-
-  function completionTone(percent, total, isFuture, markerCount = 0) {
-    if (isFuture) return markerCount ? "is-plan-day" : "is-empty-day";
-    if (!total && markerCount) return "is-note-day";
-    if (!total) return "is-empty-day";
-    if (percent >= 80) return "is-strong-day";
-    if (percent >= 50) return "is-steady-day";
-    if (percent > 0) return "is-light-day";
-    return "is-zero-day";
-  }
-
-  function dayCompletionStatus(percent, total, isFuture, markerCount = 0) {
-    if (isFuture) {
-      return markerCount
-        ? { label: "计划", title: "未来已有安排" }
-        : { label: "-", title: "未来还没有安排" };
-    }
-    if (!total && markerCount) return { label: "记", title: "有随手记或日程记录" };
-    if (!total) return { label: "空", title: "这天还没有记录" };
-    if (percent >= 80) return { label: "好", title: "完成良好" };
-    if (percent >= 50) return { label: "稳", title: "完成过半" };
-    if (percent > 0) return { label: "少", title: "有少量推进" };
-    return { label: "待", title: "还没有完成标记" };
-  }
-
-  function dayCompletionMarkers(day) {
-    const markers = [];
-    if (day.todoCount) markers.push({ kind: "is-todo", label: "T", title: `Todo ${day.todoCount}` });
-    if (day.eventCount) markers.push({ kind: "is-schedule", label: "日", title: `日程 ${day.eventCount}` });
-    if (day.captureCount) markers.push({ kind: "is-capture", label: "记", title: `随手记 ${day.captureCount}` });
-    if (day.summaryGenerated) markers.push({ kind: "is-summary", label: "结", title: "已生成日总结" });
-    return markers.slice(0, 4);
-  }
-
-  function renderMonthPersonDot(profile, day, isFuture) {
-    const stat = day.userStats?.[profile.id] || { done: 0, total: 0, percent: 0 };
-    const tone = isFuture
-      ? "is-future"
-      : !stat.total
-        ? "is-empty"
-        : stat.percent >= 80
-          ? "is-strong"
-          : stat.percent >= 50
-            ? "is-steady"
-            : stat.percent > 0
-              ? "is-light"
-              : "is-zero";
-    const title = isFuture ? `${profile.displayName} · 计划中` : `${profile.displayName} · ${stat.done}/${stat.total}`;
-    return `
-      <span
-        class="month-person-dot ${tone}"
-        style="--person-color: ${escapeHtml(profile.color)}"
-        title="${escapeHtml(title)}"
-      >
-        <span>${escapeHtml(profile.initials || profile.displayName?.slice(0, 1) || "?")}</span>
-      </span>
-    `;
-  }
-
-  function renderTodoPanel() {
-    const todos = todoItemsForMode();
-    const todayCount = (state.data?.todoItems || []).filter(
-      (item) => item.bucket !== "future" && item.date === state.selectedDate && itemMatchesView(item)
-    ).length;
-    const futureCount = futureItems().length;
-    return `
-      <section class="couple-panel todo-panel todo-panel-hero" id="todos">
-        <div class="couple-panel-head">
-          <div>
-            <p class="couple-kicker">Todo</p>
-            <h2>今天要推进的事</h2>
-          </div>
-          <div class="couple-filter-tabs">
-            <button class="${state.todoMode === "today" ? "is-active" : ""}" data-todo-mode="today" type="button">今天 ${todayCount}</button>
-            <button class="${state.todoMode === "future" ? "is-active" : ""}" data-todo-mode="future" type="button">未来 ${futureCount}</button>
-          </div>
-        </div>
-        <form class="todo-create-form" id="todo-create-form">
-          <input name="title" type="text" placeholder="新增 Todo，例如：确认服务器部署步骤" autocomplete="off" />
-          <textarea name="detail" rows="2" placeholder="补充细节，可留空"></textarea>
-          <div class="todo-create-controls">
-            <input name="date" type="date" value="${escapeHtml(state.selectedDate)}" />
-            <select name="ownerId">${renderOwnerOptions()}</select>
-            <select name="priority">
-              <option value="normal">普通</option>
-              <option value="high">重要</option>
-              <option value="low">低优先级</option>
-            </select>
-            <select name="bucket">
-              <option value="today">今天</option>
-              <option value="future">未来想做</option>
-            </select>
-            <button class="pixel-primary-button" type="submit">添加</button>
-          </div>
-        </form>
-        <div class="todo-thing-list">
-          ${
-            todos.length
-              ? todos.map((item) => renderTodoItem(item)).join("")
-              : `<div class="pixel-empty">这里还没有 Todo。可以是单人的，也可以是两个人一起完成的。</div>`
-          }
-        </div>
-      </section>
-    `;
-  }
-
-  function renderTodoItem(item) {
-    if (state.editTodoId === item.id) {
-      return `
-        <article class="thing-row todo-edit-row">
-          <form class="todo-edit-form">
-            <input type="hidden" name="id" value="${escapeHtml(item.id)}" />
-            <input name="title" type="text" value="${escapeHtml(item.title)}" />
-            <textarea name="detail" rows="3">${escapeHtml(item.detail || "")}</textarea>
-            <div class="todo-create-controls">
-              <input name="date" type="date" value="${escapeHtml(item.date)}" />
-              <select name="ownerId">${renderOwnerOptions(item.ownerId)}</select>
-              <select name="priority">
-                ${["normal", "high", "low"]
-                  .map(
-                    (priority) => `
-                      <option value="${priority}"${item.priority === priority ? " selected" : ""}>${escapeHtml(priorityLabels[priority])}</option>
-                    `
-                  )
-                  .join("")}
-              </select>
-              <select name="bucket">
-                <option value="today"${item.bucket === "today" ? " selected" : ""}>今天</option>
-                <option value="future"${item.bucket === "future" ? " selected" : ""}>未来想做</option>
-              </select>
-              <button class="pixel-primary-button" type="submit">保存</button>
-              <button class="pixel-secondary-button" data-cancel-edit-todo type="button">取消</button>
-            </div>
-          </form>
-        </article>
-      `;
-    }
-
-    const archived = isArchived(item);
-    const allDone = item.participants.every((id) => item.statusByUser?.[id] === "done");
-    return `
-      <article class="thing-row todo-row ${allDone ? "is-done" : ""}${archived ? " is-archived" : ""}">
-        <div class="thing-row-main">
-          <span class="thing-kind">${escapeHtml(thingClass(item))}</span>
-          <strong>${escapeHtml(item.title)}</strong>
-          ${item.detail ? `<p>${escapeHtml(item.detail)}</p>` : ""}
-          <em>${escapeHtml(ownerLabel(item.ownerId))} · ${escapeHtml(priorityLabels[item.priority] || "普通")} · ${item.bucket === "future" ? "未来想做" : escapeHtml(item.date)}${archived ? " · 已归档" : ""}</em>
-        </div>
-        <div class="thing-row-actions">
-          ${item.participants
-            .map((userId) => renderStatusControl(item, userId, "todo"))
-            .join("")}
-          <button class="thing-edit-button" data-edit-todo="${escapeHtml(item.id)}" type="button">编辑</button>
-          ${archived ? "" : `<button class="thing-archive-button" data-archive-todo="${escapeHtml(item.id)}" data-archive-date="${escapeHtml(item.date)}" type="button">归档</button>`}
-          <button class="thing-delete-button" data-delete-todo="${escapeHtml(item.id)}" type="button">删除</button>
-        </div>
-      </article>
-    `;
-  }
-
-  function renderScheduleBoard() {
-    const data = state.data;
-    const selectedItem = selectedScheduleItem();
-    return `
-      <section class="couple-panel schedule-board-panel" id="schedule">
-        <div class="couple-panel-head">
-          <div>
-            <p class="couple-kicker">Schedule</p>
-            <h2>具体安排</h2>
-          </div>
-          <div class="week-jump-row">
-            ${data.weekDays
-              .map(
-                (day) => `
-                  <button class="${day.id === state.selectedDate ? "is-active" : ""}${day.isToday ? " is-today" : ""}" data-select-date="${escapeHtml(day.id)}" type="button">
-                    <strong>${escapeHtml(day.label)}</strong>
-                    <span>${escapeHtml(day.shortLabel)}</span>
-                  </button>
-                `
-              )
-              .join("")}
-          </div>
-        </div>
-        <div class="schedule-list-layout">
-          <div class="schedule-list-column">
-            ${data.weekDays.map((day) => renderScheduleDayBlock(day)).join("")}
-          </div>
-          <aside class="schedule-detail-pane">
-            ${selectedItem ? renderScheduleDetail(selectedItem) : `<div class="pixel-empty">这周还没有日程。右侧快速加入日程后，可以在这里点开详情。</div>`}
-          </aside>
-        </div>
-      </section>
-    `;
-  }
-
-  function renderScheduleDayBlock(day) {
-    const items = scheduleItemsForDate(day.id);
-    return `
-      <article class="schedule-day-block${day.id === state.selectedDate ? " is-active" : ""}">
-        <button class="schedule-day-title" data-select-date="${escapeHtml(day.id)}" type="button">
-          <strong>${escapeHtml(day.label)}</strong>
-          <span>${escapeHtml(day.shortLabel)}</span>
-        </button>
-        <div class="schedule-day-items">
-          ${
-            items.length
-              ? items.map((item) => renderScheduleListItem(item)).join("")
-              : `<span class="schedule-day-empty">无安排</span>`
-          }
-        </div>
-      </article>
-    `;
-  }
-
-  function renderScheduleListItem(item) {
-    const archived = isArchived(item);
-    const allDone = item.participants.every((id) => item.statusByUser?.[id] === "done");
-    return `
-      <button
-        class="schedule-list-item${state.selectedScheduleId === item.id ? " is-selected" : ""}${allDone ? " is-done" : ""}${archived ? " is-archived" : ""}"
-        data-schedule-detail="${escapeHtml(item.id)}"
-        data-schedule-date="${escapeHtml(item.date)}"
-        type="button"
-      >
-        <span>${escapeHtml(segmentLabel(item.segment))}</span>
-        <strong>${escapeHtml(item.title)}</strong>
-        <em>${escapeHtml(ownerLabel(item.ownerId))}${archived ? " · 已归档" : ""}</em>
-      </button>
-    `;
-  }
-
-  function renderScheduleDetail(item) {
-    const archived = isArchived(item);
-    return `
-      <article class="schedule-detail-card${archived ? " is-archived" : ""}">
-        <div class="schedule-detail-top">
-          <div>
-            <span>${escapeHtml(item.date)} · ${escapeHtml(segmentLabel(item.segment))}${archived ? " · 已归档" : ""}</span>
-            <h3>${escapeHtml(item.title)}</h3>
-          </div>
-          <span class="thing-kind">${escapeHtml(thingClass(item))}</span>
-        </div>
-        ${item.detail ? `<p>${escapeHtml(item.detail)}</p>` : `<p class="schedule-detail-empty">没有补充细节。</p>`}
-        <div class="schedule-detail-meta">
-          <span>归属：${escapeHtml(ownerLabel(item.ownerId))}</span>
-          <span>创建：${escapeHtml(profileName(item.createdBy))}</span>
-        </div>
-        <div class="schedule-detail-actions">
-          ${item.participants
-            .map((userId) => renderStatusControl(item, userId, "schedule"))
-            .join("")}
-          ${archived ? "" : `<button class="thing-archive-button" data-archive-item="${escapeHtml(item.id)}" data-archive-date="${escapeHtml(item.date)}" type="button">归档</button>`}
-          <button class="thing-delete-button" data-delete-item="${escapeHtml(item.id)}" data-delete-date="${escapeHtml(item.date)}" type="button">删除</button>
-        </div>
-      </article>
-    `;
-  }
-
-  function timelineDaysOrdered() {
-    const days = state.data?.timelineDays || [];
-    if (!days.length) return [];
-    const selectedIndex = days.findIndex((day) => (day.date || day.id) === state.selectedDate);
-    if (selectedIndex < 0) return days;
-    return [
-      days[selectedIndex],
-      ...days.slice(selectedIndex + 1),
-      ...days.slice(0, selectedIndex),
-    ];
-  }
-
-  function timelinePeople() {
-    const current = currentUser();
-    const other = profiles().find((profile) => profile.id !== current?.id) || profiles()[0] || null;
-    return {
-      self: current,
-      other,
-    };
-  }
-
-  function timelineDayEntries(day) {
-    return [...(day?.left || []), ...(day?.right || [])]
-      .sort((a, b) => timelineEntrySortKey(a).localeCompare(timelineEntrySortKey(b)));
-  }
-
-  function timelineEntrySortKey(entry) {
-    const segmentRank = {
-      allDay: "0",
-      morning: "1",
-      noon: "2",
-      afternoon: "3",
-      evening: "4",
-    };
-    return [
-      segmentRank[timelineSegmentKey(entry)] || "9",
-      String(entry.createdAt || ""),
-      String(entry.title || ""),
-    ].join("|");
-  }
-
-  function timelineSegmentKey(entry) {
-    if (entry.type === "schedule") return entry.meta || "allDay";
-    if (entry.type === "capture" && entry.createdAt) {
-      const hour = Number(String(entry.createdAt).slice(11, 13));
-      if (Number.isFinite(hour)) {
-        if (hour < 11) return "morning";
-        if (hour < 14) return "noon";
-        if (hour < 18) return "afternoon";
-        return "evening";
-      }
-    }
-    return "allDay";
-  }
-
-  function timelineTimeLabel(entry, options = {}) {
-    if (entry.type === "schedule") return segmentLabel(entry.meta);
-    if (entry.type === "capture" && entry.createdAt) {
-      const time = String(entry.createdAt).slice(11, 16);
-      return /^\d{2}:\d{2}$/.test(time) ? time : "";
-    }
-    return options.showAllDay ? "全天" : "";
-  }
-
-  function timelineTypeLabel(entry) {
-    if (entry.type === "schedule") return "日程";
-    if (entry.type === "todo") return "Todo";
-    if (entry.type === "capture") return "随手记";
-    return "事项";
-  }
-
-  function timelineTypeMark(entry) {
-    if (entry.type === "schedule") return "日";
-    if (entry.type === "todo") return "T";
-    if (entry.type === "capture") return "记";
-    return "事";
-  }
-
-  function timelineIsShared(entry) {
-    return entry.ownerId === "shared" || entry.visibility === "shared" || (entry.participants || []).length > 1;
-  }
-
-  function captureModeLabel(mode) {
-    if (mode === "todo") return "Todo";
-    if (mode === "analysis") return "Agent";
-    return "记下来";
-  }
-
-  function renderTimelinePage() {
-    const orderedDays = timelineDaysOrdered();
-    const focusDay = orderedDays[0];
-    const restDays = orderedDays.slice(1, 7);
-    const people = timelinePeople();
-
-    return `
-      <section class="couple-panel timeline-panel dashboard-wide" id="timeline">
-        <div class="couple-panel-head">
-          <div>
-            <p class="couple-kicker">Timeline</p>
-            <h2>一周事项时间轴</h2>
-          </div>
-          <span class="selected-day-count">最多 7 天</span>
-        </div>
-        <div class="timeline-split-head">
-          <span style="--person-color: ${escapeHtml(people.self?.color || "#ff5c9a")}">${escapeHtml(people.self?.displayName || "我的")}</span>
-          <span style="--person-color: ${escapeHtml(people.other?.color || "#8a6cff")}">${escapeHtml(people.other?.displayName || "对方")}</span>
-        </div>
-        ${focusDay ? renderTimelineFocusDay(focusDay) : `<div class="pixel-empty">这一周还没有事项。</div>`}
-        <div class="timeline-rest-list">
-          ${restDays.map((day) => renderTimelineCompactDay(day)).join("")}
-        </div>
-      </section>
-    `;
-  }
-
-  function renderTimelineFocusDay(day) {
-    const date = day.date || day.id;
-    const entries = timelineDayEntries(day);
-    const segments = (state.data?.segments || [])
-      .map((segment) => ({
-        ...segment,
-        left: (day.left || []).filter((entry) => timelineSegmentKey(entry) === segment.key),
-        right: (day.right || []).filter((entry) => timelineSegmentKey(entry) === segment.key),
-      }))
-      .filter((segment) => segment.left.length || segment.right.length);
-
-    return `
-      <article class="timeline-focus-day${day.isToday ? " is-today" : ""}">
-        <div class="timeline-focus-title">
-          <div>
-            <span>${escapeHtml(day.label || "")}</span>
-            <strong>${escapeHtml(date)}</strong>
-          </div>
-          <em>${entries.length} 件事</em>
-        </div>
-        ${
-          segments.length
-            ? segments.map((segment) => renderTimelineFocusSegment(segment)).join("")
-            : `<div class="pixel-empty">这一天还没有 Todo、日程或随手记。</div>`
-        }
-      </article>
-    `;
-  }
-
-  function renderTimelineFocusSegment(segment) {
-    return `
-      <section class="timeline-focus-segment">
-        <div class="timeline-segment-label">${escapeHtml(segment.label)}</div>
-        <div class="timeline-side-grid">
-          <div class="timeline-side-column is-self">
-            ${
-              segment.left.length
-                ? segment.left.map((entry) => renderTimelineEntry(entry, "focus")).join("")
-                : `<span class="timeline-side-empty">这边暂无</span>`
-            }
-          </div>
-          <div class="timeline-side-column is-other">
-            ${
-              segment.right.length
-                ? segment.right.map((entry) => renderTimelineEntry(entry, "focus")).join("")
-                : `<span class="timeline-side-empty">这边暂无</span>`
-            }
-          </div>
-        </div>
-      </section>
-    `;
-  }
-
-  function renderTimelineCompactDay(day) {
-    const date = day.date || day.id;
-    const left = day.left || [];
-    const right = day.right || [];
-    return `
-      <article class="timeline-compact-day${day.isToday ? " is-today" : ""}">
-        <div class="timeline-compact-date">
-          <strong>${escapeHtml(date)}</strong>
-          <span>${escapeHtml(day.label || "")}</span>
-        </div>
-        <div class="timeline-side-grid">
-          <div class="timeline-side-column is-self">
-            ${
-              left.length
-                ? left.map((entry) => renderTimelineEntry(entry, "compact", date)).join("")
-                : `<span class="timeline-side-empty">无</span>`
-            }
-          </div>
-          <div class="timeline-side-column is-other">
-            ${
-              right.length
-                ? right.map((entry) => renderTimelineEntry(entry, "compact", date)).join("")
-                : `<span class="timeline-side-empty">无</span>`
-            }
-          </div>
-        </div>
-      </article>
-    `;
-  }
-
-  function renderTimelineEntry(entry, variant = "focus", date = "") {
-    const archived = isArchived(entry);
-    const shared = timelineIsShared(entry);
-    const time = timelineTimeLabel(entry, { showAllDay: variant === "focus" });
-    const prefix = variant === "compact"
-      ? [date, time].filter(Boolean).join(" · ")
-      : time;
-    return `
-      <article class="timeline-entry is-${escapeHtml(entry.type)}${variant === "compact" ? " is-compact" : ""}${archived ? " is-archived" : ""}${shared ? " is-shared" : ""}">
-        <span class="timeline-entry-mark">${escapeHtml(timelineTypeMark(entry))}</span>
-        <div>
-          <div class="timeline-entry-line">
-            ${prefix ? `<time>${escapeHtml(prefix)}</time>` : ""}
-            <strong>${escapeHtml(entry.title || "未命名事项")}</strong>
-          </div>
-          <div class="timeline-entry-meta">
-            <span>${escapeHtml(timelineTypeLabel(entry))}</span>
-            ${shared ? `<span>共同</span>` : ""}
-            ${archived ? `<span>已归档</span>` : ""}
-          </div>
-          ${variant === "focus" && entry.detail ? `<p>${escapeHtml(entry.detail)}</p>` : ""}
-        </div>
-      </article>
     `;
   }
 
@@ -2249,16 +2086,22 @@
     const summary = state.data?.dailySummary;
     const people = summary?.people || [];
     const photos = summary?.photos || [];
+    const memoryHooks = summary?.memoryHooks || [];
 
     return `
       <section class="couple-panel daily-summary-panel dashboard-wide" id="daily-summary">
         <div class="couple-panel-head">
           <div>
-            <p class="couple-kicker">Daily Story</p>
-            <h2>自动日总结</h2>
+            <p class="couple-kicker">回忆页</p>
+            <h2>这一天为什么值得记住</h2>
           </div>
-          <button class="pixel-secondary-button" data-refresh-summary type="button">刷新总结</button>
+          ${renderIconButton({
+            icon: "refresh",
+            label: "刷新回忆",
+            attrs: 'data-refresh-summary',
+          })}
         </div>
+        ${renderDailyStoryInputs()}
         ${
           summary
             ? `
@@ -2278,7 +2121,7 @@
                   <div class="daily-summary-title-row">
                     <div>
                       <h3>${escapeHtml(summary.title)}</h3>
-                      <span>${escapeHtml(summary.subtitle || "由系统自动整理")}</span>
+                    <span>${escapeHtml(summary.subtitle || "由记录和生活卡自动整理")}</span>
                     </div>
                     <strong>${escapeHtml(summary.qualityLabel || "今日质量")}</strong>
                   </div>
@@ -2294,15 +2137,26 @@
                 </div>
               </div>
               <div class="daily-summary-columns">
-                ${renderSummaryList("完成了", summary.completed || [])}
-                ${renderSummaryList("没做完", summary.missed || [])}
+                ${renderSummaryList("完成/兑现", summary.completed || [])}
+                ${renderSummaryList("延期/待补", summary.missed || [])}
                 ${renderDailyPeople(people)}
               </div>
               ${
-                photos.length || summary.moments?.length
+                photos.length || summary.moments?.length || memoryHooks.length
                   ? `
                     <div class="daily-memory-strip">
                       ${photos.map((photo) => `<img src="${escapeHtml(photo.url)}" alt="${escapeHtml(photo.name || "photo")}" />`).join("")}
+                      ${memoryHooks
+                        .slice(0, 3)
+                        .map(
+                          (hook) => `
+                            <span>
+                              <em>${escapeHtml(hook.kindLabel || "记住")}</em>
+                              ${escapeHtml(hook.title)}
+                            </span>
+                          `
+                        )
+                        .join("")}
                       ${(summary.moments || [])
                         .slice(0, 4)
                         .map(
@@ -2320,7 +2174,7 @@
               }
               <div class="daily-summary-meta">
                 <span>${escapeHtml(summary.generatedAt ? `生成于 ${summary.generatedAt.slice(0, 16).replace("T", " ")}` : "尚未生成")}</span>
-                <span>${escapeHtml(summary.mode === "agent" ? "Agent 生成" : "规则生成")}</span>
+                <span>${escapeHtml(summary.mode === "agent" ? "Agent 回忆" : "本地回忆")}</span>
               </div>
             `
             : `
@@ -2331,13 +2185,33 @@
                   <span class="daily-pixel-cat two" aria-hidden="true"></span>
                 </div>
                 <div>
-                  <h3>${escapeHtml(state.selectedDate)} 还没有自动总结</h3>
+                  <h3>${escapeHtml(state.selectedDate)} 还没有回忆页</h3>
                   <p>凌晨 4 点会自动刷新，也可以现在手动生成。</p>
-                  <button class="pixel-primary-button" data-refresh-summary type="button">生成今天总结</button>
+                  ${renderIconButton({
+                    icon: "sparkles",
+                    label: "生成今天回忆",
+                    className: "is-primary",
+                    attrs: 'data-refresh-summary',
+                  })}
                 </div>
               </div>
             `
         }
+      </section>
+    `;
+  }
+
+  function renderDailyStoryInputs() {
+    const current = currentUser();
+    if (!current) return "";
+    const day = state.data?.diaryDay?.userDays?.[current.id] || {};
+    return `
+      <section class="daily-story-inputs" style="--person-color: ${escapeHtml(current.color)}">
+        <div>
+          ${renderAvatar(current, "daily-story-avatar")}
+          <strong>今日状态</strong>
+        </div>
+        ${renderDailyPulseCard(current, day)}
       </section>
     `;
   }
@@ -2359,7 +2233,7 @@
                   `
                 )
                 .join("")
-            : `<span class="is-empty">暂无</span>`
+            : ""
         }
       </div>
     `;
@@ -2377,12 +2251,12 @@
                     <span style="--person-color: ${escapeHtml(person.color)}">
                       <b>${escapeHtml(person.displayName)}</b>
                       <em>${escapeHtml(person.percent || 0)}%</em>
-                      <small>${escapeHtml(person.dailyScore ? `${person.dailyScore}/10` : "未打分")} · ${escapeHtml(person.happiestThing || "最开心未填")} · ${escapeHtml(person.smallAchievement || "小成就未填")}</small>
+                      <small>${escapeHtml([person.dailyScore ? `${person.dailyScore}/10` : "", person.happiestThing, person.smallAchievement].filter(Boolean).join(" · "))}</small>
                     </span>
                   `
                 )
                 .join("")
-            : `<span class="is-empty">暂无状态</span>`
+            : ""
         }
       </div>
     `;
@@ -2393,14 +2267,11 @@
       <section class="couple-panel memory-pages-panel" id="goals">
         <div class="couple-panel-head compact">
           <div>
-            <p class="couple-kicker">Long Goals</p>
-            <h2>长期目标</h2>
+            <p class="couple-kicker">长期记忆</p>
+            <h2>长期记忆板</h2>
           </div>
         </div>
-        <div class="goals-page-layout">
-          ${renderLongTermGoals()}
-          ${renderFuturePage()}
-        </div>
+        ${renderLongTermGoals()}
       </section>
     `;
   }
@@ -2408,46 +2279,128 @@
   function renderLongTermGoals() {
     const pages = state.data?.personalPages || {};
     return `
-      <div class="personal-pages-list goals-list">
-        ${profiles()
-          .map((profile) => {
-            const page = pages[profile.id] || {};
-            const editable = profile.id === currentUser()?.id;
-            return `
-              <article class="personal-page-card goal-card" style="--person-color: ${escapeHtml(profile.color)}">
-                <div class="personal-page-head">
-                  ${renderAvatar(profile, "goal-avatar")}
-                  <div>
-                    <strong>${escapeHtml(profile.displayName)}</strong>
-                    <em>${escapeHtml(page.title || "长期目标")}</em>
-                  </div>
-                </div>
-                ${
-                  editable
-                    ? `
-                      <form class="personal-page-form goal-form" data-personal-page-form>
-                        <input name="title" type="text" value="${escapeHtml(page.title || profile.displayName)}" placeholder="页面标题" />
-                        <textarea name="longTermGoal" rows="3" placeholder="长期目标：想长期稳定做到什么">${escapeHtml(page.longTermGoal || "")}</textarea>
-                        <textarea name="identityGoal" rows="3" placeholder="希望成为什么样的人">${escapeHtml(page.identityGoal || "")}</textarea>
-                        <textarea name="bio" rows="2" placeholder="简单介绍">${escapeHtml(page.bio || "")}</textarea>
-                        <textarea name="likes" rows="2" placeholder="喜欢、偏好、注意事项">${escapeHtml(page.likes || "")}</textarea>
-                        <textarea name="notes" rows="3" placeholder="更多补充">${escapeHtml(page.notes || "")}</textarea>
-                        <button class="pixel-secondary-button" type="submit">保存长期目标</button>
-                      </form>
-                    `
-                    : `
-                      <div class="personal-page-readonly goal-readonly">
-                        <p>${escapeHtml(page.longTermGoal || "还没有长期目标。")}</p>
-                        <span>${escapeHtml(page.identityGoal || "还没有写希望成为什么样的人。")}</span>
-                        ${page.bio ? `<small>${escapeHtml(page.bio)}</small>` : ""}
-                      </div>
-                    `
-                }
-              </article>
-            `;
-          })
-          .join("")}
+      <div class="long-memory-board">
+        ${profiles().map((profile) => renderMemoryProfile(profile, pages[profile.id] || {})).join("")}
+        ${renderFuturePage()}
       </div>
+    `;
+  }
+
+  function renderMemoryProfile(profile, page = {}) {
+    const editable = profile.id === currentUser()?.id;
+    const memoryHints = [
+      ...(state.data?.memoryHints?.byUser?.[profile.id] || []),
+      ...(state.data?.memoryHints?.shared || []),
+    ].slice(0, 5);
+    const blocks = [
+      {
+        key: "identityGoal",
+        title: "我们想成为什么样",
+        value: page.identityGoal || page.longTermGoal || "",
+        placeholder: "希望成为什么样的人 / 两个人想长期形成什么状态",
+      },
+      {
+        key: "likes",
+        title: "偏好和边界",
+        value: page.likes || "",
+        placeholder: "喜欢、雷区、沟通偏好、需要被记住的边界",
+      },
+      {
+        key: "notes",
+        title: "重要清单",
+        value: page.notes || "",
+        placeholder: "重要清单、纪念信息、需要长期保留的线索",
+      },
+      {
+        key: "longTermGoal",
+        title: "未来想做",
+        value: page.longTermGoal || "",
+        placeholder: "旅行、项目、生活计划、想一起做的事",
+      },
+    ];
+
+    if (!editable) {
+      return `
+        <article class="memory-profile" style="--person-color: ${escapeHtml(profile.color)}">
+          <div class="personal-page-head">
+            ${renderAvatar(profile, "goal-avatar")}
+            <div>
+              <strong>${escapeHtml(profile.displayName)}</strong>
+              <em>${escapeHtml(page.title || "长期记忆")}</em>
+            </div>
+          </div>
+          <div class="memory-block-grid">
+            ${blocks
+              .map(
+                (block) => `
+                  <section class="memory-block">
+                    <span>${escapeHtml(block.title)}</span>
+                    <p>${escapeHtml(block.value || "还没有记录。")}</p>
+                  </section>
+                `
+              )
+              .join("")}
+          </div>
+          ${renderMemoryHints(memoryHints)}
+        </article>
+      `;
+    }
+
+    return `
+      <article class="memory-profile" style="--person-color: ${escapeHtml(profile.color)}">
+        <form class="memory-profile-form" data-personal-page-form>
+          <div class="personal-page-head">
+            ${renderAvatar(profile, "goal-avatar")}
+            <div>
+              <strong>${escapeHtml(profile.displayName)}</strong>
+              <em>正在编辑长期记忆</em>
+            </div>
+          </div>
+          <input name="title" type="text" value="${escapeHtml(page.title || profile.displayName)}" placeholder="标题" />
+          <input name="bio" type="hidden" value="${escapeHtml(page.bio || "")}" />
+          <div class="memory-block-grid">
+            ${blocks
+              .map(
+                (block) => `
+                  <label class="memory-block">
+                    <span>${escapeHtml(block.title)}</span>
+                    <textarea name="${escapeHtml(block.key)}" rows="3" placeholder="${escapeHtml(block.placeholder)}">${escapeHtml(block.value)}</textarea>
+                  </label>
+                `
+              )
+              .join("")}
+          </div>
+          ${renderMemoryHints(memoryHints)}
+          ${renderIconButton({
+            icon: "check",
+            label: "保存长期记忆",
+            className: "is-primary",
+            type: "submit",
+          })}
+        </form>
+      </article>
+    `;
+  }
+
+  function renderMemoryHints(hints = []) {
+    if (!hints.length) return "";
+    return `
+      <section class="memory-block memory-hint-block">
+        <span>系统记住</span>
+        <div class="memory-hint-list">
+          ${hints
+            .slice(0, 4)
+            .map(
+              (hint) => `
+                <p>
+                  <b>${escapeHtml(hint.kindLabel || "线索")}</b>
+                  ${escapeHtml(hint.detail || hint.title || "")}
+                </p>
+              `
+            )
+            .join("")}
+        </div>
+      </section>
     `;
   }
 
@@ -2457,7 +2410,7 @@
       <div class="future-page-list future-goals-panel">
         <div class="dashboard-mini-head">
           <strong>未来想做</strong>
-          <a href="#todos">添加 Todo</a>
+          <a href="#dashboard">回首页</a>
         </div>
         ${
           items.length
@@ -2472,7 +2425,7 @@
                   `
                 )
                 .join("")
-            : `<div class="pixel-empty">未来想做会从 Todo 的“未来”分类里出现。</div>`
+            : `<div class="pixel-empty">未来想做会从生活卡的“未来”分类里出现。</div>`
         }
       </div>
     `;
@@ -2484,7 +2437,7 @@
       <section class="couple-panel settings-panel" id="settings">
         <div class="couple-panel-head compact">
           <div>
-            <p class="couple-kicker">Settings</p>
+            <p class="couple-kicker">设置</p>
             <h2>个人设置</h2>
           </div>
         </div>
@@ -2517,11 +2470,17 @@
                 </select>
               </label>
             </div>
-            <label class="capture-photo-button settings-upload-button">
-              <span>上传头像</span>
+            <label class="capture-photo-button settings-upload-button" title="上传头像">
+              ${iconSvg("camera")}
+              <span class="sr-only">上传头像</span>
               <input name="avatarFile" type="file" accept="image/png,image/jpeg,image/webp,image/gif" />
             </label>
-            <button class="pixel-primary-button" type="submit">保存设置</button>
+            ${renderIconButton({
+              icon: "check",
+              label: "保存设置",
+              className: "is-primary",
+              type: "submit",
+            })}
           </form>
           <div class="settings-members">
             <strong>成员</strong>
@@ -2561,415 +2520,117 @@
       .join("");
   }
 
-  function renderPersonalPages() {
-    const pages = state.data?.personalPages || {};
-    return `
-      <div class="personal-pages-list">
-        ${profiles()
-          .map((profile) => {
-            const page = pages[profile.id] || {};
-            const editable = profile.id === currentUser()?.id;
-            return `
-              <article class="personal-page-card" style="--person-color: ${escapeHtml(profile.color)}">
-                <div class="personal-page-head">
-                  ${renderAvatar(profile, "personal-page-avatar")}
-                  <div>
-                    <strong>${escapeHtml(page.title || profile.displayName)}</strong>
-                    <em>${escapeHtml(profile.displayName)}</em>
-                  </div>
-                </div>
-                ${
-                  editable
-                    ? `
-                      <form class="personal-page-form" data-personal-page-form>
-                        <input name="title" type="text" value="${escapeHtml(page.title || profile.displayName)}" placeholder="页面标题" />
-                        <textarea name="bio" rows="2" placeholder="简单介绍">${escapeHtml(page.bio || "")}</textarea>
-                        <textarea name="likes" rows="2" placeholder="喜欢、偏好、注意事项">${escapeHtml(page.likes || "")}</textarea>
-                        <textarea name="notes" rows="3" placeholder="更多个人信息">${escapeHtml(page.notes || "")}</textarea>
-                        <button class="pixel-secondary-button" type="submit">保存个人页</button>
-                      </form>
-                    `
-                    : `
-                      <div class="personal-page-readonly">
-                        <p>${escapeHtml(page.bio || "还没有写介绍。")}</p>
-                        <span>${escapeHtml(page.likes || "还没有偏好记录。")}</span>
-                        ${page.notes ? `<small>${escapeHtml(page.notes)}</small>` : ""}
-                      </div>
-                    `
-                }
-              </article>
-            `;
-          })
-          .join("")}
-      </div>
-    `;
-  }
-
-  function renderQuickAdd() {
-    return `
-      <section class="couple-panel quick-add-panel">
-        <div class="couple-panel-head compact">
-          <div>
-            <p class="couple-kicker">Quick Add</p>
-            <h2>快速加入日程</h2>
-          </div>
-        </div>
-        <form class="quick-add-form" id="quick-add-form">
-          <label class="couple-field">
-            <span>一句话日程</span>
-            <input id="quick-title" name="title" type="text" placeholder="例如：周五晚上一起吃饭" autocomplete="off" />
-          </label>
-          <label class="couple-field compact">
-            <span>细节</span>
-            <textarea name="detail" rows="2" placeholder="地点、准备、备注"></textarea>
-          </label>
-          <div class="quick-add-controls">
-            <label class="couple-field compact">
-              <span>日期</span>
-              <input name="date" type="date" value="${escapeHtml(state.selectedDate)}" />
-            </label>
-            <label class="couple-field compact">
-              <span>归属</span>
-              <select name="ownerId" id="quick-owner">
-                ${renderOwnerOptions(state.quickOwner)}
-              </select>
-            </label>
-            <label class="couple-field compact">
-              <span>分段</span>
-              <select name="segment" id="quick-segment">
-                ${state.data.segments
-                  .map(
-                    (segment) => `
-                      <option value="${escapeHtml(segment.key)}"${state.activeSegment === segment.key ? " selected" : ""}>
-                        ${escapeHtml(segment.label)}
-                      </option>
-                    `
-                  )
-                  .join("")}
-              </select>
-            </label>
-          </div>
-          <button class="pixel-primary-button" type="submit">写入日程</button>
-        </form>
-      </section>
-    `;
-  }
-
-  function renderCheckinPanel() {
-    const items = checkinItemsForView();
-    return `
-      <section class="couple-panel checkin-panel">
-        <div class="couple-panel-head compact">
-          <div>
-            <p class="couple-kicker">Check-in</p>
-            <h2>共同打卡</h2>
-          </div>
-          <span class="selected-day-count">${items.length} 项 · 同屏</span>
-        </div>
-        <form class="mini-create-form" id="checkin-form">
-          <input name="title" type="text" placeholder="例如：喝水 / 运动 / 互相报平安" />
-          <div>
-            <input name="slot" type="text" placeholder="时段" />
-            <span class="checkin-shared-label">两个人都显示</span>
-          </div>
-          <button class="pixel-primary-button" type="submit">添加打卡</button>
-        </form>
-        <div class="compact-thing-list">
-          ${
-            items.length
-              ? items.map((item) => renderCheckinItem(item)).join("")
-              : `<div class="pixel-empty">还没有每日打卡项。</div>`
-          }
-        </div>
-      </section>
-    `;
-  }
-
-  function renderCheckinItem(item) {
-    return `
-      <article class="compact-thing">
-        <div>
-          <strong>${escapeHtml(item.title)}</strong>
-          <span>共同${item.slot ? ` · ${escapeHtml(item.slot)}` : ""}</span>
-        </div>
-        <div class="compact-toggle-row">
-          ${item.participants
-            .map((userId) => renderStatusControl(item, userId, "checkin"))
-            .join("")}
-          <button class="thing-delete-button" data-delete-checkin="${escapeHtml(item.id)}" type="button">删除</button>
-        </div>
-      </article>
-    `;
-  }
-
-  function renderDeadlinePanel() {
-    const items = deadlineItemsForView().slice(0, 8);
-    return `
-      <section class="couple-panel deadline-panel">
-        <div class="couple-panel-head compact">
-          <div>
-            <p class="couple-kicker">Dates</p>
-            <h2>重要日期</h2>
-          </div>
-        </div>
-        <form class="mini-create-form" id="deadline-form">
-          <input name="title" type="text" placeholder="例如：纪念日 / 投稿截止 / 旅行" />
-          <input name="detail" type="text" placeholder="补充说明" />
-          <div>
-            <input name="date" type="date" value="${escapeHtml(state.selectedDate)}" />
-            <select name="ownerId">${renderOwnerOptions()}</select>
-          </div>
-          <button class="pixel-primary-button" type="submit">记住</button>
-        </form>
-        <div class="compact-thing-list">
-          ${
-            items.length
-              ? items
-                  .map(
-                    (item) => `
-                      <article class="compact-thing date-thing">
-                        <div>
-                          <strong>${escapeHtml(item.date)}</strong>
-                          <span>${escapeHtml(item.title)} · ${escapeHtml(thingClass(item))}</span>
-                          ${item.detail ? `<small>${escapeHtml(item.detail)}</small>` : ""}
-                        </div>
-                        <button class="thing-delete-button" data-delete-deadline="${escapeHtml(item.id)}" type="button">删除</button>
-                      </article>
-                    `
-                  )
-                  .join("")
-              : `<div class="pixel-empty">还没有重要日期。</div>`
-          }
-        </div>
-      </section>
-    `;
-  }
-
-  function renderCaptureHub() {
-    const modeLabels = {
-      save: "记下来！",
-      analysis: "提交给 Agent",
-      todo: "直接添加 Todo",
-    };
-    return `
-      <section class="couple-panel capture-hub-panel" id="capture">
-        <div class="couple-panel-head">
-          <div>
-            <p class="couple-kicker">Quick Capture</p>
-            <h2>随手记</h2>
-          </div>
-          <div class="couple-filter-tabs">
-            ${Object.entries(modeLabels)
-              .map(
-                ([mode, label]) => `
-                  <button class="${state.captureMode === mode ? "is-active" : ""}" data-capture-mode="${mode}" type="button">
-                    ${escapeHtml(label)}
-                  </button>
-                `
-              )
-              .join("")}
-          </div>
-        </div>
-        <div class="capture-hub-layout">
-          <form class="capture-form capture-hub-form" id="capture-form" data-capture-form>
-            <input type="hidden" name="mode" value="${escapeHtml(state.captureMode)}" />
-            <textarea name="text" rows="3" placeholder="先写下来。记下来只保存，交给 Agent 会进入分析流。"></textarea>
-            <div class="capture-extra-row">
-              <input name="location" type="text" placeholder="地点，可留空" autocomplete="off" />
-              <label class="capture-photo-button">
-                <span>照片</span>
-                <input name="photo" type="file" accept="image/png,image/jpeg,image/webp,image/gif" />
-              </label>
-            </div>
-            <div class="capture-form-row">
-              <select name="visibility">
-                <option value="shared">共享可见</option>
-                <option value="private">仅自己可见</option>
-              </select>
-              <select name="ownerId">
-                ${renderOwnerOptions(state.quickOwner)}
-              </select>
-              <button class="pixel-primary-button" type="submit">${escapeHtml(modeLabels[state.captureMode] || "提交")}</button>
-            </div>
-          </form>
-          <div class="capture-hub-feed">
-            <div class="capture-feed-head">
-              <strong>今天的随手记</strong>
-              <span>${capturesForSelectedDate().length} 条</span>
-            </div>
-            <div class="capture-list">
-              ${
-                capturesForSelectedDate().length
-                  ? capturesForSelectedDate()
-                      .map((capture) => renderCaptureNote(capture))
-                      .join("")
-                  : `<div class="pixel-empty">这一天还没有随手记。</div>`
-              }
-            </div>
-          </div>
-        </div>
-      </section>
-    `;
-  }
-
-  function renderCaptureNote(capture, variant = "") {
-    return `
-      <article class="capture-note ${variant === "mini" ? "is-mini" : ""} ${capture.visibility === "private" ? "is-private" : ""}">
-        <span>${escapeHtml(profileName(capture.createdBy))} · ${escapeHtml(captureModeLabel(capture.mode))} · ${capture.visibility === "private" ? "仅自己" : "共享"}${capture.location ? ` · ${escapeHtml(capture.location)}` : ""}</span>
-        <p>${escapeHtml(capture.text)}</p>
-        ${
-          capture.assets?.length && variant !== "mini"
-            ? `<img src="${escapeHtml(capture.assets[0].url)}" alt="${escapeHtml(capture.assets[0].name || "capture photo")}" />`
-            : ""
-        }
-      </article>
-    `;
-  }
-
   function bindAppEvents() {
     root.querySelector("#logout-button")?.addEventListener("click", logout);
     root.querySelectorAll("[data-date-offset]").forEach((button) => {
       button.addEventListener("click", async () => {
         state.selectedDate = addDays(state.selectedDate, Number(button.dataset.dateOffset));
+        state.expandedScheduleGroups.clear();
         await refreshState();
       });
     });
     root.querySelector("[data-jump-today]")?.addEventListener("click", async () => {
       state.selectedDate = getToday();
+      state.expandedScheduleGroups.clear();
       await refreshState();
     });
-    root.querySelectorAll("[data-select-date]").forEach((button) => {
-      button.addEventListener("click", () => selectDate(button.dataset.selectDate));
+    root.querySelector("[data-date-picker]")?.addEventListener("change", async (event) => {
+      const nextDate = String(event.currentTarget.value || "").trim();
+      if (!nextDate || nextDate === state.selectedDate) return;
+      state.selectedDate = nextDate;
+      state.expandedScheduleGroups.clear();
+      await refreshState();
     });
-    root.querySelectorAll("[data-month-date]").forEach((button) => {
-      button.addEventListener("click", () => selectDate(button.dataset.monthDate));
+    root.querySelectorAll("[data-date-select]").forEach((button) => {
+      button.addEventListener("click", async () => {
+        const nextDate = button.dataset.dateSelect || "";
+        if (!nextDate || nextDate === state.selectedDate) return;
+        state.selectedDate = nextDate;
+        state.expandedScheduleGroups.clear();
+        await refreshState();
+      });
     });
-    root.querySelectorAll("[data-dashboard-mode]").forEach((button) => {
+    root.querySelectorAll("[data-month-offset]").forEach((button) => {
+      button.addEventListener("click", async () => {
+        state.selectedDate = addMonths(state.selectedDate, Number(button.dataset.monthOffset));
+        state.expandedScheduleGroups.clear();
+        state.monthViewOpen = true;
+        await refreshState();
+      });
+    });
+    root.querySelector("[data-month-toggle]")?.addEventListener("click", () => {
+      state.monthViewOpen = !state.monthViewOpen;
+      renderApp();
+    });
+    root.querySelectorAll("[data-schedule-fold-toggle]").forEach((button) => {
       button.addEventListener("click", () => {
-        state.dashboardMode = button.dataset.dashboardMode;
+        const key = button.dataset.scheduleFoldToggle || "";
+        if (!key) return;
+        if (state.expandedScheduleGroups.has(key)) {
+          state.expandedScheduleGroups.delete(key);
+        } else {
+          state.expandedScheduleGroups.add(key);
+        }
         renderApp();
       });
     });
-    root.querySelectorAll("[data-todo-mode]").forEach((button) => {
+    root.querySelectorAll("[data-schedule-filter]").forEach((button) => {
       button.addEventListener("click", () => {
-        state.todoMode = button.dataset.todoMode;
-        state.editTodoId = "";
+        state.scheduleFilter = button.dataset.scheduleFilter || "open";
+        state.expandedScheduleGroups.clear();
         renderApp();
       });
     });
-    root.querySelectorAll("[data-capture-mode]").forEach((button) => {
+    root.querySelectorAll("[data-schedule-view]").forEach((button) => {
       button.addEventListener("click", () => {
-        state.captureMode = button.dataset.captureMode || "save";
-        renderApp();
-      });
-    });
-    root.querySelectorAll("[data-pages-mode]").forEach((button) => {
-      button.addEventListener("click", () => {
-        state.pagesMode = button.dataset.pagesMode || "future";
+        state.scheduleViewStyle = button.dataset.scheduleView || "line";
         renderApp();
       });
     });
     root.querySelectorAll("[data-refresh-summary]").forEach((button) => {
       button.addEventListener("click", refreshDailySummary);
     });
+    root.querySelectorAll("[data-capture-confirm-form]").forEach((form) => {
+      form.addEventListener("submit", submitCaptureConfirmation);
+    });
+    root.querySelectorAll("[data-confirm-record-only]").forEach((button) => {
+      button.addEventListener("click", dismissCaptureConfirmation);
+    });
     root.querySelectorAll("[data-daily-pulse-form]").forEach((form) => {
       form.addEventListener("submit", saveDailyPulse);
     });
-    root.querySelector("#quick-add-form")?.addEventListener("submit", addScheduleFromForm);
-    root.querySelector("#quick-owner")?.addEventListener("change", (event) => {
-      state.quickOwner = event.currentTarget.value;
+    root.querySelectorAll("[data-card-toggle]").forEach((button) => {
+      button.addEventListener("click", (event) => {
+        event.stopPropagation();
+        toggleScheduleCard(button.dataset.cardToggle);
+      });
     });
-    root.querySelector("#quick-segment")?.addEventListener("change", (event) => {
-      state.activeSegment = event.currentTarget.value;
+    root.querySelectorAll("[data-card-edit]").forEach((button) => {
+      button.addEventListener("click", (event) => {
+        event.stopPropagation();
+        state.editCardId = button.dataset.cardEdit || "";
+        renderApp();
+      });
     });
-    root.querySelector("#todo-create-form")?.addEventListener("submit", saveTodo);
-    root.querySelectorAll(".todo-edit-form").forEach((form) => {
-      form.addEventListener("submit", saveTodo);
+    root.querySelectorAll("[data-card-delete]").forEach((button) => {
+      button.addEventListener("click", (event) => {
+        event.stopPropagation();
+        deleteScheduleCard(button.dataset.cardDelete);
+      });
+    });
+    root.querySelectorAll("[data-card-edit-form]").forEach((form) => {
+      form.addEventListener("submit", saveScheduleCardEdit);
+    });
+    root.querySelectorAll("[data-card-cancel-edit]").forEach((button) => {
+      button.addEventListener("click", () => {
+        state.editCardId = "";
+        renderApp();
+      });
     });
     root.querySelectorAll("[data-personal-page-form]").forEach((form) => {
       form.addEventListener("submit", savePersonalPage);
     });
     root.querySelector("#profile-settings-form")?.addEventListener("submit", saveProfileSettings);
-    root.querySelector("#checkin-form")?.addEventListener("submit", saveCheckin);
-    root.querySelector("#deadline-form")?.addEventListener("submit", saveDeadline);
-    root.querySelectorAll("[data-schedule-detail]").forEach((button) => {
-      button.addEventListener("click", (event) => {
-        event.stopPropagation();
-        state.selectedScheduleId = button.dataset.scheduleDetail || "";
-        state.selectedDate = button.dataset.scheduleDate || state.selectedDate;
-        state.activePage = "schedule";
-        if (window.location.hash !== "#schedule") {
-          window.location.hash = "#schedule";
-        }
-        renderApp();
-      });
-    });
-    root.querySelectorAll("[data-toggle-item]").forEach((button) => {
-      button.addEventListener("click", (event) => {
-        event.stopPropagation();
-        toggleScheduleItem(button.dataset.toggleItem, button.dataset.toggleUser, button.dataset.toggleDate);
-      });
-    });
-    root.querySelectorAll("[data-delete-item]").forEach((button) => {
-      button.addEventListener("click", (event) => {
-        event.stopPropagation();
-        deleteScheduleItem(button.dataset.deleteItem, button.dataset.deleteDate);
-      });
-    });
-    root.querySelectorAll("[data-archive-item]").forEach((button) => {
-      button.addEventListener("click", (event) => {
-        event.stopPropagation();
-        archiveScheduleItem(button.dataset.archiveItem, button.dataset.archiveDate);
-      });
-    });
-    root.querySelectorAll("[data-toggle-todo]").forEach((button) => {
-      button.addEventListener("click", (event) => {
-        event.stopPropagation();
-        toggleTodo(button.dataset.toggleTodo, button.dataset.toggleUser, button.dataset.toggleDate);
-      });
-    });
-    root.querySelectorAll("[data-edit-todo]").forEach((button) => {
-      button.addEventListener("click", () => {
-        state.editTodoId = button.dataset.editTodo;
-        renderApp();
-      });
-    });
-    root.querySelectorAll("[data-cancel-edit-todo]").forEach((button) => {
-      button.addEventListener("click", () => {
-        state.editTodoId = "";
-        renderApp();
-      });
-    });
-    root.querySelectorAll("[data-delete-todo]").forEach((button) => {
-      button.addEventListener("click", (event) => {
-        event.stopPropagation();
-        deleteTodo(button.dataset.deleteTodo);
-      });
-    });
-    root.querySelectorAll("[data-archive-todo]").forEach((button) => {
-      button.addEventListener("click", (event) => {
-        event.stopPropagation();
-        archiveTodo(button.dataset.archiveTodo, button.dataset.archiveDate);
-      });
-    });
-    root.querySelectorAll("[data-toggle-checkin]").forEach((button) => {
-      button.addEventListener("click", (event) => {
-        event.stopPropagation();
-        toggleCheckin(button.dataset.toggleCheckin, button.dataset.toggleUser);
-      });
-    });
-    root.querySelectorAll("[data-delete-checkin]").forEach((button) => {
-      button.addEventListener("click", (event) => {
-        event.stopPropagation();
-        deleteCheckin(button.dataset.deleteCheckin);
-      });
-    });
-    root.querySelectorAll("[data-delete-deadline]").forEach((button) => {
-      button.addEventListener("click", (event) => {
-        event.stopPropagation();
-        deleteDeadline(button.dataset.deleteDeadline);
-      });
-    });
     root.querySelectorAll("[data-capture-form]").forEach((form) => {
       form.addEventListener("submit", saveCapture);
     });
