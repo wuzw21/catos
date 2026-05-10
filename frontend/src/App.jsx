@@ -2330,7 +2330,10 @@ function LifeCardTimeline({ cards, profiles, currentUser, selectedDate, filter, 
   const lifeCards = useMemo(() => (cards || [])
     .filter((card) => !isDefaultPromptCard(card))
     .filter((card) => card.sourceType !== "insight")
-    .filter((card) => String(card.date || todayKey) >= todayKey), [cards, todayKey]);
+    .filter((card) => {
+      const cardDate = String(card.date || todayKey);
+      return cardDate === selectedDate || cardDate >= todayKey;
+    }), [cards, selectedDate, todayKey]);
   const profileIds = useMemo(() => new Set(profiles.map((profile) => profile.id)), [profiles]);
   const isSharedCard = (card) => card.ownerId === "shared" || (card.participants || []).length > 1;
   const isCurrentUserCard = (card) => card.ownerId === currentUser?.id || card.participants?.includes(currentUser?.id);
