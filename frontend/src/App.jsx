@@ -842,6 +842,22 @@ function namesForIds(ids, profiles) {
   return (ids || []).map((id) => byId.get(id)).filter(Boolean).join("、");
 }
 
+function actorName(id, profiles, fallback = "系统") {
+  return namesForIds([id].filter(Boolean), profiles) || fallback;
+}
+
+function lifeCardAudit(card, profiles) {
+  const createdAt = compactDateTime(card?.createdAt);
+  const updatedAt = compactDateTime(card?.updatedAt);
+  const createdBy = actorName(card?.createdBy, profiles);
+  const updatedBy = actorName(card?.updatedBy, profiles);
+  const edited = Boolean(updatedAt && (card?.updatedBy !== card?.createdBy || card?.updatedAt !== card?.createdAt));
+  return {
+    created: createdAt ? `创建 ${createdAt}` : "",
+    editor: edited ? `${updatedBy}编辑` : createdBy,
+  };
+}
+
 function detailRows(rows) {
   return rows.filter((row) => row && row.value);
 }
@@ -893,6 +909,7 @@ const detailBuilders = {
     const sourceSummary = cleanCardText(card.sourceCaptureSummary || "");
     const readOnly = card.readOnly || card.sourceType === "insight";
     const stepStatus = card.stepProgress?.total ? `${card.stepProgress.done}/${card.stepProgress.total}` : "";
+    const audit = lifeCardAudit(card, profiles);
     const steps = (Array.isArray(card.steps) ? card.steps : [])
       .map((step) => ({
         id: step.id || step.title,
@@ -914,9 +931,12 @@ const detailBuilders = {
         { label: "时间", value: primaryTimeLabel(card) },
         { label: "归属", value: ownerLabel(card.ownerId, currentUser) },
         { label: "状态", value: stepStatus || statusText(card) || card.statusLabel },
-        { label: "操作", value: namesForIds([card.updatedBy || card.createdBy].filter(Boolean), profiles) },
+        { label: "编辑", value: actorName(card.updatedBy || card.createdBy, profiles, "") },
       ].filter((item) => item.value),
       rows: detailRows([
+        card.createdAt ? { label: "创建", value: [compactDateTime(card.createdAt), actorName(card.createdBy, profiles, "")].filter(Boolean).join(" · ") } : null,
+        card.updatedAt ? { label: "编辑", value: [compactDateTime(card.updatedAt), actorName(card.updatedBy, profiles, "")].filter(Boolean).join(" · ") } : null,
+        detail ? { label: "注意", value: detail, wide: true } : null,
         card.nextStep?.title ? { label: "下一步", value: card.nextStep.title, wide: true } : null,
         card.plannedAt ? { label: "开始", value: formatDateTimeShort(card.plannedAt) } : null,
         card.dueAt ? { label: "截止", value: formatDateTimeShort(card.dueAt) } : null,
@@ -2695,6 +2715,7 @@ function LifeCard({ card, profiles, currentUser, toggleCard, archiveCard, toggle
   const timeNote = primaryTimeLabel(card);
   const summaryText = !isCheckin && summary && summary !== timeNote ? summary : "";
   const planParts = isCheckin ? [] : (Array.isArray(card.actionSummary) && card.actionSummary.length ? card.actionSummary : cardPlanParts(card)).slice(0, 4);
+  const audit = lifeCardAudit(card, profiles);
   const profileById = new Map((profiles || []).map((profile) => [profile.id, profile]));
   const checkinSteps = isCheckin
     ? participants.map((id) => ({
@@ -2784,6 +2805,13 @@ function LifeCard({ card, profiles, currentUser, toggleCard, archiveCard, toggle
               {card.priority === "high" ? <span>重要</span> : null}
             </div>
             <strong>{title}</strong>
+            {(audit.created || audit.editor) ? (
+              <span className="card-audit">
+                <Icon name="edit" />
+                {audit.created ? <em>{audit.created}</em> : null}
+                {audit.editor ? <em>{audit.editor}</em> : null}
+              </span>
+            ) : null}
           </div>
         </button>
         {miniSteps.length ? (
@@ -2834,7 +2862,13 @@ function LifeCard({ card, profiles, currentUser, toggleCard, archiveCard, toggle
             <span style={{ width: `${card.stepProgress.percent || 0}%` }} />
           </div>
         ) : null}
-        {summaryText ? <p className="card-detail">{summaryText}</p> : null}
+        {summaryText ? (
+          <p className="card-detail card-note">
+            <Icon name="bookmark" />
+            <b>注意</b>
+            <span>{summaryText}</span>
+          </p>
+        ) : null}
       </div>
       {!readOnly && !isDraft && !isCheckin ? (
         <div className="card-actions">
@@ -3033,7 +3067,7 @@ function CardEditor({ card, profiles, onClose, onSave, onDelete }) {
           />
         </label>
         <label className="quiet-field edit-detail-field">
-          <span>细节</span>
+          <span>注意</span>
           <textarea rows={4} value={form.detail} onChange={(event) => update("detail", event.target.value)} />
         </label>
         <div className="edit-grid">
