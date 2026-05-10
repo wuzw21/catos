@@ -45,6 +45,18 @@ const segmentLabels = {
   evening: "晚上",
   allDay: "全天",
 };
+const itemTypeIcons = {
+  thing: "cards",
+  work: "focus",
+  date: "star",
+  purchase: "bookmark",
+  reminder: "clock",
+  checkin: "check",
+  habit: "refresh",
+  schedule: "calendar",
+  todo: "rows",
+  deadline: "clock",
+};
 const weekLabels = ["一", "二", "三", "四", "五", "六", "日"];
 const dayRolloverHour = 3;
 const deepNightNoticeText = "夜已深了，猫猫要早点休息哦！";
@@ -332,6 +344,10 @@ function cx(...parts) {
   return parts.filter(Boolean).join(" ");
 }
 
+function itemTypeIcon(type) {
+  return itemTypeIcons[type] || "cards";
+}
+
 async function readFileAsDataUrl(file) {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -361,6 +377,19 @@ function iconPath(name) {
         <path d="M5 7h14" />
         <path d="M9 7V5h6v2" />
         <path d="M8 7.5V19h8V7.5" />
+      </>
+    ),
+    plus: (
+      <>
+        <path d="M12 5v14" />
+        <path d="M5 12h14" />
+      </>
+    ),
+    grip: (
+      <>
+        <path d="M9 6h.01M15 6h.01" />
+        <path d="M9 12h.01M15 12h.01" />
+        <path d="M9 18h.01M15 18h.01" />
       </>
     ),
     sparkle: (
@@ -1277,9 +1306,16 @@ export function App() {
     setDetailRequest({ type, payload });
   }
 
-  function startAgentJob(jobId) {
+  function startAgentJob(jobId, meta = {}) {
     if (!jobId) return;
-    setAgentJob({ id: jobId, status: "running" });
+    setAgentJob({
+      id: jobId,
+      status: "running",
+      captureId: meta.captureId || "",
+      text: meta.text || "",
+      date: meta.date || selectedDate,
+      startedAt: Date.now(),
+    });
     waitForJob(jobId)
       .then((result) => {
         if (result?.state) {
@@ -1290,9 +1326,51 @@ export function App() {
         setAgentJob(null);
       })
       .catch((err) => {
-        setAgentJob(null);
-        setError(err.message);
+        setAgentJob({
+          id: jobId,
+          status: "failed",
+          captureId: meta.captureId || "",
+          text: meta.text || "",
+          date: meta.date || selectedDate,
+          error: err.message,
+        });
       });
+  }
+
+  async function retryAgentJob(job = agentJob) {
+    if (!job?.captureId) return;
+    setBusy(true);
+    setError("");
+    try {
+      const analyzed = await request("/api/couple/capture/analyze", {
+        method: "POST",
+        body: {
+          captureId: job.captureId,
+          text: job.text || "",
+          date: job.date || selectedDate,
+          ownerId: currentUser?.id || "",
+          analysisMode: "agent",
+        },
+      });
+      if (analyzed?.jobId) {
+        startAgentJob(analyzed.jobId, {
+          captureId: job.captureId,
+          text: job.text,
+          date: job.date || selectedDate,
+        });
+      } else {
+        setConfirmation(analyzed?.confirmation || null);
+        setAgentJob(null);
+      }
+    } catch (err) {
+      setAgentJob((current) => ({
+        ...(current || job),
+        status: "failed",
+        error: err.message,
+      }));
+    } finally {
+      setBusy(false);
+    }
   }
 
   async function handleDetailAction(action) {
@@ -1373,7 +1451,11 @@ export function App() {
         });
         if (mode === "agent" && analyzed?.jobId) {
           setConfirmation(null);
-          startAgentJob(analyzed.jobId);
+          startAgentJob(analyzed.jobId, {
+            captureId: captureResult.capture.id,
+            text,
+            date: selectedDate,
+          });
         } else if (mode === "template" && analyzed?.confirmation?.decision === "schedule") {
           await commitRoute(analyzed.confirmation);
         } else {
@@ -1595,6 +1677,8 @@ export function App() {
             agentJob={agentJob}
             submitConfirmation={submitConfirmation}
             dismissConfirmation={() => setConfirmation(null)}
+            retryAgentJob={retryAgentJob}
+            clearAgentJob={() => setAgentJob(null)}
             saveRawCapture={saveRawCapture}
             busy={busy}
             error={error}
@@ -1609,6 +1693,7 @@ export function App() {
             setEditingCard={setEditingCard}
             openDetail={openDetail}
             composingRef={composingRef}
+            navigate={navigate}
           />
         )}
         {page === "month" && (
@@ -1768,6 +1853,8 @@ function Dashboard(props) {
     agentJob,
     submitConfirmation,
     dismissConfirmation,
+    retryAgentJob,
+    clearAgentJob,
     saveRawCapture,
     busy,
     error,
@@ -1782,6 +1869,7 @@ function Dashboard(props) {
     setEditingCard,
     openDetail,
     composingRef,
+    navigate,
   } = props;
 
   return (
@@ -1798,6 +1886,8 @@ function Dashboard(props) {
         confirmation={confirmation}
         submitConfirmation={submitConfirmation}
         dismissConfirmation={dismissConfirmation}
+        retryAgentJob={retryAgentJob}
+        clearAgentJob={clearAgentJob}
         composingRef={composingRef}
       />
       {error ? <p className="form-error inline">{error}</p> : null}
@@ -1818,6 +1908,85 @@ function Dashboard(props) {
         openDetail={openDetail}
         chooseDate={chooseDate}
       />
+      <TodayOverview
+        data={data}
+        profiles={profiles}
+        currentUser={currentUser}
+        selectedDate={selectedDate}
+        navigate={navigate}
+        openDetail={openDetail}
+      />
+    </section>
+  );
+}
+
+function TodayOverview({ data, profiles, currentUser, selectedDate, navigate, openDetail }) {
+  const context = useMemo(() => ({ profiles, currentUser, selectedDate }), [profiles, currentUser, selectedDate]);
+  const summary = data.dailySummary?.date === selectedDate ? data.dailySummary : null;
+  const cards = useMemo(() => sortCards((data.scheduleItemCards || [])
+    .filter((card) => card.date === selectedDate && !isDefaultPromptCard(card) && !isArchivedCard(card)))
+    .slice(0, 3), [data.scheduleItemCards, selectedDate]);
+  const captures = useMemo(() => (data.captures || [])
+    .filter((capture) => cleanStoryText(capture.text) || capture.assets?.length)
+    .slice(0, 3), [data.captures]);
+  const memoryCount = (data.memoryItems || []).filter((item) => item.suggestedDate === selectedDate || String(item.updatedAt || "").slice(0, 10) === selectedDate).length;
+  const analysis = summary?.analysis || {};
+  const title = summary ? storyDisplayTitle(summary, selectedDate) : "";
+  const diary = cleanStoryText(analysis.diary?.text || summary?.narrative || "");
+  const keyMoment = cleanStoryText(analysis.keyMoment?.title || analysis.keyMoment?.text || "");
+  const tomorrow = cleanStoryText(analysis.dailyReview?.tomorrow?.title || analysis.dailyReview?.tomorrow?.text || summary?.nextStep || "");
+  const body = shortText(diary || keyMoment || tomorrow, 92);
+  const hasOverview = Boolean(summary || cards.length || captures.length || memoryCount);
+  const stats = [
+    { key: "cards", icon: "cards", value: cards.length },
+    { key: "captures", icon: "camera", value: captures.length },
+    { key: "memory", icon: "bookmark", value: memoryCount },
+  ].filter((item) => item.value);
+
+  if (!hasOverview) return null;
+
+  return (
+    <section className="today-glance">
+      <button className={cx("today-story", !summary && "is-quiet")} type="button" onClick={() => navigate("daily-summary")}>
+        <span className="today-story-mark">
+          <Icon name={summary ? "sparkle" : "calendar"} />
+        </span>
+        <span className="today-story-copy">
+          <strong>{title || (selectedDate === today() ? "今天" : shortDate(selectedDate))}</strong>
+          {body ? <em>{body}</em> : null}
+        </span>
+        {stats.length ? (
+          <span className="today-story-stats" aria-hidden="true">
+            {stats.map((item) => (
+              <i key={item.key}>
+                <Icon name={item.icon} />
+                <b>{item.value}</b>
+              </i>
+            ))}
+          </span>
+        ) : null}
+      </button>
+      {cards.length || captures.length ? (
+        <div className="today-pins">
+          {cards.slice(0, 2).map((card) => (
+            <button key={card.id} type="button" onClick={() => openDetail("lifeCard", card)}>
+              <Icon name={itemTypeIcon(card.itemType || card.sourceType)} />
+              <span>{displayCardTitle(card.title || card.sourceCaptureSummary || "猫猫的事")}</span>
+              <em>{primaryTimeLabel(card)}</em>
+            </button>
+          ))}
+          {captures.slice(0, Math.max(0, 2 - Math.min(cards.length, 2))).map((capture) => {
+            const row = captureRow(capture, context);
+            return (
+              <button key={row.id} type="button" onClick={() => openDetail("capture", capture)}>
+                <Icon name="camera" />
+                <span>{row.title}</span>
+                {row.subtitle ? <em>{row.subtitle}</em> : null}
+              </button>
+            );
+          })}
+        </div>
+      ) : null}
     </section>
   );
 }
@@ -1874,7 +2043,7 @@ function DateRail({ selectedDate, chooseDate }) {
   );
 }
 
-function Composer({ text, setText, saveRawCapture, profiles, currentUser, busy, agentJob, confirmation, submitConfirmation, dismissConfirmation, composingRef }) {
+function Composer({ text, setText, saveRawCapture, profiles, currentUser, busy, agentJob, confirmation, submitConfirmation, dismissConfirmation, retryAgentJob, clearAgentJob, composingRef }) {
   const [routeDraft, setRouteDraft] = useState(null);
   useEffect(() => {
     setRouteDraft(confirmation ? { ...confirmation } : null);
@@ -1919,6 +2088,8 @@ function Composer({ text, setText, saveRawCapture, profiles, currentUser, busy, 
     const next = normalizeRouteForSubmit({ ...(draft || {}), ...patch });
     submitConfirmation(event, next);
   };
+  const agentRunning = agentJob?.status === "running";
+  const agentFailed = agentJob?.status === "failed";
 
   return (
     <section className="composer-band">
@@ -1940,13 +2111,26 @@ function Composer({ text, setText, saveRawCapture, profiles, currentUser, busy, 
         />
         <div className="composer-actions">
           <IconButton icon="bookmark" label="默认" disabled={busy || !text.trim()} onClick={() => submit("template")} />
-          <IconButton icon="sparkle" label="Agent" primary disabled={busy || Boolean(agentJob) || !text.trim()} onClick={() => submit("agent")} />
+          <IconButton icon="sparkle" label="Agent" primary disabled={busy || agentRunning || !text.trim()} onClick={() => submit("agent")} />
         </div>
       </form>
       {agentJob ? (
-        <div className="agent-strip" role="status" aria-live="polite">
-          <Icon name="sparkle" />
-          <span>Agent 分流中</span>
+        <div className={cx("agent-strip", agentFailed && "is-failed")} role="status" aria-live="polite">
+          <Icon name={agentFailed ? "refresh" : "sparkle"} />
+          <span>{agentFailed ? "Agent 没想明白" : "Agent 分流中"}</span>
+          {agentFailed ? <em>{shortText(agentJob.error || "可以重试", 36)}</em> : <em>原文已保存</em>}
+          {agentFailed ? (
+            <div className="agent-strip-actions">
+              <button type="button" onClick={() => retryAgentJob?.(agentJob)} disabled={busy}>
+                <Icon name="refresh" />
+                <span>重试</span>
+              </button>
+              <button type="button" onClick={clearAgentJob}>
+                <Icon name="x" />
+                <span>关闭</span>
+              </button>
+            </div>
+          ) : null}
         </div>
       ) : null}
       {draft ? (
@@ -2840,6 +3024,16 @@ function LifeCard({ card, profiles, currentUser, toggleCard, archiveCard, toggle
   );
 }
 
+function makeEditorStep(step = {}, index = 0) {
+  return {
+    id: step.id || `draft-step-${Date.now()}-${index}`,
+    title: step.title || "",
+    estimateMin: step.estimateMin || "",
+    status: step.status === "done" ? "done" : "todo",
+    ownerId: step.ownerId || "",
+  };
+}
+
 function CardEditor({ card, profiles, onClose, onSave, onDelete }) {
   const [form, setForm] = useState({
     title: card.title || "",
@@ -2852,17 +3046,54 @@ function CardEditor({ card, profiles, onClose, onSave, onDelete }) {
     plannedAt: dateTimeLocalValue(card.plannedAt),
     dueAt: dateTimeLocalValue(card.dueAt),
     durationMin: card.durationMin || "",
-    stepsText: (card.steps || []).map((step) => step.title).filter(Boolean).join("\n"),
+    steps: (card.steps || []).map(makeEditorStep),
   });
+  const [dragStepId, setDragStepId] = useState("");
   const update = (key, value) => setForm((current) => ({ ...current, [key]: value }));
+  const updateStep = (id, patch) => setForm((current) => ({
+    ...current,
+    steps: current.steps.map((step) => step.id === id ? { ...step, ...patch } : step),
+  }));
+  const moveStep = (id, direction) => setForm((current) => {
+    const steps = [...current.steps];
+    const index = steps.findIndex((step) => step.id === id);
+    const nextIndex = index + direction;
+    if (index < 0 || nextIndex < 0 || nextIndex >= steps.length) return current;
+    [steps[index], steps[nextIndex]] = [steps[nextIndex], steps[index]];
+    return { ...current, steps };
+  });
+  const dropStep = (targetId) => setForm((current) => {
+    if (!dragStepId || dragStepId === targetId) return current;
+    const steps = [...current.steps];
+    const from = steps.findIndex((step) => step.id === dragStepId);
+    const to = steps.findIndex((step) => step.id === targetId);
+    if (from < 0 || to < 0) return current;
+    const [moved] = steps.splice(from, 1);
+    steps.splice(to, 0, moved);
+    return { ...current, steps };
+  });
+  const addStep = () => setForm((current) => ({
+    ...current,
+    steps: [...current.steps, makeEditorStep({ title: "", estimateMin: "" }, current.steps.length)],
+  }));
+  const removeStep = (id) => setForm((current) => ({
+    ...current,
+    steps: current.steps.filter((step) => step.id !== id),
+  }));
   const submit = (event) => {
     event.preventDefault();
     onSave({
       ...form,
       durationMin: Number(form.durationMin) || 0,
-      steps: String(form.stepsText || "")
-        .split("\n")
-        .map((title, index) => ({ id: card.steps?.[index]?.id || `step-${index + 1}`, title: title.trim(), status: card.steps?.[index]?.status || "todo", sortOrder: index }))
+      steps: form.steps
+        .map((step, index) => ({
+          id: step.id || `step-${index + 1}`,
+          title: step.title.trim(),
+          ownerId: step.ownerId,
+          estimateMin: Number(step.estimateMin) || 0,
+          status: step.status === "done" ? "done" : "todo",
+          sortOrder: index,
+        }))
         .filter((step) => step.title),
     });
   };
@@ -2936,10 +3167,63 @@ function CardEditor({ card, profiles, onClose, onSave, onDelete }) {
               <input type="number" min="0" step="5" value={form.durationMin} onChange={(event) => update("durationMin", event.target.value)} />
             </label>
           </div>
-          <label className="quiet-field">
-            <span>步骤</span>
-            <textarea rows={3} value={form.stepsText} onChange={(event) => update("stepsText", event.target.value)} />
-          </label>
+          <section className="step-editor" aria-label="步骤">
+            <div className="step-editor-head">
+              <span>步骤</span>
+              <button type="button" onClick={addStep}>
+                <Icon name="plus" />
+                <em>添加</em>
+              </button>
+            </div>
+            <div className="step-editor-list">
+              {form.steps.length ? form.steps.map((step, index) => (
+                <div
+                  key={step.id}
+                  className={cx("step-editor-row", dragStepId === step.id && "is-dragging")}
+                  draggable
+                  onDragStart={() => setDragStepId(step.id)}
+                  onDragEnd={() => setDragStepId("")}
+                  onDragOver={(event) => event.preventDefault()}
+                  onDrop={(event) => {
+                    event.preventDefault();
+                    dropStep(step.id);
+                    setDragStepId("");
+                  }}
+                >
+                  <span className="step-drag" title="拖动">
+                    <Icon name="grip" />
+                  </span>
+                  <input
+                    value={step.title}
+                    onChange={(event) => updateStep(step.id, { title: event.target.value })}
+                    placeholder={`第 ${index + 1} 步`}
+                    aria-label={`第 ${index + 1} 步`}
+                  />
+                  <label>
+                    <span>分钟</span>
+                    <input
+                      type="number"
+                      min="0"
+                      step="5"
+                      value={step.estimateMin}
+                      onChange={(event) => updateStep(step.id, { estimateMin: event.target.value })}
+                      aria-label={`${step.title || `第 ${index + 1} 步`} 预计分钟`}
+                    />
+                  </label>
+                  <div className="step-row-actions">
+                    <IconButton icon="chevronUp" label="上移" onClick={() => moveStep(step.id, -1)} disabled={index === 0} />
+                    <IconButton icon="chevronDown" label="下移" onClick={() => moveStep(step.id, 1)} disabled={index === form.steps.length - 1} />
+                    <IconButton icon="trash" label="删除" danger onClick={() => removeStep(step.id)} />
+                  </div>
+                </div>
+              )) : (
+                <button className="step-editor-empty" type="button" onClick={addStep}>
+                  <Icon name="plus" />
+                  <span>添加第一步</span>
+                </button>
+              )}
+            </div>
+          </section>
         </details>
         <div className="sheet-actions">
           <IconButton icon="check" label="保存" type="submit" primary />

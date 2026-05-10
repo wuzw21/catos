@@ -2478,16 +2478,25 @@ function analyzeCapture(userId, payload = {}) {
     priority,
     ...planning,
   };
+  const relatedItems = decision === "schedule" && templateMatched ? analyzeRelatedScheduleItems(text, title, base) : [];
+  const relatedTitleKeys = relatedItems.map((item) => normalizedTitleKey(item.title)).filter(Boolean);
+  const filteredSteps = relatedTitleKeys.length
+    ? base.steps.filter((step) => {
+        const key = normalizedTitleKey(step.title);
+        return !relatedTitleKeys.some((relatedKey) => key.includes(relatedKey) || relatedKey.includes(key));
+      })
+    : base.steps;
 
   return {
     ...base,
+    steps: filteredSteps.length ? filteredSteps : base.steps,
     analysisMode,
     templateMatched,
     isDefaultDraft: analysisMode === "template" && !templateMatched,
     analyzer: analysisMode === "agent" ? "agent-route-prompt" : "template-rules",
     routeDestinations: captureRouteDestinations,
     agentPrompt: analysisMode === "agent" ? captureAgentPrompt : "",
-    relatedItems: decision === "schedule" && templateMatched ? analyzeRelatedScheduleItems(text, title, base) : [],
+    relatedItems,
   };
 }
 

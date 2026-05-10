@@ -11,11 +11,16 @@ HOST=0.0.0.0
 PORT=2333
 PEOS_CONTENT_ROOT=/data/peos-content
 PEOS_COOKIE_SECURE=1
+PEOS_REQUIRE_HTTPS=1
 PEOS_COUPLE_SESSION_SECRET=换成一段很长的随机字符串
 PEOS_COUPLE_YOU_NAME=你的昵称
 PEOS_COUPLE_PARTNER_NAME=对方昵称
 PEOS_COUPLE_YOU_PASSWORD=换成强访问码
 PEOS_COUPLE_PARTNER_PASSWORD=换成另一个强访问码
+# 可选：登录失败限速。默认 10 分钟内 6 次失败后锁 15 分钟
+PEOS_LOGIN_RATE_LIMIT_MAX_FAILURES=6
+PEOS_LOGIN_RATE_LIMIT_WINDOW_MS=600000
+PEOS_LOGIN_RATE_LIMIT_LOCK_MS=900000
 # 可选：凌晨 4 点自动刷新日总结。默认开启，默认总结前一天
 PEOS_COUPLE_DAILY_SUMMARY_CRON=1
 PEOS_COUPLE_DAILY_SUMMARY_HOUR=4
@@ -39,10 +44,12 @@ PEOS_COUPLE_DAILY_SUMMARY_AGENT=1
 登录说明：
 
 - Web 端使用 `HttpOnly` Cookie。
-- 移动端使用登录接口返回的 `sessionToken`，请求时放到 `Authorization: Bearer <token>`。
+- iOS 第一版建议用 Safari 添加到主屏幕，仍然使用同一套 `HttpOnly` Cookie。
+- Expo 壳或后续原生请求也可以使用登录接口返回的 `sessionToken`，请求时放到 `Authorization: Bearer <token>`。
 - Session token 是后端签名 token，默认 14 天有效；服务重启后仍然有效。
 - 生产环境务必配置 `PEOS_COUPLE_SESSION_SECRET`，否则会用当前账号密码哈希派生本地开发 secret。
 - 默认只能修改“当前登录账号自己”的完成状态；如果确实要一个人代改另一个人的完成状态，可配置 `PEOS_COUPLE_ALLOW_CROSS_USER_STATUS=1`。
+- 后端会给页面和接口加 `noindex` 响应头，`/__content/*` 未登录不能访问。
 
 如果还要保留原有 Markdown 系统的页面和回写能力，第一次部署前先初始化内容目录：
 
@@ -71,6 +78,8 @@ docker run -d \
   -e PORT=2333 \
   -e PEOS_CONTENT_ROOT=/data/peos-content \
   -e PEOS_COOKIE_SECURE=1 \
+  -e PEOS_REQUIRE_HTTPS=1 \
+  -e PEOS_COUPLE_SESSION_SECRET='long-random-secret' \
   -e PEOS_COUPLE_YOU_PASSWORD='your-password' \
   -e PEOS_COUPLE_PARTNER_PASSWORD='partner-password' \
   peos-couple
@@ -93,6 +102,10 @@ Caddy 示例：
 
 ```caddyfile
 app.example.com {
+  header {
+    X-Robots-Tag "noindex, nofollow, noarchive"
+    Strict-Transport-Security "max-age=31536000; includeSubDomains"
+  }
   reverse_proxy 127.0.0.1:2333
 }
 ```
@@ -163,36 +176,28 @@ Authorization: Bearer <sessionToken>
 4. 如果返回 `changed: false`，继续下一轮。
 5. 如果返回 `state`，更新本地视图并记录新的 `state.revision`。
 
-## 移动端最小配置
+## 移动端第一版：iOS 添加到主屏幕
 
-建议用 Expo 起步。最小前端需要：
+iOS 第一版不需要先打包 App，直接用私有 HTTPS Web App：
 
-```bash
-npx create-expo-app peos-mobile
-npx expo install expo-secure-store
-npm install @tanstack/react-query
-```
-
-移动端配置项：
+1. iPhone 用 Safari 打开：
 
 ```text
-EXPO_PUBLIC_API_BASE=https://app.example.com
+https://app.example.com/web/index.html
 ```
 
-移动端登录流程：
+2. 登录大猫/小猫账号。
+3. Safari 分享按钮选择“添加到主屏幕”。
+4. 桌面图标会以独立 Web App 打开，隐藏浏览器地址栏。
 
-1. `POST ${EXPO_PUBLIC_API_BASE}/api/couple/login`
-2. 读取返回的 `sessionToken`
-3. 存入 `expo-secure-store`
-4. 后续请求统一加 `Authorization: Bearer <token>`
-5. 首屏拉 `GET /api/couple/state?date=YYYY-MM-DD`
+这条路线没有 App Store 审核、没有 TestFlight 90 天过期，也不需要给别人分发。关键是服务器必须是 HTTPS，并且 `PEOS_COOKIE_SECURE=1`、`PEOS_REQUIRE_HTTPS=1`、`PEOS_COUPLE_SESSION_SECRET` 都要配置。
 
-移动端第一版只需要四个页面：
+Android 第一版也可以直接用 Chrome 打开同一个地址，然后选择“安装应用”或“添加到主屏幕”。安装包路线先不做；后续如果确实需要推送、系统相册或原生小组件，再单独补 Expo / 原生壳。
 
-- 登录页
-- 共享首页 Dashboard
-- 随手记输入页
-- Todo / 日程详情页
-- 自动日总结 / 小页面
+## 手机端验收
 
-暂时不接系统相册和小红书；现在已经预留 capture 的照片、地点字段，后面接入手机相册时可以复用 `/api/couple/capture` 的附件契约。
+- 未登录打开 `/web/index.html` 只能看到登录页。
+- 登录后刷新、关闭、从主屏幕重新打开仍保持登录。
+- `__content/private/*` 未登录返回 401。
+- 日总结 Agent、随手记、月历弹层、长期记忆在手机宽度下可用。
+- 登录失败连续尝试会触发 429 限速。

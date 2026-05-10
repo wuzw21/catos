@@ -163,7 +163,7 @@ partner / 5200
 
 首页支持：
 
-- 登录：两个人独立账号，Web Cookie + 移动端 Bearer token
+- 登录：两个人独立账号，Web / iOS 主屏幕 App 使用 HttpOnly Cookie；Expo 壳可用 Bearer token
 - 协作同步：基于 revision 的长轮询，另一端写入后自动刷新
 - 随手记：作为首页核心入口，可提交给 Agent 分析，也可用简单模式直接生成 Todo；支持地点和照片
 - Dashboard：日/月完成情况，每个人颜色、昵称、状态分开显示
@@ -180,9 +180,13 @@ partner / 5200
 PEOS_COUPLE_SESSION_SECRET=一段很长的随机字符串
 PEOS_COUPLE_YOU_PASSWORD=你的强访问码
 PEOS_COUPLE_PARTNER_PASSWORD=对方强访问码
+PEOS_COOKIE_SECURE=1
+PEOS_REQUIRE_HTTPS=1
 # 可选：让凌晨 4 点自动总结调用 Codex/Agent；不配置时使用本地规则生成
 PEOS_COUPLE_DAILY_SUMMARY_AGENT=1
 ```
+
+iPhone 第一版推荐直接用 Safari 打开公网 HTTPS 地址，登录后“添加到主屏幕”。Android 用 Chrome 的“安装应用”或“添加到主屏幕”。安装包路线先不做，优先把 Web/PWA 手机端体验打磨好。
 
 ### 推荐方式
 

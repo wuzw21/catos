@@ -133,7 +133,9 @@ function isHttpsRequest(req) {
 }
 
 function clientAddress(req) {
-  return req.socket.remoteAddress || "unknown";
+  const forwardedFor = String(req.headers["x-forwarded-for"] || "").split(",")[0].trim();
+  const realIp = String(req.headers["x-real-ip"] || "").trim();
+  return forwardedFor || realIp || req.socket.remoteAddress || "unknown";
 }
 
 function loginFailureKey(req, login) {
@@ -492,6 +494,7 @@ async function handleApi(req, res, url) {
       "Access-Control-Allow-Headers": "Content-Type, Authorization",
       "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
       "Cache-Control": "no-store",
+      ...privateSecurityHeaders,
     });
     res.end();
     return true;
