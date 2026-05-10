@@ -139,9 +139,9 @@ const catNoticeTemplates = {
     (text) => `猫猫的小纸条写着：${text}`,
   ],
   time: [
-    (text) => `翻到这一页：${text}`,
-    (text) => `这天的标题还在：${text}`,
-    (text) => `共同回忆闪了一下：${text}`,
+    (text) => `翻到「${text}」。`,
+    (text) => `这页叫「${text}」。`,
+    (text) => `「${text}」亮了一下。`,
   ],
 };
 const fallbackCatNoticeCandidates = [
@@ -164,6 +164,8 @@ function catNoticePeriod(date = new Date()) {
 function cleanNoticeBit(value, max = 22) {
   const text = cleanStoryText(value || "")
     .replace(/\s+/g, " ")
+    .replace(/^(todo|待办|提醒)[:：\s]*/i, "")
+    .replace(/^(今天|今日|把)\s*/g, "")
     .replace(/^["“”'「」]+|["“”'「」]+$/g, "")
     .trim();
   if (!text || /^\d{1,4}$/.test(text)) return "";
@@ -228,7 +230,7 @@ function buildCatNoticeCandidates(data, dateKey) {
     .sort((a, b) => String(b.id).localeCompare(String(a.id)))
     .slice(0, 8)
     .map((day) => {
-      const text = cleanNoticeBit(day.summaryTitle, 26);
+      const text = cleanNoticeBit(day.summaryTitle, 10);
       return text ? { id: `story-${day.id}`, kind: "time", text, detail: shortDate(day.id) } : null;
     })
     .filter(Boolean);
@@ -829,6 +831,16 @@ const detailBuilders = {
     const detail = summaryLine(card) || cleanCardText(card.detail || card.slot || "");
     const sourceSummary = cleanCardText(card.sourceCaptureSummary || "");
     const readOnly = card.readOnly || card.sourceType === "insight";
+    const steps = (Array.isArray(card.steps) ? card.steps : [])
+      .map((step) => ({
+        id: step.id || step.title,
+        title: cleanCardText(step.title || ""),
+        done: step.status === "done",
+        ownerIds: [step.ownerId].filter(Boolean),
+        hint: durationLabel(step.estimateMin),
+        action: !readOnly ? { type: "toggle-step", card, step } : null,
+      }))
+      .filter((step) => step.title);
     return {
       type: "lifeCard",
       label: itemTypeLabels[itemType],
@@ -843,6 +855,7 @@ const detailBuilders = {
         { label: "操作", value: namesForIds([card.updatedBy || card.createdBy].filter(Boolean), profiles) },
       ].filter((item) => item.value),
       rows: detailRows([
+        card.nextStep?.title ? { label: "下一步", value: card.nextStep.title, wide: true } : null,
         card.plannedAt ? { label: "开始", value: formatDateTimeShort(card.plannedAt) } : null,
         card.dueAt ? { label: "截止", value: formatDateTimeShort(card.dueAt) } : null,
         card.durationMin ? { label: "预计", value: durationLabel(card.durationMin) } : null,
@@ -850,8 +863,8 @@ const detailBuilders = {
         card.repeatRule ? { label: "周期", value: card.repeatRule } : null,
         sourceSummary ? { label: "来源", value: sourceSummary, wide: true } : null,
         card.priority === "high" ? { label: "优先级", value: "重要" } : null,
-        card.steps?.length ? { label: "拆解", value: card.steps.map((step) => step.title).join(" / "), wide: true } : null,
       ]),
+      steps,
       sections: lifeCardDetailSections(card, context),
       images: [],
       actions: [
@@ -1235,6 +1248,10 @@ export function App() {
 
   async function handleDetailAction(action) {
     if (!action) return;
+    if (action.type === "toggle-step" && action.card && action.step) {
+      await toggleCardStep(action.card, action.step);
+      return;
+    }
     if (action.type === "edit-card" && action.card) {
       setDetailRequest(null);
       setEditingCard(action.card);
@@ -1304,33 +1321,53 @@ export function App() {
     }
   }
 
-  async function submitConfirmation(event) {
-    event.preventDefault();
-    if (!confirmation) return;
-    if (confirmation.decision !== "schedule") {
-      setConfirmation(null);
-      return;
-    }
+  async function submitConfirmation(event, routeOverride) {
+    event?.preventDefault?.();
+    const route = routeOverride || confirmation;
+    if (!route) return;
     setBusy(true);
     try {
-      const result = await request("/api/couple/life-cards/from-confirmation", {
+      const result = await request("/api/couple/capture/route", {
         method: "POST",
         body: {
-          ...confirmation,
-          ownerId: confirmation.ownerId || currentUser?.id || "",
-          sourceCaptureId: confirmation.sourceCaptureId || confirmation.captureId,
+          ...route,
+          ownerId: route.ownerId || currentUser?.id || "",
+          sourceCaptureId: route.sourceCaptureId || route.captureId,
         },
       });
       if (result) {
         setData(result.state);
-        setSelectedDate(confirmation.date || selectedDate);
-        setFilter("all");
+        setSelectedDate(route.date || selectedDate);
+        if (route.decision === "schedule") setFilter("all");
         setConfirmation(null);
       }
     } catch (err) {
       setError(err.message);
     } finally {
       setBusy(false);
+    }
+  }
+
+  async function toggleCardStep(card, step) {
+    if (!currentUser || !card || !step || card.readOnly || card.sourceType === "insight" || card.sourceType === "checkin") return;
+    const result = await request("/api/couple/life-cards/step-toggle", {
+      method: "POST",
+      body: {
+        sourceType: card.sourceType,
+        id: card.sourceId,
+        stepId: step.id,
+        targetUserId: currentUser.id,
+        date: card.date,
+      },
+    });
+    if (result) {
+      setData(result.state);
+      const nextCard = result.state?.scheduleItemCards?.find((item) => item.id === card.id);
+      if (nextCard) {
+        setDetailRequest((current) => current?.type === "lifeCard" && current.payload?.id === card.id
+          ? { type: "lifeCard", payload: nextCard }
+          : current);
+      }
     }
   }
 
@@ -1474,6 +1511,7 @@ export function App() {
             setExpanded={setExpanded}
             toggleCard={toggleCard}
             archiveCard={archiveCard}
+            toggleStep={toggleCardStep}
             setEditingCard={setEditingCard}
             openDetail={openDetail}
             composingRef={composingRef}
@@ -1618,6 +1656,7 @@ function Dashboard(props) {
     setExpanded,
     toggleCard,
     archiveCard,
+    toggleStep,
     setEditingCard,
     openDetail,
     composingRef,
@@ -1651,6 +1690,7 @@ function Dashboard(props) {
         setExpanded={setExpanded}
         toggleCard={toggleCard}
         archiveCard={archiveCard}
+        toggleStep={toggleStep}
         setEditingCard={setEditingCard}
         openDetail={openDetail}
         chooseDate={chooseDate}
@@ -1712,19 +1752,36 @@ function DateRail({ selectedDate, chooseDate }) {
 }
 
 function Composer({ text, setText, saveRawCapture, profiles, currentUser, busy, agentJob, confirmation, submitConfirmation, dismissConfirmation, composingRef }) {
+  const [routeDraft, setRouteDraft] = useState(null);
+  useEffect(() => {
+    setRouteDraft(confirmation ? { ...confirmation } : null);
+  }, [confirmation]);
+
   async function submit(mode) {
     await saveRawCapture(mode, []);
   }
-  const confirmationPeople = confirmation ? cardParticipantIds(confirmation, profiles, currentUser) : [];
-  const confirmationType = confirmation?.isDefaultDraft
+  const draft = routeDraft || confirmation;
+  const confirmationPeople = draft ? cardParticipantIds(draft, profiles, currentUser) : [];
+  const confirmationType = draft?.isDefaultDraft
     ? "草稿"
-    : confirmation?.decision === "schedule"
-      ? (itemTypeLabels[confirmation.itemType] || "事情")
-      : confirmation?.decision === "memory"
+    : draft?.decision === "schedule"
+      ? (itemTypeLabels[draft.itemType] || "事情")
+      : draft?.decision === "memory"
         ? "长期记忆"
-        : confirmation?.decision === "dailyStory"
+        : draft?.decision === "dailyStory"
           ? "日总结"
           : "只记录";
+  const routeOptions = [
+    { id: "schedule", icon: "calendar", label: "生活卡" },
+    { id: "memory", icon: "bookmark", label: "记忆" },
+    { id: "dailyStory", icon: "sparkle", label: "日总结" },
+    { id: "capture", icon: "camera", label: "只记录" },
+  ];
+  const updateDraft = (patch) => setRouteDraft((current) => current ? { ...current, ...patch } : current);
+  const submitDraft = (event, patch = {}) => {
+    const next = { ...(draft || {}), ...patch };
+    submitConfirmation(event, next);
+  };
 
   return (
     <section className="composer-band">
@@ -1752,25 +1809,54 @@ function Composer({ text, setText, saveRawCapture, profiles, currentUser, busy, 
       {agentJob ? (
         <div className="agent-strip" role="status" aria-live="polite">
           <Icon name="sparkle" />
-          <span>Agent 分析中</span>
+          <span>Agent 分流中</span>
         </div>
       ) : null}
-      {confirmation ? (
-        <form className="confirm-strip" onSubmit={submitConfirmation}>
+      {draft ? (
+        <form className="confirm-strip" onSubmit={(event) => submitDraft(event)}>
           <AvatarPair profiles={profiles} ids={confirmationPeople} />
           <div className="confirm-copy">
             <strong>
-              {confirmation.analysisMode === "agent" ? "Agent" : "猫猫的事"}
+              {draft.analysisMode === "agent" ? "Agent" : "猫猫的事"}
               {" · "}
               {confirmationType}
-              {confirmation.date ? ` · ${confirmation.date}` : ""}
-              {confirmation.segment && confirmation.segment !== "allDay" ? ` · ${segmentLabels[confirmation.segment]}` : ""}
-              {confirmation.relatedItems?.length ? ` · +${confirmation.relatedItems.length}` : ""}
+              {draft.date ? ` · ${draft.date}` : ""}
+              {draft.segment && draft.segment !== "allDay" ? ` · ${segmentLabels[draft.segment]}` : ""}
+              {draft.relatedItems?.length ? ` · +${draft.relatedItems.length}` : ""}
             </strong>
-            {confirmation.title ? <span>{confirmation.title}</span> : null}
+            {draft.title ? <span>{draft.title}</span> : null}
+            {draft.reason || draft.confirmationText ? <em>{shortText(draft.reason || draft.confirmationText, 68)}</em> : null}
+            <div className="route-tools">
+              <div className="route-switch" aria-label="Agent 去向">
+                {routeOptions.map((option) => (
+                  <button
+                    key={option.id}
+                    className={cx(draft.decision === option.id && "is-active")}
+                    type="button"
+                    onClick={() => updateDraft({ decision: option.id })}
+                    aria-label={option.label}
+                    title={option.label}
+                  >
+                    <Icon name={option.icon} />
+                  </button>
+                ))}
+              </div>
+              {draft.decision === "schedule" ? (
+                <div className="route-tune">
+                  <select value={draft.itemType || "thing"} onChange={(event) => updateDraft({ itemType: event.target.value })} aria-label="类型">
+                    {itemTypeOptions.map(([id, label]) => <option key={id} value={id}>{label}</option>)}
+                  </select>
+                  <input type="date" value={draft.date || today()} onChange={(event) => updateDraft({ date: event.target.value })} aria-label="日期" />
+                  <select value={draft.segment || "allDay"} onChange={(event) => updateDraft({ segment: event.target.value })} aria-label="时段">
+                    {Object.entries(segmentLabels).map(([id, label]) => <option key={id} value={id}>{label}</option>)}
+                  </select>
+                </div>
+              ) : null}
+            </div>
           </div>
           <div className="confirm-actions">
             <IconButton icon="check" label="确认" type="submit" primary />
+            {draft.decision !== "capture" ? <IconButton icon="bookmark" label="仅记录" onClick={(event) => submitDraft(event, { decision: "capture" })} /> : null}
             <IconButton icon="x" label="取消" onClick={dismissConfirmation} />
           </div>
         </form>
@@ -1896,7 +1982,7 @@ function MonthPage({ data, selectedDate, chooseDate, setPage }) {
     <section className="month-page">
       <div className="page-head">
         <div>
-          <p className="kicker">Month</p>
+          <p className="kicker">猫猫的事</p>
           <h1>月历</h1>
         </div>
         <IconButton icon="rows" label="回首页" onClick={() => setPage("dashboard")} />
@@ -1935,7 +2021,7 @@ function MonthPage({ data, selectedDate, chooseDate, setPage }) {
   );
 }
 
-function LifeCardTimeline({ cards, profiles, currentUser, selectedDate, filter, setFilter, expanded, setExpanded, toggleCard, archiveCard, setEditingCard, openDetail, chooseDate }) {
+function LifeCardTimeline({ cards, profiles, currentUser, selectedDate, filter, setFilter, expanded, setExpanded, toggleCard, archiveCard, toggleStep, setEditingCard, openDetail, chooseDate }) {
   const [isScrollDragging, setIsScrollDragging] = useState(false);
   const [isCardScrubbing, setIsCardScrubbing] = useState(false);
   const [scrubTargetId, setScrubTargetId] = useState("");
@@ -2030,10 +2116,11 @@ function LifeCardTimeline({ cards, profiles, currentUser, selectedDate, filter, 
   };
   const startDragScroll = (event) => {
     if (event.pointerType === "mouse" && event.button !== 0) return;
-    if (event.target.closest("input, textarea, select, a, summary, label")) return;
+    const axisTarget = Boolean(event.target.closest(".timeline-node"));
+    if (!axisTarget && event.target.closest("input, textarea, select, a, summary, label, button")) return;
     const rect = event.currentTarget.getBoundingClientRect();
     const x = event.clientX - rect.left;
-    const isAxisDrag = Math.abs(x - 132) <= 42 || Boolean(event.target.closest(".timeline-node"));
+    const isAxisDrag = Math.abs(x - 132) <= 42 || axisTarget;
     const canScroll = event.currentTarget.scrollHeight > event.currentTarget.clientHeight + 2;
     if (scrubClearTimer.current) window.clearTimeout(scrubClearTimer.current);
     dragState.current = {
@@ -2172,6 +2259,7 @@ function LifeCardTimeline({ cards, profiles, currentUser, selectedDate, filter, 
                       currentUser={currentUser}
                       toggleCard={toggleCard}
                       archiveCard={archiveCard}
+                      toggleStep={toggleStep}
                       setEditingCard={setEditingCard}
                       openDetail={openDetail}
                     />
@@ -2213,7 +2301,7 @@ function LifeCardTimeline({ cards, profiles, currentUser, selectedDate, filter, 
   );
 }
 
-function LifeCard({ card, profiles, currentUser, toggleCard, archiveCard, setEditingCard, openDetail }) {
+function LifeCard({ card, profiles, currentUser, toggleCard, archiveCard, toggleStep, setEditingCard, openDetail }) {
   if (isDefaultPromptCard(card)) return null;
   const itemType = card.itemType && itemTypeLabels[card.itemType] ? card.itemType : "thing";
   const participants = cardParticipantIds(card, profiles, currentUser);
@@ -2226,17 +2314,19 @@ function LifeCard({ card, profiles, currentUser, toggleCard, archiveCard, setEdi
   const isArchived = isArchivedCard(card);
   const timeNote = primaryTimeLabel(card);
   const summaryText = summary && summary !== timeNote ? summary : "";
-  const planParts = cardPlanParts(card);
+  const planParts = (Array.isArray(card.actionSummary) && card.actionSummary.length ? card.actionSummary : cardPlanParts(card)).slice(0, 4);
+  const miniSteps = (Array.isArray(card.steps) ? card.steps : []).filter((step) => step.title).slice(0, 3);
   const isInsight = card.sourceType === "insight";
   const ownerColor = card.ownerId === "shared" ? "#ff6fa8" : profileColor(profiles, card.ownerId, avatarColor(currentUser));
   const secondColor = participants.length > 1 ? profileColor(profiles, participants[1], "#24b99a") : ownerColor;
+  const progressStatus = card.stepProgress?.total ? `${card.stepProgress.done}/${card.stepProgress.total}` : status;
   const displayedStatus = isArchived
     ? "已归档"
     : isDone
       ? (card.completion?.allDone ? "已完成" : "我已完成")
-    : status;
+    : progressStatus;
   const openCard = () => {
-    if (!readOnly) {
+    if (isDraft) {
       setEditingCard(card);
       return;
     }
@@ -2249,6 +2339,10 @@ function LifeCard({ card, profiles, currentUser, toggleCard, archiveCard, setEdi
   const completeCard = (event) => {
     stopAction(event);
     toggleCard(card);
+  };
+  const toggleStepAction = (event, step) => {
+    stopAction(event);
+    if (!readOnly) toggleStep?.(card, step);
   };
   return (
     <article
@@ -2264,7 +2358,7 @@ function LifeCard({ card, profiles, currentUser, toggleCard, archiveCard, setEdi
         {displayedStatus ? <span>{displayedStatus}</span> : null}
       </div>
       <div className="card-main">
-        <button className="card-head card-open" type="button" onClick={openCard} aria-label={readOnly ? "查看猫猫的事" : "编辑猫猫的事"}>
+        <button className="card-head card-open" type="button" onClick={openCard} aria-label={isDraft ? "保存猫猫的事" : "查看猫猫的事"}>
           <div className="card-people">
             <AvatarPair profiles={profiles} ids={participants} />
           </div>
@@ -2277,6 +2371,27 @@ function LifeCard({ card, profiles, currentUser, toggleCard, archiveCard, setEdi
             <strong>{title}</strong>
           </div>
         </button>
+        {miniSteps.length ? (
+          <div className="card-step-list" aria-label="步骤">
+            {miniSteps.map((step) => {
+              const done = step.status === "done";
+              return (
+                <button
+                  key={step.id || step.title}
+                  className={cx("card-step", done && "is-done")}
+                  type="button"
+                  aria-label={done ? `取消 ${step.title}` : `完成 ${step.title}`}
+                  title={step.title}
+                  onClick={(event) => toggleStepAction(event, step)}
+                  disabled={readOnly}
+                >
+                  <Icon name={done ? "check" : "circle"} />
+                  <span>{step.title}</span>
+                </button>
+              );
+            })}
+          </div>
+        ) : null}
         {planParts.length ? (
           <div className="card-plan" aria-label="计划">
             {planParts.map((part) => <span key={part}>{part}</span>)}
@@ -2315,7 +2430,7 @@ function LifeCard({ card, profiles, currentUser, toggleCard, archiveCard, setEdi
               title="完成"
               onClick={completeCard}
             >
-              <Icon name="check" />
+              <Icon name="circle" />
             </button>
           )}
           {!isArchived && ["schedule", "todo"].includes(card.sourceType) ? (
@@ -2553,6 +2668,33 @@ function DetailDrawer({ detail, profiles, onClose, onAction }) {
             ))}
           </div>
         ) : null}
+        {detail.steps?.length ? (
+          <div className="detail-steps" aria-label="步骤">
+            {detail.steps.map((step) => {
+              const content = (
+                <>
+                  <span className={cx("step-dot", step.done && "is-done")}>
+                    <Icon name={step.done ? "check" : "circle"} />
+                  </span>
+                  <span>
+                    <strong>{step.title}</strong>
+                    {step.hint ? <em>{step.hint}</em> : null}
+                  </span>
+                  {step.ownerIds?.length ? <AvatarPair profiles={profiles} ids={step.ownerIds} /> : null}
+                </>
+              );
+              return step.action ? (
+                <button key={step.id} className={cx("detail-step", step.done && "is-done")} type="button" onClick={() => onAction(step.action)}>
+                  {content}
+                </button>
+              ) : (
+                <div key={step.id} className={cx("detail-step", step.done && "is-done")}>
+                  {content}
+                </div>
+              );
+            })}
+          </div>
+        ) : null}
         {detail.sections?.length ? (
           <div className="detail-card-groups">
             {detail.sections.map((section) => (
@@ -2682,7 +2824,7 @@ function CatNoticePage({ profiles, currentUser, now, data, request, setData, set
             </div>
           </form>
         ) : (
-          <h2>{notice.text}</h2>
+          <h2><BreakableText text={notice.text} /></h2>
         )}
         {!editing ? <p>{notice.detail}</p> : null}
         <div className="cat-note-chips">
@@ -2725,6 +2867,12 @@ function CatWordMini({ word, profiles, label, onClick }) {
     );
   }
   return <div className="cat-word-mini">{content}</div>;
+}
+
+function BreakableText({ text }) {
+  return Array.from(String(text || "")).map((char, index) => (
+    <span className="break-char" key={`${char}-${index}`}>{char}</span>
+  ));
 }
 
 function DailySummaryPage({ data, profiles, currentUser, request, setData, selectedDate, chooseDate, openDetail }) {
@@ -2871,7 +3019,7 @@ function DailySummaryPage({ data, profiles, currentUser, request, setData, selec
     <section className="story-page">
       <div className="page-head">
         <div className="story-heading">
-          <p className="kicker">Daily Story</p>
+          <p className="kicker">猫猫日记</p>
           <h1>{summary ? title : "日总结"}</h1>
           <span>{selectedDate}</span>
         </div>
@@ -2881,13 +3029,6 @@ function DailySummaryPage({ data, profiles, currentUser, request, setData, selec
         </div>
       </div>
       <DateRail selectedDate={selectedDate} chooseDate={chooseDate} />
-      <form className="pulse-strip" onSubmit={savePulse}>
-        <CatAvatar profile={currentUser} />
-        <input type="number" min="1" max="10" value={pulse.dailyScore || ""} onChange={(event) => setPulse({ ...pulse, dailyScore: event.target.value })} aria-label="今日打分" placeholder="/10" />
-        <input value={pulse.happiestThing || ""} onChange={(event) => setPulse({ ...pulse, happiestThing: event.target.value })} aria-label="最开心的事" placeholder="最开心的事" />
-        <input value={pulse.smallAchievement || ""} onChange={(event) => setPulse({ ...pulse, smallAchievement: event.target.value })} aria-label="核心贡献" placeholder="核心贡献" />
-        <IconButton icon="check" label="保存状态" type="submit" primary />
-      </form>
       {summary ? (
         <article className="story-panel story-panel-ai">
           <div className="story-visual">
@@ -2897,9 +3038,9 @@ function DailySummaryPage({ data, profiles, currentUser, request, setData, selec
               {generatedLabel ? <time>{generatedLabel}</time> : null}
             </div>
           </div>
-          <div className="story-copy">
-            <div className="story-copy-head">
-              <span><Icon name="sparkle" />AI 分析</span>
+            <div className="story-copy">
+              <div className="story-copy-head">
+              <span><Icon name="sparkle" />{summary.mode === "agent" ? "AI 分析" : "整理结果"}</span>
               <strong>{summary.qualityLabel || summaryModeLabel(summary.mode)}</strong>
             </div>
             {visibleDiary ? (
@@ -2920,19 +3061,26 @@ function DailySummaryPage({ data, profiles, currentUser, request, setData, selec
         </article>
       ) : (
         <section className="story-empty-panel">
-          <div className="story-visual">
-            <AvatarPair profiles={data.profiles} className="story-cats" />
-          </div>
           <div>
-            <span>Agent</span>
-            <h2>{fallbackDailyTitles[stableIndex(selectedDate, fallbackDailyTitles.length)]}</h2>
+            <span>AI 整理</span>
+            <h2>等猫猫整理</h2>
             <button type="button" onClick={refresh} disabled={refreshing}>
               <Icon name={refreshing ? "refresh" : "sparkle"} />
               {refreshing ? "生成中" : "生成"}
             </button>
           </div>
+          <div className="story-visual">
+            <AvatarPair profiles={data.profiles} className="story-cats" />
+          </div>
         </section>
       )}
+      <form className="pulse-strip" onSubmit={savePulse}>
+        <CatAvatar profile={currentUser} />
+        <input type="number" min="1" max="10" value={pulse.dailyScore || ""} onChange={(event) => setPulse({ ...pulse, dailyScore: event.target.value })} aria-label="今日打分" placeholder="/10" />
+        <input value={pulse.happiestThing || ""} onChange={(event) => setPulse({ ...pulse, happiestThing: event.target.value })} aria-label="最开心的事" placeholder="最开心的事" />
+        <input value={pulse.smallAchievement || ""} onChange={(event) => setPulse({ ...pulse, smallAchievement: event.target.value })} aria-label="核心贡献" placeholder="核心贡献" />
+        <IconButton icon="check" label="保存状态" type="submit" primary />
+      </form>
       {hasSourceRows ? (
         <div className="story-source-grid">
           <StoryList title="完成" rows={completedRows.slice(0, 4)} profiles={profiles} onOpen={(row) => openDetail(row.type, row.payload)} />

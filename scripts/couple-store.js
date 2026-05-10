@@ -76,6 +76,9 @@ const captureAgentPrompt = [
   "Long-term Memory 的 kind 只能是 preference/wish/purchase/promise/care/anniversary/memory/gratitude/repair/identity/goal/list。",
   "必须解析相对日期：今天、明天、今晚、今天下午、周日、下周一、具体月日。",
   "如果一句话包含多个动作，要输出 relatedItems，并用 relatedGroupId 表示一改全动的关系。",
+  "如果输入同时包含偏好/心愿和具体行动，优先输出 schedule，并把偏好/心愿压进 detail/reason，后端会从 raw 和分析轨迹沉淀记忆。",
+  "如果只是偏好、边界、愿望、承诺或照顾线索，不要强行生成 Schedule Item，返回 memory。",
+  "如果只是当天素材、照片说明、情绪片段或回忆，不要强行生成 Schedule Item，返回 dailyStory。",
   "输出轻确认，不直接写入最终生活卡，除非用户确认。",
 ].join("\n");
 const defaultLifeCardTitle = "今天有没有开开心心？";
@@ -275,7 +278,8 @@ function titleBit(value, maxLength = 6) {
   const text = cleanGeneratedSummaryText(value, 80)
     .replace(/[「」"“”'《》]/g, "")
     .replace(/[，。！？、,.!?；;：:\n\r]/g, " ")
-    .replace(/^(今天|今日|我们|一起|猫猫|大猫|小猫|把|在)\s*/g, "")
+    .replace(/^(todo|待办|提醒|今天|今日|我们|一起|猫猫|大猫|小猫|把|在)\s*/i, "")
+    .replace(/^(今天|今日|把)\s*/g, "")
     .trim();
   if (!text || /^\d+$/.test(text)) return "";
   return text.split(/\s+/)[0].slice(0, maxLength);
@@ -340,6 +344,54 @@ function buildCuteSummaryTitle(facts) {
   ][stableIndex(facts.date, 6)];
 }
 
+function buildCuteSummaryTitleFromSummary(summary = {}) {
+  const people = Array.isArray(summary.people) ? summary.people : [];
+  const happyBit = titleBit(people.find((person) => person.happiestThing)?.happiestThing);
+  if (happyBit) {
+    return titleVariant(summary.date || "", happyBit, [
+      (bit) => `${bit}发光`,
+      (bit) => `${bit}被抱住`,
+      (bit) => `${bit}小闪光`,
+    ]);
+  }
+
+  const contributionBit = titleBit(people.find((person) => person.smallAchievement)?.smallAchievement);
+  if (contributionBit) {
+    return titleVariant(summary.date || "", contributionBit, [
+      (bit) => `${bit}向前挪`,
+      (bit) => `${bit}长出小芽`,
+      (bit) => `${bit}落地啦`,
+    ]);
+  }
+
+  const completedBit = titleBit((Array.isArray(summary.completed) ? summary.completed : []).find(isMeaningfulSummaryThing)?.title);
+  if (completedBit) {
+    return titleVariant(summary.date || "", completedBit, [
+      (bit) => `${bit}完成啦`,
+      (bit) => `${bit}收进口袋`,
+      (bit) => `${bit}有进度`,
+    ]);
+  }
+
+  const momentBit = titleBit((Array.isArray(summary.moments) ? summary.moments : []).map((item) => meaningfulCaptureText(item)).find(Boolean));
+  if (momentBit) {
+    return titleVariant(summary.date || "", momentBit, [
+      (bit) => `${bit}小纸条`,
+      (bit) => `${bit}留一格`,
+      (bit) => `${bit}被记住`,
+    ]);
+  }
+
+  return [
+    "轻轻的一页",
+    "小猫留光日",
+    "慢慢亮起来",
+    "把今天收好",
+    "软软小片刻",
+    "今天有小光",
+  ][stableIndex(summary.date || "", 6)];
+}
+
 function normalizeSummaryTitle(summary, fallbackTitle = "") {
   const direct = cleanGeneratedSummaryText(summary?.title, 80);
   if (direct) return direct;
@@ -348,7 +400,7 @@ function normalizeSummaryTitle(summary, fallbackTitle = "") {
   if (diaryTitle) return diaryTitle;
   const keyTitle = cleanGeneratedSummaryText(analysis.keyMoment?.title, 80);
   if (keyTitle) return keyTitle;
-  return cleanGeneratedSummaryText(fallbackTitle, 80);
+  return cleanGeneratedSummaryText(fallbackTitle, 80) || buildCuteSummaryTitleFromSummary(summary);
 }
 
 function normalizeDurationMin(value, fallback = 0) {
@@ -381,6 +433,23 @@ function addMinutesToDateTime(dateTime, minutes) {
   if (Number.isNaN(parsed.getTime())) return "";
   parsed.setMinutes(parsed.getMinutes() + normalizeDurationMin(minutes, 30));
   return `${formatDate(parsed)}T${pad(parsed.getHours())}:${pad(parsed.getMinutes())}`;
+}
+
+function formatDateTimeShort(value) {
+  const raw = normalizeDateTime(value);
+  const match = raw.match(/^(\d{4}-\d{2}-\d{2})T(\d{2}):(\d{2})/);
+  if (!match) return "";
+  const date = match[1] === businessDate() ? "今天" : match[1].slice(5).replace("-", "/");
+  return `${date} ${match[2]}:${match[3]}`;
+}
+
+function durationLabel(minutes) {
+  const value = normalizeDurationMin(minutes, 0);
+  if (!value) return "";
+  if (value < 60) return `${value} 分钟`;
+  const hours = Math.floor(value / 60);
+  const rest = value % 60;
+  return rest ? `${hours} 小时 ${rest} 分钟` : `${hours} 小时`;
 }
 
 function chineseNumberToInt(value) {
@@ -453,10 +522,21 @@ function normalizeLifeCardSteps(steps, participants = []) {
 }
 
 function inferLifeCardSteps(payload, participants = []) {
+  const title = cleanCaptureTitle(payload.title || "");
+  const titleKey = normalizedTitleKey(title);
   const text = `${payload.title || ""} ${payload.detail || ""}`.trim();
   const clauses = splitCaptureClauses(text)
     .map((part) => cleanCaptureTitle(part))
-    .filter((part) => part && part !== cleanCaptureTitle(payload.title || ""))
+    .map((part) => part
+      .replace(/^分(?:[一二两三四五六七八九十\d]+)?步\s*/g, "")
+      .replace(/^步骤\s*[一二两三四五六七八九十\d]*\s*/g, "")
+      .trim())
+    .filter((part) => {
+      if (!part || part === title) return false;
+      const key = normalizedTitleKey(part);
+      if (!key || !titleKey) return Boolean(key);
+      return !(key.includes(titleKey) || titleKey.includes(key));
+    })
     .slice(0, 4);
   const durationMin = normalizeDurationMin(payload.durationMin, 0);
   let titles = clauses;
@@ -566,6 +646,67 @@ function lifeCardStepProgress(card) {
     total: steps.length,
     percent: Math.round((done / steps.length) * 100),
   };
+}
+
+function lifeCardNextStep(card) {
+  const steps = Array.isArray(card.steps) ? card.steps : [];
+  const next = steps.find((step) => step.status !== "done");
+  if (next) {
+    return {
+      id: next.id || "",
+      title: next.title || "",
+      ownerId: next.ownerId || "",
+      estimateMin: normalizeDurationMin(next.estimateMin, 0),
+    };
+  }
+  if (card.completion?.allDone || card.completion?.currentUserDone) return null;
+  return {
+    id: "",
+    title: card.title || "",
+    ownerId: card.ownerId || "",
+    estimateMin: normalizeDurationMin(card.durationMin, 0),
+  };
+}
+
+function lifeCardTiming(card, selectedDate) {
+  const anchorDate = normalizeDate(selectedDate);
+  const cardDate = normalizeDate(card.date, anchorDate);
+  const dueDate = normalizeDate(String(card.dueAt || "").slice(0, 10), "");
+  const plannedDate = normalizeDate(String(card.plannedAt || "").slice(0, 10), "");
+  const relevantDate = dueDate || plannedDate || cardDate;
+  const days = relevantDate ? daysBetween(anchorDate, relevantDate) : 0;
+  const overdue = Boolean(dueDate && dueDate < anchorDate && !card.completion?.allDone && !card.completion?.currentUserDone && !card.archivedAt);
+  return {
+    date: relevantDate,
+    days,
+    overdue,
+    lane: overdue ? "overdue" : relevantDate === anchorDate ? "today" : relevantDate > anchorDate ? "future" : "past",
+    label: overdue
+      ? "已过期"
+      : relevantDate === anchorDate
+        ? "今天"
+        : days === 1
+          ? "明天"
+          : days > 1
+            ? `${days} 天后`
+            : days === -1
+              ? "昨天"
+              : days < -1
+                ? `${Math.abs(days)} 天前`
+                : "",
+  };
+}
+
+function lifeCardActionSummary(card, selectedDate) {
+  const parts = [];
+  const timing = lifeCardTiming(card, selectedDate);
+  const nextStep = lifeCardNextStep(card);
+  if (timing.overdue) parts.push("先处理过期");
+  if (nextStep?.title && nextStep.title !== card.title) parts.push(`下一步：${shortText(nextStep.title, 18)}`);
+  if (card.dueAt) parts.push(`${formatDateTimeShort(card.dueAt)} 截止`);
+  const duration = durationLabel(card.durationMin || nextStep?.estimateMin);
+  if (duration) parts.push(duration);
+  return parts.slice(0, 3);
 }
 
 function rankScheduleItemCard(card, selectedDate) {
@@ -930,6 +1071,78 @@ function applyStepAwareStatusToggle(item, targetUserId, userId, payload = {}) {
   syncArchiveWithCompletion(item, userId);
 }
 
+function findLifeCardSourceItem(store, sourceType, sourceId) {
+  const id = sanitizeText(sourceId, 80);
+  const collections = {
+    schedule: store.scheduleItems,
+    todo: store.todoItems,
+    deadline: store.deadlineItems,
+  };
+  const collection = collections[sourceType];
+  if (!collection) return null;
+  return collection.find((item) => item.id === id) || null;
+}
+
+function publicSourceItem(store, item, sourceType, userId) {
+  const profileIds = getProfileIds(store);
+  if (sourceType === "schedule") return publicScheduleItem(item, profileIds);
+  if (sourceType === "todo") return publicTodoItem(item, profileIds);
+  if (sourceType === "deadline") return publicDeadlineItem(item, profileIds);
+  return publicScheduleItemCard(store, item, sourceType, userId);
+}
+
+function toggleLifeCardStep(userId, payload = {}) {
+  return mutateStore((store) => {
+    const sourceType = sanitizeText(payload.sourceType, 40);
+    const item = findLifeCardSourceItem(store, sourceType, payload.id);
+    if (!item) {
+      throw new Error("life card item not found");
+    }
+
+    const targetUserId = resolveStatusTargetUserId(store, userId, payload.targetUserId);
+    if (!item.participants.includes(targetUserId)) {
+      item.participants.push(targetUserId);
+    }
+
+    const steps = normalizeLifeCardSteps(item.steps, item.participants);
+    const stepId = sanitizeText(payload.stepId, 80);
+    const stepIndex = steps.findIndex((step) => step.id === stepId);
+    if (stepIndex === -1) {
+      throw new Error("life card step not found");
+    }
+
+    const currentStatus = steps[stepIndex].status === "done" ? "done" : "todo";
+    const nextStatus = validStatuses.has(payload.status)
+      ? payload.status
+      : currentStatus === "done" ? "todo" : "done";
+    steps[stepIndex] = {
+      ...steps[stepIndex],
+      status: nextStatus,
+    };
+    item.steps = steps;
+    item.statusByUser = {
+      ...(item.statusByUser || {}),
+      [targetUserId]: steps.every((step) => step.status === "done") ? "done" : "todo",
+    };
+    syncArchiveWithCompletion(item, userId);
+
+    const timestamp = nowIso();
+    markStatusOperation(item, targetUserId, userId, timestamp);
+    item.updatedBy = userId;
+    item.updatedAt = timestamp;
+    recordOperation(store, userId, "toggle-step", sourceType, item.id, {
+      date: item.date,
+      title: item.title,
+      stepId,
+      stepTitle: steps[stepIndex].title,
+      status: nextStatus,
+      sourceType,
+    });
+
+    return publicSourceItem(store, item, sourceType, userId);
+  });
+}
+
 function createScheduleItem(store, payload, userId) {
   const profileIds = store.profiles.map((item) => item.id);
   const date = normalizeDate(payload.date);
@@ -947,6 +1160,7 @@ function createScheduleItem(store, payload, userId) {
     relatedGroupId: sanitizeText(payload.relatedGroupId, 80),
     parentItemId: sanitizeText(payload.parentItemId, 80),
     repeatRule: sanitizeText(payload.repeatRule, 120),
+    priority: normalizePriority(payload.priority),
     ownerId,
     participants: normalizedParticipants,
     statusByUser: Object.fromEntries(normalizedParticipants.map((id) => [id, "todo"])),
@@ -1050,6 +1264,7 @@ function createDeadlineItem(store, payload, userId) {
     relatedGroupId: sanitizeText(payload.relatedGroupId, 80),
     parentItemId: sanitizeText(payload.parentItemId, 80),
     repeatRule: sanitizeText(payload.repeatRule, 120),
+    priority: normalizePriority(payload.priority),
     ownerId,
     participants,
     statusByUser: Object.fromEntries(participants.map((id) => [id, "todo"])),
@@ -1396,6 +1611,25 @@ function publicCapture(capture) {
       }))
       .filter((run) => run.id)
       .slice(0, 8),
+    acceptedRoutes: (Array.isArray(capture.acceptedRoutes) ? capture.acceptedRoutes : [])
+      .map((route) => ({
+        id: sanitizeText(route?.id, 80),
+        decision: normalizeCaptureDecision(route?.decision, "capture"),
+        itemType: normalizeScheduleItemType(route?.itemType, "thing"),
+        memoryKind: normalizeMemoryKind(route?.memoryKind),
+        title: sanitizeText(route?.title, 160),
+        detail: sanitizeText(route?.detail, 360),
+        date: normalizeDate(route?.date, capture.date || businessDate()),
+        segment: normalizeSegment(route?.segment),
+        ownerId: sanitizeText(route?.ownerId, 80),
+        priority: normalizePriority(route?.priority),
+        confidence: Number.isFinite(Number(route?.confidence)) ? Number(route.confidence) : 0,
+        acceptedBy: sanitizeText(route?.acceptedBy, 80),
+        acceptedAt: sanitizeText(route?.acceptedAt, 40),
+        cardIds: Array.isArray(route?.cardIds) ? route.cardIds.map((id) => sanitizeText(id, 80)).filter(Boolean).slice(0, 8) : [],
+      }))
+      .filter((route) => route.id)
+      .slice(0, 8),
     createdBy: capture.createdBy || "",
     createdAt: capture.createdAt || "",
   };
@@ -1551,6 +1785,7 @@ function publicScheduleItem(item, profileIds) {
     relatedGroupId: item.relatedGroupId || "",
     parentItemId: item.parentItemId || "",
     repeatRule: item.repeatRule || "",
+    priority: normalizePriority(item.priority),
     ownerId: item.ownerId || "shared",
     participants: normalizedParticipants,
     statusByUser: Object.fromEntries(
@@ -1663,6 +1898,7 @@ function publicDeadlineItem(item, profileIds) {
     relatedGroupId: item.relatedGroupId || "",
     parentItemId: item.parentItemId || "",
     repeatRule: item.repeatRule || "",
+    priority: normalizePriority(item.priority),
     ownerId: item.ownerId || "shared",
     participants: normalizedParticipants,
     statusByUser: Object.fromEntries(
@@ -2448,7 +2684,57 @@ function buildCaptureInsights(store, userId, selectedDate) {
     const targetName = target?.displayName || "对方";
     const sourceText = shortText(text, 120);
     const alreadyScheduled = hasItemFromCapture(store, capture.id);
-    const shouldSuggestCard = capture.mode === "analysis";
+    const shouldSuggestCard = capture.mode === "analysis" || ["agent", "template", "schedule"].includes(capture.analysisIntent || "");
+    const acceptedRoutes = [
+      ...(Array.isArray(capture.acceptedRoutes) ? capture.acceptedRoutes : []),
+      ...(Array.isArray(capture.analysisRuns) ? capture.analysisRuns.filter((run) => run?.decision === "memory") : []),
+    ];
+
+    acceptedRoutes
+      .filter((route) => route?.decision === "memory")
+      .forEach((route) => {
+        const kind = normalizeMemoryKind(route.memoryKind) || "memory";
+        const routeTitle = sanitizeText(route.title || sourceText, 120);
+        insights.push(makeInsight(store, {
+          kind,
+          title: routeTitle || relationshipInsightKindLabels[kind] || "长期记忆",
+          detail: sanitizeText(route.detail || route.reason || text, 360),
+          date: normalizeDate(route.date || today),
+          segment: normalizeSegment(route.segment),
+          itemType: normalizeScheduleItemType(route.itemType, "reminder"),
+          ownerId: route.ownerId || "shared",
+          participants: getProfileIds(store),
+          sourceCaptureId: capture.id,
+          sourceText,
+          targetUserId,
+          priority: normalizePriority(route.priority),
+          score: 84 - Math.min(ageDays, 20),
+          actionable: false,
+          createdAt: route.acceptedAt || route.createdAt || capture.createdAt,
+        }));
+      });
+
+    acceptedRoutes
+      .filter((route) => route?.decision === "dailyStory")
+      .forEach((route) => {
+        insights.push(makeInsight(store, {
+          kind: "memory",
+          title: sanitizeText(route.title || sourceText, 120) || "日总结素材",
+          detail: sanitizeText(route.detail || text, 360),
+          date: normalizeDate(route.date || today),
+          segment: normalizeSegment(route.segment),
+          itemType: "reminder",
+          ownerId: "shared",
+          participants: getProfileIds(store),
+          sourceCaptureId: capture.id,
+          sourceText,
+          targetUserId,
+          priority: "normal",
+          score: 54 - Math.min(ageDays, 20),
+          actionable: false,
+          createdAt: route.acceptedAt || route.createdAt || capture.createdAt,
+        }));
+      });
 
     if (promisePattern.test(text) && !alreadyScheduled && ageDays >= 1) {
       insights.push(makeInsight(store, {
@@ -3001,6 +3287,9 @@ function publicScheduleItemCard(store, publicItem, sourceType, userId, options =
     updatedAt: publicItem.updatedAt || "",
   };
   card.stepProgress = lifeCardStepProgress(card);
+  card.nextStep = lifeCardNextStep(card);
+  card.timing = lifeCardTiming(card, options.selectedDate || date);
+  card.actionSummary = lifeCardActionSummary(card, options.selectedDate || date);
   return {
     ...card,
     ...rankScheduleItemCard(card, options.selectedDate || date),
@@ -3167,6 +3456,70 @@ function createLifeCardsFromConfirmation(userId, payload = {}) {
   });
 }
 
+function recordAcceptedCaptureRoute(userId, payload = {}, cardIds = []) {
+  return mutateStore((store) => {
+    const captureId = sanitizeText(payload.sourceCaptureId || payload.captureId, 80);
+    const capture = store.captures.find((item) => item.id === captureId);
+    if (!capture) return null;
+
+    const decision = normalizeCaptureDecision(payload.decision, "capture");
+    const timestamp = nowIso();
+    const route = {
+      id: makeId("accepted-route"),
+      decision,
+      itemType: normalizeScheduleItemType(payload.itemType, "thing"),
+      memoryKind: normalizeMemoryKind(payload.memoryKind),
+      title: sanitizeText(payload.title || capture.text, 160),
+      detail: sanitizeText(payload.detail || payload.reason || "", 360),
+      date: normalizeDate(payload.date || capture.date),
+      segment: normalizeSegment(payload.segment),
+      ownerId: sanitizeText(payload.ownerId || userId, 80),
+      priority: normalizePriority(payload.priority),
+      confidence: Number.isFinite(Number(payload.confidence)) ? Number(payload.confidence) : 0,
+      acceptedBy: userId,
+      acceptedAt: timestamp,
+      cardIds: cardIds.map((id) => sanitizeText(id, 80)).filter(Boolean).slice(0, 8),
+    };
+
+    capture.acceptedRoutes = [route, ...(Array.isArray(capture.acceptedRoutes) ? capture.acceptedRoutes : [])].slice(0, 12);
+    capture.analysisIntent = decision;
+    if (decision !== "capture") capture.mode = "analysis";
+    recordOperation(store, userId, "accept-route", "capture", capture.id, {
+      date: capture.date,
+      title: route.title,
+      sourceType: `capture-${decision}`,
+    });
+    return publicCapture(capture);
+  });
+}
+
+function acceptCaptureRoute(userId, payload = {}) {
+  const decision = normalizeCaptureDecision(payload.decision, "capture");
+  if (decision === "schedule") {
+    const created = createLifeCardsFromConfirmation(userId, payload);
+    const cards = created.result || [];
+    const accepted = recordAcceptedCaptureRoute(userId, payload, cards.map((card) => card.sourceId || card.id));
+    return {
+      result: {
+        decision,
+        cards,
+        capture: accepted.result,
+      },
+      store: accepted.store,
+    };
+  }
+
+  const accepted = recordAcceptedCaptureRoute(userId, payload, []);
+  return {
+    result: {
+      decision,
+      cards: [],
+      capture: accepted.result,
+    },
+    store: accepted.store,
+  };
+}
+
 function getCompletionForDate(store, date, userId) {
   const scheduleItems = store.scheduleItems.filter(
     (item) => !isArchived(item) && item.date === date && item.participants?.includes(userId)
@@ -3263,7 +3616,7 @@ function getMonthSummary(store, selectedDate) {
       todoCount: store.todoItems.filter((item) => !isArchived(item) && item.date === day.id).length,
       captureCount: store.captures.filter((item) => item.date === day.id).length,
       summaryGenerated: Boolean(dailySummary),
-      summaryTitle: normalizeSummaryTitle(dailySummary),
+      summaryTitle: dailySummary ? normalizeSummaryTitle(dailySummary) : "",
       dailyPulses,
       diaryCount: Object.values(diarySource).filter(
         (item) => item?.markdown || item?.note || item?.focus || item?.mood ||
@@ -3934,6 +4287,7 @@ function upsertScheduleItem(userId, payload) {
     existing.relatedGroupId = sanitizeText(payload.relatedGroupId ?? existing.relatedGroupId, 80);
     existing.parentItemId = sanitizeText(payload.parentItemId ?? existing.parentItemId, 80);
     existing.repeatRule = sanitizeText(payload.repeatRule ?? existing.repeatRule, 120);
+    existing.priority = normalizePriority(payload.priority || existing.priority);
     existing.ownerId = nextOwnerId;
     existing.participants = [...new Set(nextParticipants.length ? nextParticipants : [userId])];
     existing.statusByUser = Object.fromEntries(
@@ -4238,6 +4592,7 @@ function upsertDeadlineItem(userId, payload) {
     existing.relatedGroupId = sanitizeText(payload.relatedGroupId ?? existing.relatedGroupId, 80);
     existing.parentItemId = sanitizeText(payload.parentItemId ?? existing.parentItemId, 80);
     existing.repeatRule = sanitizeText(payload.repeatRule ?? existing.repeatRule, 120);
+    existing.priority = normalizePriority(payload.priority || existing.priority);
     existing.ownerId = ownerId;
     existing.participants = participants;
     existing.statusByUser = Object.fromEntries(
@@ -4509,6 +4864,7 @@ function refreshDailySummary(userId, payload = {}) {
 module.exports = {
   addCapture,
   addDiaryAsset,
+  acceptCaptureRoute,
   analyzeCapture,
   analyzeCaptureWithAgent,
   archiveScheduleItem,
@@ -4527,6 +4883,7 @@ module.exports = {
   segmentDefinitions,
   toggleCheckinItem,
   toggleDeadlineItem,
+  toggleLifeCardStep,
   toggleScheduleItem,
   toggleTodoItem,
   updatePersonalPage,

@@ -17,6 +17,7 @@ const { archiveCapture, archiveLatestCapture } = require("./archive-capture.js")
 const { generateDailyLogWithCodex } = require("./daily-log-generator.js");
 const { startNewDay } = require("./start-new-day.js");
 const {
+  acceptCaptureRoute: acceptCoupleCaptureRoute,
   addCapture: addCoupleCapture,
   addDiaryAsset: addCoupleDiaryAsset,
   analyzeCapture: analyzeCoupleCapture,
@@ -36,6 +37,7 @@ const {
   refreshDailySummary: refreshCoupleDailySummary,
   toggleCheckinItem: toggleCoupleCheckinItem,
   toggleDeadlineItem: toggleCoupleDeadlineItem,
+  toggleLifeCardStep: toggleCoupleLifeCardStep,
   toggleScheduleItem: toggleCoupleScheduleItem,
   toggleTodoItem: toggleCoupleTodoItem,
   updateDiaryDay: updateCoupleDiaryDay,
@@ -975,6 +977,50 @@ async function handleApi(req, res, url) {
       sendJson(res, 200, {
         ok: true,
         cards: result,
+        state: getCoupleState(session.userId, { date: body.date }),
+      });
+    } catch (error) {
+      sendJson(res, 400, { ok: false, error: error.message });
+    }
+    return true;
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/couple/capture/route") {
+    const session = getCoupleSession(req);
+    if (!session) {
+      sendCoupleAuthRequired(res);
+      return true;
+    }
+
+    try {
+      const bodyText = await readBody(req);
+      const body = bodyText ? JSON.parse(bodyText) : {};
+      const { result } = acceptCoupleCaptureRoute(session.userId, body);
+      sendJson(res, 200, {
+        ok: true,
+        ...result,
+        state: getCoupleState(session.userId, { date: body.date }),
+      });
+    } catch (error) {
+      sendJson(res, 400, { ok: false, error: error.message });
+    }
+    return true;
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/couple/life-cards/step-toggle") {
+    const session = getCoupleSession(req);
+    if (!session) {
+      sendCoupleAuthRequired(res);
+      return true;
+    }
+
+    try {
+      const bodyText = await readBody(req);
+      const body = bodyText ? JSON.parse(bodyText) : {};
+      const { result } = toggleCoupleLifeCardStep(session.userId, body);
+      sendJson(res, 200, {
+        ok: true,
+        item: result,
         state: getCoupleState(session.userId, { date: body.date }),
       });
     } catch (error) {
