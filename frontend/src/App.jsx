@@ -19,6 +19,33 @@ const memoryLaneLabels = {
   time: "纪念",
   care: "照顾",
 };
+const memoryKindLabels = {
+  preference: "偏好",
+  wish: "心愿",
+  purchase: "购买",
+  promise: "承诺",
+  care: "照顾",
+  anniversary: "纪念",
+  memory: "回忆",
+  gratitude: "感谢",
+  repair: "修复",
+  identity: "资料",
+  goal: "目标",
+  list: "清单",
+};
+const captureDecisionLabels = {
+  schedule: { label: "生活卡", icon: "cards", hint: "会进入今天和接下来" },
+  capture: { label: "随手记", icon: "camera", hint: "只保留原文" },
+  memory: { label: "长期记忆", icon: "bookmark", hint: "会沉淀成偏好、承诺或心愿" },
+  dailyStory: { label: "日总结素材", icon: "sparkle", hint: "会留给日记整理" },
+};
+const relationLabels = {
+  parent: "父级",
+  child: "子项",
+  group: "同组",
+  source: "同源",
+  related: "相关",
+};
 const memoryLaneOrder = ["profile", "taste", "wish", "promise", "time", "care"];
 const memorySurfaceDefs = [
   { key: "plans", title: "想做想去", icon: "calendar", caption: "地方和愿望" },
@@ -862,6 +889,17 @@ function detailRows(rows) {
   return rows.filter((row) => row && row.value);
 }
 
+function captureDecisionMeta(decision) {
+  return captureDecisionLabels[decision] || captureDecisionLabels.capture;
+}
+
+function memoryKindText(kinds, fallback = "") {
+  const values = (Array.isArray(kinds) ? kinds : [kinds])
+    .map((kind) => memoryKindLabels[kind] || "")
+    .filter(Boolean);
+  return values.length ? [...new Set(values)].join(" · ") : fallback;
+}
+
 function compactLifeCardRow(card, context, activeId = "") {
   const itemType = card.itemType && itemTypeLabels[card.itemType] ? card.itemType : "thing";
   return {
@@ -874,9 +912,55 @@ function compactLifeCardRow(card, context, activeId = "") {
   };
 }
 
+function contextLifeCard(context, sourceType, sourceId) {
+  const cards = Array.isArray(context.cards) ? context.cards : [];
+  const typedId = `${sourceType}-${sourceId}`;
+  return cards.find((item) =>
+    item.id === typedId ||
+    (item.sourceType === sourceType && item.sourceId === sourceId)
+  );
+}
+
+function relationLifeCardRow(link, context, activeId = "") {
+  const card = contextLifeCard(context, link.sourceType, link.sourceId);
+  if (card) {
+    const row = compactLifeCardRow(card, context, activeId);
+    const relation = relationLabels[link.relationType] || "相关";
+    return {
+      ...row,
+      subtitle: [relation, row.subtitle].filter(Boolean).join(" · "),
+    };
+  }
+  return {
+    id: `${link.sourceType || "card"}-${link.sourceId || link.title}`,
+    title: cleanCardText(link.title || "相关生活卡"),
+    subtitle: [relationLabels[link.relationType] || "相关", link.date === today() ? "今天" : shortDate(link.date), itemTypeLabels[link.itemType]].filter(Boolean).join(" · "),
+    ownerIds: [],
+    active: false,
+    action: null,
+  };
+}
+
+function memoryLinkRow(item, context) {
+  const row = memoryRow(item, context);
+  return {
+    ...row,
+    subtitle: [memoryKindLabels[item.kind] || row.subtitle, item.suggestedDate ? shortDate(item.suggestedDate) : ""].filter(Boolean).join(" · "),
+    action: { type: "open-detail", detailType: "memoryItem", payload: item },
+  };
+}
+
 function lifeCardDetailSections(card, context) {
   const cards = Array.isArray(context.cards) ? context.cards.filter((item) => !isDefaultPromptCard(item)) : [];
-  if (!cards.length) return [];
+  const relationRows = (Array.isArray(card.relations) ? card.relations : [])
+    .map((item) => relationLifeCardRow(item, context, card.id))
+    .filter((row) => row.title)
+    .slice(0, 8);
+  const memoryRows = (Array.isArray(card.memoryLinks) ? card.memoryLinks : [])
+    .map((item) => memoryLinkRow(item, context))
+    .filter((row) => row.title)
+    .slice(0, 6);
+  if (!cards.length && !relationRows.length && !memoryRows.length) return [];
   const anchorDate = card.date || context.selectedDate || today();
   const sameDayCards = sortCards(cards
     .filter((item) => !isArchivedCard(item))
@@ -888,6 +972,14 @@ function lifeCardDetailSections(card, context) {
     .filter((item) => item.id !== card.id))
     .slice(0, 5);
   return [
+    memoryRows.length ? {
+      title: "长期记忆",
+      rows: memoryRows,
+    } : null,
+    relationRows.length ? {
+      title: "关联",
+      rows: relationRows,
+    } : null,
     sameDayCards.length ? {
       title: anchorDate === today() ? "今天" : shortDate(anchorDate),
       rows: sameDayCards.map((item) => compactLifeCardRow(item, context, card.id)),
@@ -909,17 +1001,31 @@ const detailBuilders = {
     const sourceSummary = cleanCardText(card.sourceCaptureSummary || "");
     const readOnly = card.readOnly || card.sourceType === "insight";
     const stepStatus = card.stepProgress?.total ? `${card.stepProgress.done}/${card.stepProgress.total}` : "";
-    const audit = lifeCardAudit(card, profiles);
-    const steps = (Array.isArray(card.steps) ? card.steps : [])
+    const isDone = isCompletedCard(card);
+    const isArchived = isArchivedCard(card);
+    const timerActive = Boolean(card.timeTracking?.currentUserActive);
+    const profileById = new Map((profiles || []).map((profile) => [profile.id, profile]));
+    const rawSteps = card.sourceType === "checkin"
+      ? participants.map((id) => ({
+          id: `checkin-${id}`,
+          title: profileById.get(id)?.displayName || ownerLabel(id, currentUser),
+          ownerId: id,
+          status: card.statusByUser?.[id] === "done" ? "done" : "todo",
+        }))
+      : (Array.isArray(card.steps) ? card.steps : []);
+    const steps = rawSteps
       .map((step) => ({
         id: step.id || step.title,
         title: cleanCardText(step.title || ""),
         done: step.status === "done",
         ownerIds: [step.ownerId].filter(Boolean),
         hint: durationLabel(step.estimateMin),
-        action: !readOnly ? { type: "toggle-step", card, step } : null,
+        action: !readOnly && card.sourceType !== "checkin" ? { type: "toggle-step", card, step } : null,
       }))
       .filter((step) => step.title);
+    const tagLine = (Array.isArray(card.tags) ? card.tags : []).slice(0, 8).join(" · ");
+    const memoryLine = memoryKindText(card.memoryKinds);
+    const hasMemory = Boolean(memoryLine || card.memoryLinks?.length);
     return {
       type: "lifeCard",
       label: itemTypeLabels[itemType],
@@ -936,13 +1042,14 @@ const detailBuilders = {
       rows: detailRows([
         card.createdAt ? { label: "创建", value: [compactDateTime(card.createdAt), actorName(card.createdBy, profiles, "")].filter(Boolean).join(" · ") } : null,
         card.updatedAt ? { label: "编辑", value: [compactDateTime(card.updatedAt), actorName(card.updatedBy, profiles, "")].filter(Boolean).join(" · ") } : null,
-        detail ? { label: "注意", value: detail, wide: true } : null,
         card.nextStep?.title ? { label: "下一步", value: card.nextStep.title, wide: true } : null,
         card.plannedAt ? { label: "开始", value: formatDateTimeShort(card.plannedAt) } : null,
         card.dueAt ? { label: "截止", value: formatDateTimeShort(card.dueAt) } : null,
         card.durationMin ? { label: "预计", value: durationLabel(card.durationMin) } : null,
         card.stepProgress?.total ? { label: "步骤", value: `${card.stepProgress.done}/${card.stepProgress.total}` } : null,
         card.repeatRule ? { label: "周期", value: card.repeatRule } : null,
+        tagLine ? { label: "标签", value: tagLine, wide: true } : null,
+        memoryLine ? { label: "记忆", value: memoryLine, wide: true } : null,
         sourceSummary ? { label: "来源", value: sourceSummary, wide: true } : null,
         card.priority === "high" ? { label: "优先级", value: "重要" } : null,
       ]),
@@ -950,8 +1057,12 @@ const detailBuilders = {
       sections: lifeCardDetailSections(card, context),
       images: [],
       actions: [
+        !readOnly && !isArchived ? { type: "toggle-card", icon: isDone ? "undo" : "check", label: isDone ? "取消" : "完成", card } : null,
+        !readOnly && !isArchived && !card.isDraft && card.sourceType !== "checkin" ? { type: "timer-card", icon: timerActive ? "stop" : "clock", label: timerActive ? "停止" : "计时", card } : null,
+        !readOnly && ["schedule", "todo"].includes(card.sourceType) ? { type: "archive-card", icon: isArchived ? "undo" : "archive", label: isArchived ? "恢复" : "归档", card } : null,
+        !readOnly && !card.isDraft ? { type: "remember-card", icon: "bookmark", label: hasMemory ? "已记" : "记忆", card } : null,
         !readOnly ? { type: "edit-card", icon: "edit", label: "编辑", card } : null,
-        card.date ? { type: "go-date", icon: "calendar", label: "打开日期", date: card.date, page: "month" } : null,
+        card.date ? { type: "go-date", icon: "calendar", label: "月历", date: card.date, page: "month" } : null,
       ].filter(Boolean),
     };
   },
@@ -1310,6 +1421,15 @@ export function App() {
     setDetailRequest({ type, payload });
   }
 
+  function refreshDetailCardFromState(state, card) {
+    if (!state || !card?.id) return;
+    const nextCard = state.scheduleItemCards?.find((item) => item.id === card.id);
+    if (!nextCard) return;
+    setDetailRequest((current) => current?.type === "lifeCard" && current.payload?.id === card.id
+      ? { type: "lifeCard", payload: nextCard }
+      : current);
+  }
+
   function startAgentJob(jobId, meta = {}) {
     if (!jobId) return;
     setAgentJob({
@@ -1379,6 +1499,22 @@ export function App() {
 
   async function handleDetailAction(action) {
     if (!action) return;
+    if (action.type === "toggle-card" && action.card) {
+      await toggleCard(action.card);
+      return;
+    }
+    if (action.type === "archive-card" && action.card) {
+      await archiveCard(action.card);
+      return;
+    }
+    if (action.type === "timer-card" && action.card) {
+      await toggleCardTimer(action.card);
+      return;
+    }
+    if (action.type === "remember-card" && action.card) {
+      await rememberCard(action.card);
+      return;
+    }
     if (action.type === "toggle-step" && action.card && action.step) {
       await toggleCardStep(action.card, action.step);
       return;
@@ -1517,12 +1653,7 @@ export function App() {
     });
     if (result) {
       setData(result.state);
-      const nextCard = result.state?.scheduleItemCards?.find((item) => item.id === card.id);
-      if (nextCard) {
-        setDetailRequest((current) => current?.type === "lifeCard" && current.payload?.id === card.id
-          ? { type: "lifeCard", payload: nextCard }
-          : current);
-      }
+      refreshDetailCardFromState(result.state, card);
     }
   }
 
@@ -1538,12 +1669,7 @@ export function App() {
     });
     if (result) {
       setData(result.state);
-      const nextCard = result.state?.scheduleItemCards?.find((item) => item.id === card.id);
-      if (nextCard) {
-        setDetailRequest((current) => current?.type === "lifeCard" && current.payload?.id === card.id
-          ? { type: "lifeCard", payload: nextCard }
-          : current);
-      }
+      refreshDetailCardFromState(result.state, card);
     }
   }
 
@@ -1563,6 +1689,7 @@ export function App() {
     });
     if (result) {
       setData(result.state);
+      refreshDetailCardFromState(result.state, card);
       if (wasCompleted) setFilter("all");
     }
   }
@@ -1580,7 +1707,24 @@ export function App() {
     });
     if (result) {
       setData(result.state);
+      refreshDetailCardFromState(result.state, card);
       if (isArchivedCard(card)) setFilter("all");
+    }
+  }
+
+  async function rememberCard(card) {
+    if (!card || card.readOnly || card.sourceType === "insight" || card.isDraft) return;
+    const result = await request("/api/couple/life-cards/remember", {
+      method: "POST",
+      body: {
+        sourceType: card.sourceType,
+        id: card.sourceId,
+        date: card.date,
+      },
+    });
+    if (result) {
+      setData(result.state);
+      refreshDetailCardFromState(result.state, card);
     }
   }
 
@@ -1977,8 +2121,12 @@ function Composer({ text, setText, saveRawCapture, profiles, currentUser, busy, 
   }
   const draft = routeDraft || confirmation;
   const confirmationPeople = draft ? cardParticipantIds(draft, profiles, currentUser) : [];
-  const visibleDecision = draft?.decision === "schedule" ? "schedule" : "capture";
-  const confirmationType = visibleDecision === "schedule" ? "生活卡" : "随手记";
+  const visibleDecision = ["schedule", "capture"].includes(draft?.decision) ? draft.decision : "";
+  const decisionMeta = captureDecisionMeta(draft?.decision);
+  const confirmationType = decisionMeta.label;
+  const memoryHint = draft?.decision === "memory"
+    ? memoryKindText(draft.memoryKinds || draft.memoryKind, "长期记忆")
+    : "";
   const routeOptions = [
     { id: "schedule", icon: "cards", label: "生活卡" },
     { id: "capture", icon: "camera", label: "随手记" },
@@ -1997,8 +2145,7 @@ function Composer({ text, setText, saveRawCapture, profiles, currentUser, busy, 
           ownerId: current.ownerId || currentUser?.id || "",
         };
       }
-      const fallbackDecision = ["memory", "dailyStory"].includes(confirmation?.decision) ? confirmation.decision : "capture";
-      return { ...current, decision: fallbackDecision };
+      return { ...current, decision: "capture" };
     });
   };
   const normalizeRouteForSubmit = (route) => {
@@ -2067,6 +2214,13 @@ function Composer({ text, setText, saveRawCapture, profiles, currentUser, busy, 
               {draft.relatedItems?.length ? ` · +${draft.relatedItems.length}` : ""}
             </strong>
             {draft.title ? <span>{draft.title}</span> : null}
+            {draft.decision === "memory" || draft.decision === "dailyStory" ? (
+              <span className={cx("confirm-destination", `is-${draft.decision}`)}>
+                <Icon name={decisionMeta.icon} />
+                <b>{decisionMeta.hint}</b>
+                {memoryHint ? <em>{memoryHint}</em> : null}
+              </span>
+            ) : null}
             {draft.reason || draft.confirmationText ? <em>{shortText(draft.reason || draft.confirmationText, 68)}</em> : null}
             <div className="route-tools">
               <div className="route-switch" aria-label="Agent 去向">
@@ -2096,6 +2250,16 @@ function Composer({ text, setText, saveRawCapture, profiles, currentUser, busy, 
                 </div>
               ) : null}
             </div>
+            {draft.relatedItems?.length ? (
+              <div className="confirm-related" aria-label="子生活卡">
+                {draft.relatedItems.slice(0, 4).map((item, index) => (
+                  <span key={`${item.title || "item"}-${index}`}>
+                    <Icon name="circle" />
+                    {shortText(item.title || item.detail || "子项", 18)}
+                  </span>
+                ))}
+              </div>
+            ) : null}
           </div>
           <div className="confirm-actions">
             <IconButton icon="check" label="确认" type="submit" primary />
@@ -3231,9 +3395,6 @@ function DetailDrawer({ detail, profiles, onClose, onAction }) {
             <span>{detail.label}</span>
           </div>
           <div className="sheet-icon-actions">
-            {(detail.actions || []).slice(0, 2).map((action) => (
-              <IconButton key={`${action.type}-${action.label}`} icon={action.icon} label={action.label} onClick={() => onAction(action)} />
-            ))}
             <IconButton icon="x" label="关闭" onClick={onClose} />
           </div>
         </div>
@@ -3242,6 +3403,16 @@ function DetailDrawer({ detail, profiles, onClose, onAction }) {
           <h2>{detail.title}</h2>
           {detail.body ? <p>{detail.body}</p> : null}
         </div>
+        {detail.actions?.length ? (
+          <div className="detail-action-row" aria-label="操作">
+            {detail.actions.slice(0, 6).map((action) => (
+              <button key={`${action.type}-${action.label}`} type="button" onClick={() => onAction(action)}>
+                <Icon name={action.icon} />
+                <span>{action.label}</span>
+              </button>
+            ))}
+          </div>
+        ) : null}
         {detail.chips?.length ? (
           <div className="detail-chips">
             {detail.chips.map((chip) => (
@@ -3303,21 +3474,32 @@ function DetailDrawer({ detail, profiles, onClose, onAction }) {
                   <span>{section.rows.length}</span>
                 </div>
                 <div className="dynamic-rows">
-                  {section.rows.map((row) => (
-                    <button
-                      className={cx("dynamic-row detail-card-row", row.active && "is-active")}
-                      type="button"
-                      key={row.id}
-                      onClick={() => onAction(row.action)}
-                    >
-                      <AvatarPair profiles={profiles} ids={row.ownerIds} />
-                      <span>
-                        <strong>{row.title}</strong>
-                        {row.subtitle ? <em>{row.subtitle}</em> : null}
-                      </span>
-                      <Icon name="chevronRight" />
-                    </button>
-                  ))}
+                  {section.rows.map((row) => {
+                    const content = (
+                      <>
+                        <AvatarPair profiles={profiles} ids={row.ownerIds} />
+                        <span>
+                          <strong>{row.title}</strong>
+                          {row.subtitle ? <em>{row.subtitle}</em> : null}
+                        </span>
+                        {row.action ? <Icon name="chevronRight" /> : <i aria-hidden="true" />}
+                      </>
+                    );
+                    return row.action ? (
+                      <button
+                        className={cx("dynamic-row detail-card-row", row.active && "is-active")}
+                        type="button"
+                        key={row.id}
+                        onClick={() => onAction(row.action)}
+                      >
+                        {content}
+                      </button>
+                    ) : (
+                      <div className={cx("dynamic-row detail-card-row", row.active && "is-active")} key={row.id}>
+                        {content}
+                      </div>
+                    );
+                  })}
                 </div>
               </section>
             ))}
