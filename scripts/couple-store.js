@@ -82,14 +82,17 @@ const captureAgentPrompt = [
   "输出轻确认，不直接写入最终生活卡，除非用户确认。",
 ].join("\n");
 const defaultLifeCardTitle = "今天有没有开开心心？";
+const dailyCheckinTitle = "一起确认明天的安排";
 const defaultLifeCardTitleKey = defaultLifeCardTitle.replace(/[？?。!！\s]/g, "");
 const placeholderTitleKeys = new Set([
   defaultLifeCardTitle,
   "写下今天最重要的一件事",
   "互相确认今天的状态",
+  "一起确认今天的安排",
+  dailyCheckinTitle,
 ].map((value) => value.replace(/[？?。!！\s]/g, "")));
 const lowSignalSummaryTitleKeys = new Set(["做别的事", "日记", "今日", "今天", "日总结", "共同回忆"].map((value) => value.replace(/[？?。!！\s]/g, "")));
-const badGeneratedSummaryPattern = /值得记住的是|记录留下了\s*\d+\s*条现场线索|完成了\s*今天有没有开开心心|需要顺手带到明天的是\s*今天有没有开开心心|还没有明确完成项|随手记还比较少|先补上|自动日总结/;
+const badGeneratedSummaryPattern = /值得记住的是|今天最清楚留下来(?:的)?是|今天最值得记住的是|记录留下了\s*\d+\s*条现场线索|完成了\s*今天有没有开开心心|需要顺手带到明天的是\s*今天有没有开开心心|还没有明确完成项|没有明确贡献记录|做了?别的事|随手记还比较少|先补上|自动日总结|每日状态对象|doneUsers|pendingUsers|createdBy|updatedBy|statusUpdatedBy|actorId|targetUserId|status_by_user|source_counts/;
 const importantEventPattern = /答辩|考试|面试|汇报|演讲|提交|材料|ddl|deadline|截止|证件|面谈|复试|重要(?!的一件事)/i;
 const anniversaryPattern = /纪念日|周年|生日|情人节|七夕|圣诞|跨年|节日|纪念/i;
 const promisePattern = /答应|承诺|说好|我(?:会|来|去|周末|今晚|明天|下次|之后|以后)?[^。！？\n]{0,18}(?:帮你|给你|带你|陪你|替你|负责|弄|整理|修|买|订|处理|搞定)/;
@@ -97,7 +100,74 @@ const wishPattern = /想(?:要|去|吃|买|看|体验|喝|逛|试|拍|一起)?|�
 const preferencePattern = /喜欢|不喜欢|讨厌|雷区|边界|偏好|好闻|爱吃|不爱|不要太|别太|太吵|安静/;
 const gratitudePattern = /谢谢|感谢|辛苦|帮我|帮了|照顾|做了|准备了/;
 const repairPattern = /吵架|争执|生气|委屈|难过|不开心|冷战|道歉|修复/;
+const actionSchedulePattern = /(?:^|[，,。；;\s])(?:查|查询|搜索|搜|找|看|学习|学|练习|训练|康复|复习|研究|了解|准备|处理|整理|写|做|改|修|预约|联系|发|问|读)[^。！？\n]{0,80}|视频|资料|教程|攻略/i;
 const dayRolloverHour = 3;
+const solarTermNames = [
+  "小寒", "大寒", "立春", "雨水", "惊蛰", "春分", "清明", "谷雨",
+  "立夏", "小满", "芒种", "夏至", "小暑", "大暑", "立秋", "处暑",
+  "白露", "秋分", "寒露", "霜降", "立冬", "小雪", "大雪", "冬至",
+];
+const solarTermInfo = [0, 21208, 42467, 63836, 85337, 107014, 128867, 150921, 173149, 195551, 218072, 240693, 263343, 285989, 308563, 331033, 353350, 375494, 397447, 419210, 440795, 462224, 483532, 504758];
+const solarTermDates2026 = new Map([
+  ["2026-01-05", "小寒"],
+  ["2026-01-20", "大寒"],
+  ["2026-02-04", "立春"],
+  ["2026-02-18", "雨水"],
+  ["2026-03-05", "惊蛰"],
+  ["2026-03-20", "春分"],
+  ["2026-04-05", "清明"],
+  ["2026-04-20", "谷雨"],
+  ["2026-05-05", "立夏"],
+  ["2026-05-21", "小满"],
+  ["2026-06-05", "芒种"],
+  ["2026-06-21", "夏至"],
+  ["2026-07-07", "小暑"],
+  ["2026-07-23", "大暑"],
+  ["2026-08-07", "立秋"],
+  ["2026-08-23", "处暑"],
+  ["2026-09-07", "白露"],
+  ["2026-09-23", "秋分"],
+  ["2026-10-08", "寒露"],
+  ["2026-10-23", "霜降"],
+  ["2026-11-07", "立冬"],
+  ["2026-11-22", "小雪"],
+  ["2026-12-07", "大雪"],
+  ["2026-12-22", "冬至"],
+]);
+const lunarMonthLabels = ["", "正月", "二月", "三月", "四月", "五月", "六月", "七月", "八月", "九月", "十月", "冬月", "腊月"];
+const lunarDayLabels = ["", "初一", "初二", "初三", "初四", "初五", "初六", "初七", "初八", "初九", "初十", "十一", "十二", "十三", "十四", "十五", "十六", "十七", "十八", "十九", "二十", "廿一", "廿二", "廿三", "廿四", "廿五", "廿六", "廿七", "廿八", "廿九", "三十"];
+const lunarFestivalMap = {
+  "1-1": "春节",
+  "1-15": "元宵",
+  "5-5": "端午",
+  "7-7": "七夕",
+  "8-15": "中秋",
+  "9-9": "重阳",
+  "12-8": "腊八",
+};
+const fixedFestivalMap = {
+  "02-14": "情人节",
+  "05-20": "520",
+  "12-24": "平安夜",
+  "12-25": "圣诞",
+};
+const officialHolidayRanges2026 = [
+  ["元旦", "2026-01-01", "2026-01-03"],
+  ["春节", "2026-02-15", "2026-02-23"],
+  ["清明", "2026-04-04", "2026-04-06"],
+  ["劳动节", "2026-05-01", "2026-05-05"],
+  ["端午", "2026-06-19", "2026-06-21"],
+  ["中秋", "2026-09-25", "2026-09-27"],
+  ["国庆", "2026-10-01", "2026-10-07"],
+];
+const officialWorkdays2026 = new Map([
+  ["2026-01-04", "元旦调休"],
+  ["2026-02-14", "春节调休"],
+  ["2026-02-28", "春节调休"],
+  ["2026-05-09", "劳动节调休"],
+  ["2026-09-20", "国庆调休"],
+  ["2026-10-10", "国庆调休"],
+]);
 
 function pad(value) {
   return String(value).padStart(2, "0");
@@ -133,9 +203,133 @@ function daysBetween(startDateText, endDateText) {
   return Math.floor((end.getTime() - start.getTime()) / 86400000);
 }
 
+function dateInRange(dateText, startText, endText) {
+  const date = normalizeDate(dateText, "");
+  return Boolean(date && date >= startText && date <= endText);
+}
+
 function normalizeDate(dateText, fallback = businessDate()) {
   const value = String(dateText || "").trim();
   return parseDate(value) ? value : fallback;
+}
+
+function lunarDateInfo(dateText) {
+  const date = parseDate(normalizeDate(dateText, ""));
+  if (!date || typeof Intl === "undefined") return null;
+  try {
+    const formatter = new Intl.DateTimeFormat("zh-CN-u-ca-chinese", { month: "numeric", day: "numeric" });
+    const parts = formatter.formatToParts(date);
+    const month = Number(parts.find((part) => part.type === "month")?.value || 0);
+    const day = Number(parts.find((part) => part.type === "day")?.value || 0);
+    if (!month || !day) return null;
+    return {
+      month,
+      day,
+      label: `${lunarMonthLabels[month] || `${month}月`}${lunarDayLabels[day] || `${day}日`}`,
+      key: `${month}-${day}`,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function solarTermForDate(dateText) {
+  const date = parseDate(normalizeDate(dateText, ""));
+  if (!date) return "";
+  const year = date.getFullYear();
+  const id = formatDate(date);
+  if (year === 2026) return solarTermDates2026.get(id) || "";
+  const base = Date.UTC(1900, 0, 6, 2, 5);
+  for (let index = 0; index < solarTermNames.length; index += 1) {
+    const termDate = new Date(31556925974.7 * (year - 1900) + solarTermInfo[index] * 60000 + base);
+    if (formatDate(termDate) === id) return solarTermNames[index];
+  }
+  return "";
+}
+
+function officialHolidayMark(dateText) {
+  const date = normalizeDate(dateText, "");
+  if (!date) return null;
+  const workdayTitle = officialWorkdays2026.get(date);
+  if (workdayTitle) {
+    return {
+      type: "workday",
+      tone: "workday",
+      icon: "clock",
+      label: "班",
+      title: workdayTitle,
+      detail: "官方调休",
+    };
+  }
+  const holiday = officialHolidayRanges2026.find(([, start, end]) => dateInRange(date, start, end));
+  if (!holiday) return null;
+  return {
+    type: "holiday",
+    tone: "holiday",
+    icon: "sparkle",
+    label: "休",
+    title: `${holiday[0]}假期`,
+    detail: "官方放假",
+  };
+}
+
+function calendarContextForDate(dateText) {
+  const date = normalizeDate(dateText);
+  const parsed = parseDate(date);
+  const weekday = parsed ? weekdayLabels[parsed.getDay()] : "";
+  const lunar = lunarDateInfo(date);
+  const nextLunar = lunarDateInfo(addDays(date, 1));
+  const marks = [];
+  const officialMark = officialHolidayMark(date);
+  const solarTerm = solarTermForDate(date);
+  const fixedFestival = fixedFestivalMap[date.slice(5)];
+  const lunarFestival = lunar?.key ? lunarFestivalMap[lunar.key] : "";
+  const isNewYearEve = nextLunar?.key === "1-1";
+
+  if (officialMark) marks.push(officialMark);
+  if (solarTerm) {
+    marks.push({
+      type: "solarTerm",
+      tone: "solar",
+      icon: "cloud",
+      label: solarTerm,
+      title: solarTerm,
+      detail: "二十四节气",
+    });
+  }
+  if (lunarFestival || isNewYearEve) {
+    const title = isNewYearEve ? "除夕" : lunarFestival;
+    marks.push({
+      type: "festival",
+      tone: "festival",
+      icon: "star",
+      label: title,
+      title,
+      detail: lunar?.label || "农历节日",
+    });
+  }
+  if (fixedFestival) {
+    marks.push({
+      type: "festival",
+      tone: "festival",
+      icon: "star",
+      label: fixedFestival,
+      title: fixedFestival,
+      detail: "日历节日",
+    });
+  }
+
+  const isWeekend = parsed ? [0, 6].includes(parsed.getDay()) : false;
+  const isWorkday = marks.some((mark) => mark.type === "workday");
+  const isHoliday = marks.some((mark) => mark.type === "holiday");
+  return {
+    date,
+    weekday,
+    lunar: lunar?.label || "",
+    marks,
+    isRestDay: !isWorkday && (isHoliday || isWeekend),
+    isWorkday,
+  };
 }
 
 function normalizeSegment(segment) {
@@ -521,21 +715,35 @@ function normalizeLifeCardSteps(steps, participants = []) {
     .slice(0, 8);
 }
 
+function cleanInferredLifeCardStepTitle(part, parentTitle = "") {
+  const parent = cleanCaptureTitle(parentTitle);
+  let value = cleanCaptureTitle(part)
+    .replace(/^(?:第?[一二两三四五六七八九十\d]+步|分(?:[一二两三四五六七八九十\d]+)?步|步骤\s*[一二两三四五六七八九十\d]*|step\s*\d*)\s*[:：.、-]?\s*/i, "")
+    .trim();
+
+  while (parent && value.startsWith(parent)) {
+    value = value.slice(parent.length).trim();
+  }
+
+  return value
+    .replace(/^(?:[:：,，.。;；、\-\s]+)+/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
 function inferLifeCardSteps(payload, participants = []) {
   const title = cleanCaptureTitle(payload.title || "");
   const titleKey = normalizedTitleKey(title);
   const text = `${payload.title || ""} ${payload.detail || ""}`.trim();
+  const seen = new Set();
   const clauses = splitCaptureClauses(text)
-    .map((part) => cleanCaptureTitle(part))
-    .map((part) => part
-      .replace(/^分(?:[一二两三四五六七八九十\d]+)?步\s*/g, "")
-      .replace(/^步骤\s*[一二两三四五六七八九十\d]*\s*/g, "")
-      .trim())
+    .map((part) => cleanInferredLifeCardStepTitle(part, title))
     .filter((part) => {
       if (!part || part === title) return false;
       const key = normalizedTitleKey(part);
-      if (!key || !titleKey) return Boolean(key);
-      return !(key.includes(titleKey) || titleKey.includes(key));
+      if (!key || (titleKey && key === titleKey) || seen.has(key)) return false;
+      seen.add(key);
+      return true;
     })
     .slice(0, 4);
   const durationMin = normalizeDurationMin(payload.durationMin, 0);
@@ -582,6 +790,40 @@ function normalizeLifeCardTimeBlocks(blocks, steps = []) {
     })
     .filter(Boolean)
     .slice(0, 8);
+}
+
+function normalizeTimerTimestamp(value) {
+  const raw = sanitizeText(value, 40);
+  if (!raw) return "";
+  const parsed = Date.parse(raw);
+  if (Number.isFinite(parsed)) return new Date(parsed).toISOString();
+  const local = normalizeDateTime(raw);
+  const localParsed = Date.parse(local);
+  return Number.isFinite(localParsed) ? new Date(localParsed).toISOString() : "";
+}
+
+function normalizeLifeCardTimeEntries(entries = []) {
+  return (Array.isArray(entries) ? entries : [])
+    .map((entry, index) => {
+      const startedAt = normalizeTimerTimestamp(entry?.startedAt);
+      if (!startedAt) return null;
+      const stoppedAt = normalizeTimerTimestamp(entry?.stoppedAt);
+      const startedMs = Date.parse(startedAt);
+      const stoppedMs = stoppedAt ? Date.parse(stoppedAt) : 0;
+      const inferredDuration = stoppedAt && Number.isFinite(startedMs) && Number.isFinite(stoppedMs)
+        ? Math.max(1, Math.round((stoppedMs - startedMs) / 1000))
+        : 0;
+      return {
+        id: sanitizeText(entry?.id, 80) || `timer-${index + 1}`,
+        userId: sanitizeText(entry?.userId, 80),
+        date: entry?.date ? normalizeDate(entry.date) : normalizeDate(startedAt.slice(0, 10)),
+        startedAt,
+        stoppedAt,
+        durationSec: stoppedAt ? Math.max(1, Number(entry?.durationSec) || inferredDuration) : 0,
+      };
+    })
+    .filter((entry) => entry && entry.userId)
+    .slice(-120);
 }
 
 function inferLifeCardTimeBlocks(payload, steps = []) {
@@ -633,6 +875,27 @@ function publicPlanningFields(item) {
     durationMin: normalizeDurationMin(item.durationMin, 0),
     steps,
     timeBlocks: normalizeLifeCardTimeBlocks(item.timeBlocks, steps),
+    timeEntries: normalizeLifeCardTimeEntries(item.timeEntries),
+  };
+}
+
+function lifeCardTimeTracking(card, userId) {
+  const entries = normalizeLifeCardTimeEntries(card.timeEntries);
+  const nowMs = Date.now();
+  const totalSec = entries.reduce((sum, entry) => {
+    if (entry.stoppedAt) return sum + (Number(entry.durationSec) || 0);
+    const startedMs = Date.parse(entry.startedAt);
+    if (!Number.isFinite(startedMs)) return sum;
+    return sum + Math.max(0, Math.round((nowMs - startedMs) / 1000));
+  }, 0);
+  const activeEntry = [...entries].reverse().find((entry) => !entry.stoppedAt && entry.userId === userId) ||
+    [...entries].reverse().find((entry) => !entry.stoppedAt) ||
+    null;
+  return {
+    totalSec,
+    currentUserActive: Boolean(activeEntry && activeEntry.userId === userId),
+    activeUserId: activeEntry?.userId || "",
+    activeStartedAt: activeEntry?.startedAt || "",
   };
 }
 
@@ -956,6 +1219,7 @@ function getMonthDays(dateText) {
     const date = new Date(first);
     date.setDate(index + 1);
     const id = formatDate(date);
+    const calendarContext = calendarContextForDate(id);
     return {
       id,
       label: weekdayLabels[date.getDay()],
@@ -963,6 +1227,9 @@ function getMonthDays(dateText) {
       dayNumber: index + 1,
       isToday: id === today,
       isFuture: id > today,
+      calendarContext,
+      calendarMarks: calendarContext.marks,
+      lunar: calendarContext.lunar,
     };
   });
 }
@@ -1076,6 +1343,7 @@ function findLifeCardSourceItem(store, sourceType, sourceId) {
   const collections = {
     schedule: store.scheduleItems,
     todo: store.todoItems,
+    checkin: store.checkinItems,
     deadline: store.deadlineItems,
   };
   const collection = collections[sourceType];
@@ -1087,6 +1355,7 @@ function publicSourceItem(store, item, sourceType, userId) {
   const profileIds = getProfileIds(store);
   if (sourceType === "schedule") return publicScheduleItem(item, profileIds);
   if (sourceType === "todo") return publicTodoItem(item, profileIds);
+  if (sourceType === "checkin") return publicCheckinItem(item, profileIds, businessDate());
   if (sourceType === "deadline") return publicDeadlineItem(item, profileIds);
   return publicScheduleItemCard(store, item, sourceType, userId);
 }
@@ -1139,6 +1408,54 @@ function toggleLifeCardStep(userId, payload = {}) {
       sourceType,
     });
 
+    return publicSourceItem(store, item, sourceType, userId);
+  });
+}
+
+function toggleLifeCardTimer(userId, payload = {}) {
+  return mutateStore((store) => {
+    const sourceType = sanitizeText(payload.sourceType, 40);
+    const item = findLifeCardSourceItem(store, sourceType, payload.id);
+    if (!item) {
+      throw new Error("life card item not found");
+    }
+
+    const timestamp = nowIso();
+    const date = normalizeDate(payload.date || item.date || businessDate());
+    const entries = normalizeLifeCardTimeEntries(item.timeEntries);
+    const activeIndex = entries.findIndex((entry) => entry.userId === userId && !entry.stoppedAt);
+
+    if (activeIndex >= 0) {
+      const startedMs = Date.parse(entries[activeIndex].startedAt);
+      const stoppedMs = Date.parse(timestamp);
+      entries[activeIndex] = {
+        ...entries[activeIndex],
+        stoppedAt: timestamp,
+        durationSec: Number.isFinite(startedMs) && Number.isFinite(stoppedMs)
+          ? Math.max(1, Math.round((stoppedMs - startedMs) / 1000))
+          : 1,
+      };
+    } else {
+      entries.push({
+        id: makeId("timer"),
+        userId,
+        date,
+        startedAt: timestamp,
+        stoppedAt: "",
+        durationSec: 0,
+      });
+    }
+
+    item.timeEntries = normalizeLifeCardTimeEntries(entries);
+    item.updatedBy = userId;
+    item.updatedAt = timestamp;
+    recordOperation(store, userId, activeIndex >= 0 ? "stop-timer" : "start-timer", sourceType, item.id, {
+      date,
+      title: item.title,
+      sourceType,
+    });
+
+    if (sourceType === "checkin") return publicCheckinItem(item, getProfileIds(store), date);
     return publicSourceItem(store, item, sourceType, userId);
   });
 }
@@ -1365,6 +1682,12 @@ function ensureStoreShape(store) {
   shaped.todoItems = Array.isArray(shaped.todoItems) ? shaped.todoItems : [];
   shaped.checkinItems = Array.isArray(shaped.checkinItems) ? shaped.checkinItems : [];
   shaped.deadlineItems = Array.isArray(shaped.deadlineItems) ? shaped.deadlineItems : [];
+  ["scheduleItems", "todoItems", "checkinItems", "deadlineItems"].forEach((key) => {
+    shaped[key] = shaped[key].map((item) => ({
+      ...item,
+      timeEntries: normalizeLifeCardTimeEntries(item.timeEntries),
+    }));
+  });
   shaped.operations = Array.isArray(shaped.operations) ? shaped.operations : [];
   shaped.diaryDays = shaped.diaryDays && typeof shaped.diaryDays === "object" ? shaped.diaryDays : {};
   shaped.dailySummaries = shaped.dailySummaries && typeof shaped.dailySummaries === "object" ? shaped.dailySummaries : {};
@@ -1846,10 +2169,13 @@ function publicCheckinItem(item, profileIds, date) {
   const normalizedParticipants = profileIds;
   const dayStatus = item.statusByDate?.[date] || {};
   const dayStatusMeta = item.statusMetaByDate?.[date] || {};
+  const title = /^(?:互相确认今天的状态|一起确认今天的安排)$/.test(item.title || "")
+    ? dailyCheckinTitle
+    : item.title || "";
   return {
     id: item.id,
     date: normalizeDate(date),
-    title: item.title || "",
+    title,
     slot: item.slot || "",
     itemType: normalizeScheduleItemType(item.itemType, item.repeatRule ? "habit" : "checkin"),
     sourceCaptureId: item.sourceCaptureId || "",
@@ -2016,7 +2342,7 @@ function inferCaptureDecision(text) {
   if (/偏好|边界|喜欢|不喜欢|讨厌|雷区|好闻|安静|太吵|重要的是|长期|目标|以后要|未来想|记住|答应|承诺|说好|帮你|我来|下次带你|谢谢|感谢|吵架|争执|生气|委屈|想吃|想买|想去|好想/.test(raw)) {
     return "memory";
   }
-  if (/今天|明天|周[一二三四五六日天]|上午|中午|下午|晚上|今晚|\d{4}-\d{2}-\d{2}|\d{1,2}\s*(?:月|[./-])\s*\d{1,2}|提醒|买|约|打卡|习惯|答辩|考试|面试|ddl|截止/i.test(raw)) {
+  if (/今天|明天|周[一二三四五六日天]|上午|中午|下午|晚上|今晚|\d{4}-\d{2}-\d{2}|\d{1,2}\s*(?:月|[./-])\s*\d{1,2}|提醒|买|约|打卡|习惯|答辩|考试|面试|ddl|截止/i.test(raw) || actionSchedulePattern.test(raw)) {
     return "schedule";
   }
   return "capture";
@@ -2025,7 +2351,7 @@ function inferCaptureDecision(text) {
 function isTemplateScheduleMatch(text) {
   const raw = String(text || "");
   if (!raw.trim() || isCompletedCaptureStatement(raw)) return false;
-  return /todo|待办|安排|生活卡|今天|明天|后天|周[一二三四五六日天]|下周|上午|中午|下午|晚上|今晚|\d{4}-\d{2}-\d{2}|\d{1,2}\s*(?:月|[./-])\s*\d{1,2}|提醒|记得|别忘|买|约|打卡|习惯|答辩|考试|面试|ddl|deadline|截止|开会|会议|作业|任务|提交|整理|处理|预约|带/i.test(raw);
+  return /todo|待办|安排|生活卡|今天|明天|后天|周[一二三四五六日天]|下周|上午|中午|下午|晚上|今晚|\d{4}-\d{2}-\d{2}|\d{1,2}\s*(?:月|[./-])\s*\d{1,2}|提醒|记得|别忘|买|约|打卡|习惯|答辩|考试|面试|ddl|deadline|截止|开会|会议|作业|任务|提交|整理|处理|预约|带/i.test(raw) || actionSchedulePattern.test(raw);
 }
 
 function analyzeRelatedScheduleItems(text, primaryTitle, base) {
@@ -2227,6 +2553,7 @@ function buildCaptureAgentStructuredPrompt(facts) {
     "",
     "决策要求：",
     "- decision=schedule：用户明确说了要发生、要提醒、要买、要做、要约、要打卡、要养成习惯的事。",
+    "- 查资料、搜视频、学习、练习、训练、复习、准备、处理、整理这类短动作也属于 schedule，默认落到今天的 thing/work。",
     "- decision=memory：偏好、心愿、承诺、照顾线索、纪念线索、感谢、修复、关系资料、长期目标。",
     "- decision=dailyStory：适合进入当天日总结素材，但不是未来行动或长期记忆。",
     "- decision=capture：只保留 raw，不需要任何生活卡或长期记忆。",
@@ -3279,6 +3606,7 @@ function publicScheduleItemCard(store, publicItem, sourceType, userId, options =
     durationMin: normalizeDurationMin(publicItem.durationMin, 0),
     steps: normalizeLifeCardSteps(publicItem.steps, participants),
     timeBlocks: normalizeLifeCardTimeBlocks(publicItem.timeBlocks, normalizeLifeCardSteps(publicItem.steps, participants)),
+    timeEntries: normalizeLifeCardTimeEntries(publicItem.timeEntries),
     archivedAt: publicItem.archivedAt || "",
     archivedBy: publicItem.archivedBy || "",
     createdBy: publicItem.createdBy || "",
@@ -3287,6 +3615,7 @@ function publicScheduleItemCard(store, publicItem, sourceType, userId, options =
     updatedAt: publicItem.updatedAt || "",
   };
   card.stepProgress = lifeCardStepProgress(card);
+  card.timeTracking = lifeCardTimeTracking(card, userId);
   card.nextStep = lifeCardNextStep(card);
   card.timing = lifeCardTiming(card, options.selectedDate || date);
   card.actionSummary = lifeCardActionSummary(card, options.selectedDate || date);
@@ -3648,7 +3977,7 @@ function isMeaningfulSummaryThing(item) {
   const title = sanitizeText(item?.title, 180);
   if (!title || isDefaultLifeCardTitle(title)) return false;
   if (isLowSignalSummaryTitle(title)) return false;
-  if (!item?.sourceCaptureId && /^(?:写下今天最重要的一件事|互相确认今天的状态)$/.test(title)) return false;
+  if (!item?.sourceCaptureId && /^(?:写下今天最重要的一件事|互相确认今天的状态|一起确认今天的安排|一起确认明天的安排)$/.test(title)) return false;
   return true;
 }
 
@@ -3691,6 +4020,13 @@ function summarizeThing(kind, item, statusByUser, statusMeta = {}) {
   };
 }
 
+function isDailySummaryContentOperation(operation) {
+  const entityType = sanitizeText(operation?.entityType, 80);
+  if (!entityType) return false;
+  if (["daily-summary", "profile", "personal-page"].includes(entityType)) return false;
+  return true;
+}
+
 function qualityLabel(percent) {
   if (percent >= 90) return "高质量完成";
   if (percent >= 75) return "稳定推进";
@@ -3706,8 +4042,10 @@ function displayNameById(facts, userId) {
 
 function meaningfulCaptureText(capture) {
   const text = sanitizeText(capture?.text, 120).replace(/\s+/g, " ");
+  const coreText = text.replace(/^(早上|上午|中午|下午|晚上|夜里|夜晚|白天|今天|今日)\s*/g, "").trim();
   if (!text || /^\d+$/.test(text)) return "";
-  if (isDefaultLifeCardTitle(text) || isLowSignalSummaryTitle(text)) return "";
+  if (isDefaultLifeCardTitle(text) || isLowSignalSummaryTitle(text) || isLowSignalSummaryTitle(coreText)) return "";
+  if (/^(做了?别的事|别的事)$/.test(coreText)) return "";
   return text;
 }
 
@@ -3786,6 +4124,11 @@ function normalizeAgentAnalysisUserIds(analysis, profiles = []) {
     core_contributions: normalizeItems(analysis.core_contributions || analysis.coreContributions),
     carry_forward: normalizeItems(analysis.carry_forward || analysis.carryForward),
     memory_clues: normalizeItems(analysis.memory_clues || analysis.memoryClues),
+    daily_review: {
+      did: normalizeEntry(analysis.daily_review?.did || analysis.dailyReview?.did),
+      shortcoming: normalizeEntry(analysis.daily_review?.shortcoming || analysis.dailyReview?.shortcoming),
+      tomorrow: normalizeEntry(analysis.daily_review?.tomorrow || analysis.dailyReview?.tomorrow),
+    },
   };
 }
 
@@ -3828,6 +4171,11 @@ function normalizeDailyAnalysis(input = {}, fallback = {}) {
     coreContributions: normalizeAnalysisItems(source.core_contributions || source.coreContributions, backup.coreContributions, 4),
     carryForward: normalizeAnalysisItems(source.carry_forward || source.carryForward, backup.carryForward, 4),
     memoryClues: normalizeAnalysisItems(source.memory_clues || source.memoryClues, backup.memoryClues, 4),
+    dailyReview: {
+      did: normalizeAnalysisBlock(source.daily_review?.did || source.dailyReview?.did, backup.dailyReview?.did),
+      shortcoming: normalizeAnalysisBlock(source.daily_review?.shortcoming || source.dailyReview?.shortcoming, backup.dailyReview?.shortcoming),
+      tomorrow: normalizeAnalysisBlock(source.daily_review?.tomorrow || source.dailyReview?.tomorrow, backup.dailyReview?.tomorrow),
+    },
     diary: {
       title: cleanGeneratedSummaryText(diarySource.title || "日记", 100) || "日记",
       text: cleanGeneratedSummaryText(diarySource.text || diarySource.detail || backup.diary?.text || backup.diary?.detail, 1200),
@@ -3908,12 +4256,39 @@ function buildFallbackAnalysis(facts, narrative, nextStep, title = "") {
       evidence: [item.sourceCaptureId ? "随手记" : "长期记忆"],
     }))
     .filter((item) => item.title || item.detail);
+  const didText = coreContributions.length
+    ? coreContributions.map((item) => [item.title, item.detail].filter(Boolean).join("：")).join("；")
+    : (facts.completed_items || []).filter(isMeaningfulSummaryThing).slice(0, 3).map((item) => item.title).join("、");
+  const shortcomingText = carryForward.length
+    ? carryForward.map((item) => item.title).join("、")
+    : "";
+  const tomorrowText = carryForward[0]?.detail || nextStep || "";
 
   return normalizeDailyAnalysis({}, {
     keyMoment,
     coreContributions,
     carryForward,
     memoryClues,
+    dailyReview: {
+      did: {
+        title: didText ? "今天做了什么" : "",
+        text: didText,
+        userIds: [...new Set(coreContributions.flatMap((item) => item.userIds || []))],
+        evidence: ["今日推进"],
+      },
+      shortcoming: {
+        title: shortcomingText ? "还差一点" : "",
+        text: shortcomingText,
+        userIds: [...new Set(carryForward.flatMap((item) => item.userIds || []))],
+        evidence: ["待推进"],
+      },
+      tomorrow: {
+        title: tomorrowText ? "明天怎么做" : "",
+        text: tomorrowText,
+        userIds: [...new Set(carryForward.flatMap((item) => item.userIds || []))],
+        evidence: ["明天"],
+      },
+    },
     diary: {
       title: title || "日记",
       text: narrative || "",
@@ -3931,14 +4306,25 @@ function buildAgentPrompt(facts) {
     "- 只能使用输入事实，不允许编造事件、地点、照片、情绪或完成状态。",
     "- 必须区分人：profiles 是人员表；createdBy/updatedBy 是操作人；doneUsers/pendingUsers 是状态对象；statusUpdatedBy[userId] 是这个人的状态由谁操作。",
     "- 如果事实不足以判断是谁做的，就写成记录里没有明确归属，不要猜。",
-    "- 忽略默认占位卡：今天有没有开开心心？、写下今天最重要的一件事、互相确认今天的状态。",
+    "- 最终展示文字必须使用人话，不要写 createdBy、doneUsers、statusUpdatedBy、actorId、每日状态对象等字段名或开发者词。",
+    "- 如果只知道归属但不知道操作人，用“归在某人名下，记录没有写明是谁操作完成”，不要暴露字段名。",
+    "- 忽略默认占位卡：今天有没有开开心心？、写下今天最重要的一件事、互相确认今天的状态、一起确认今天的安排、一起确认明天的安排。",
+    "- 忽略低信号随手记：纯数字、做别的事、上午做别的事、没有具体对象或动作的流水话。",
     "- 优先使用每日状态里的最开心的事、核心贡献、随手记、完成状态和长期记忆线索。",
+    "- completion/source_counts 只能辅助判断信息量，不要只根据数字推断还有几件事；待推进内容必须来自 missed_items 或明确随手记。",
     "- 随手记是证据来源，不要逐条平铺复述；要先整理成 key_moment/core_contributions/carry_forward/memory_clues/diary。",
+    "- 所有最终展示字段都要由 Agent 重新生成，不要复制 fallback 句式，不要把输入字段简单改写成清单。",
     "- 文字要像给两个人看的回忆，不要写后台、系统、记录留下了几条线索、完成率报表这类话。",
     "- title 必须是 4-12 个中文左右的可爱小标题，要抓当天最有特征的一点，短暂、具体、每天不一样。",
     "- title 禁止写日期、05/09、共同回忆、日总结、今日、这一天，也不要套用固定模板。",
     "- next_step 只写明天最值得顺手带上的一件事；没有事实就留轻一点，不要硬编。",
     "- analysis.key_moment 写最值得记住的一件事；core_contributions 写每个人可归属的贡献；carry_forward 写明天顺手带上的事；memory_clues 写长期记忆线索；diary.text 写一篇可直接展示的小日记。",
+    "- analysis.daily_review.did 写今天实际做了什么；shortcoming 写有什么不足或还差什么；tomorrow 写明天可以怎么做。三项都必须基于输入事实，不要从统计数字臆测任务。",
+    "- daily_review 三项是给页面展示的短总结：每项 title 要短、具体、有信息；text 写 1 句自然解释。",
+    "- diary.text 是主展示内容，要像一段写给对方看的小日记：自然、亲近、轻一点，有画面感，但不能油腻、不能编造。",
+    "- diary.text 不要像项目报告，不要用“今天最清楚留下来的，是”“记录里/记录显示/没有显示”“这边”“事项”“收尾情况”“事实不足”等腔调。",
+    "- diary.text 可以承认没完成，但要换成人话，例如“作业还差一个轻轻收口”“日料先从找一家安静小店开始”，不要写“没有在记录里收尾/没有显示两个人完成”。",
+    "- 结构化字段也要短而有温度：title 像小标题，detail 像一句解释，不要堆证据说明。",
     "- 输出必须严格符合给定 JSON schema。",
     skillText ? "\n参考 skill：\n" + skillText : "",
     "",
@@ -4013,6 +4399,17 @@ function getDailySummaryFacts(store, date, options = {}) {
   const things = [...todoThings, ...scheduleThings, ...checkinThings];
   const completed = things.filter((item) => item.participants.length && item.pendingUsers.length === 0);
   const missed = things.filter((item) => item.pendingUsers.length > 0);
+  const meaningfulStatsByUser = Object.fromEntries(profileIds.map((id) => [id, { done: 0, total: 0, percent: 0 }]));
+  things.forEach((item) => {
+    (item.participants || []).forEach((id) => {
+      if (!meaningfulStatsByUser[id]) return;
+      meaningfulStatsByUser[id].total += 1;
+      if ((item.doneUsers || []).includes(id)) meaningfulStatsByUser[id].done += 1;
+    });
+  });
+  Object.values(meaningfulStatsByUser).forEach((stat) => {
+    stat.percent = stat.total ? Math.round((stat.done / stat.total) * 100) : 0;
+  });
   const captures = store.captures
     .filter((item) => item.date === date)
     .filter((item) => options.includePrivate || item.visibility === "shared")
@@ -4022,7 +4419,7 @@ function getDailySummaryFacts(store, date, options = {}) {
   const locations = [...new Set(captures.map((capture) => sanitizeText(capture.location, 80)).filter(Boolean))];
   const people = store.profiles.map((profile) => {
     const day = store.diaryDays[date]?.userDays?.[profile.id] || {};
-    const stat = getCompletionForDate(store, date, profile.id);
+    const stat = meaningfulStatsByUser[profile.id] || { done: 0, total: 0, percent: 0 };
     return {
       userId: profile.id,
       displayName: profile.displayName,
@@ -4070,6 +4467,7 @@ function getDailySummaryFacts(store, date, options = {}) {
       photoCount: capture.assets.length,
     })),
     operations: store.operations
+      .filter((operation) => isDailySummaryContentOperation(operation))
       .filter((operation) => operation.date === date || String(operation.createdAt || "").slice(0, 10) === date)
       .slice(-40)
       .map((operation) => ({
@@ -4094,7 +4492,9 @@ function getDailySummaryFacts(store, date, options = {}) {
       locations: locations.length,
       dailyPulses: people.filter((person) => person.dailyScore || person.happiestThing || person.smallAchievement).length,
       relationshipInsights: relationshipInsights.length,
-      operations: store.operations.filter((operation) => operation.date === date || String(operation.createdAt || "").slice(0, 10) === date).length,
+      operations: store.operations
+        .filter((operation) => isDailySummaryContentOperation(operation))
+        .filter((operation) => operation.date === date || String(operation.createdAt || "").slice(0, 10) === date).length,
     },
     relationshipInsights,
   };
@@ -4125,22 +4525,30 @@ function buildDailySummary(store, date, userId, options = {}) {
   const completed = facts.completed_items.map(publicSummaryThing);
   const missed = facts.missed_items.map(publicSummaryThing);
   const photos = facts.photos.map(publicDiaryAsset).filter(Boolean);
-  const narrative = cleanGeneratedSummaryText(agent?.narrative, 900) || cleanGeneratedSummaryText(buildFallbackNarrative(facts), 900);
+  const agentAnalysis = normalizeAgentAnalysisUserIds(agent?.analysis, facts.profiles);
+  const agentDiaryText = cleanGeneratedSummaryText(agentAnalysis?.diary?.text || agentAnalysis?.diary?.detail, 1200);
+  const narrative = mode === "agent"
+    ? (agentDiaryText || cleanGeneratedSummaryText(agent?.narrative, 900))
+    : (cleanGeneratedSummaryText(agent?.narrative, 900) || cleanGeneratedSummaryText(buildFallbackNarrative(facts), 900));
   const label = cleanGeneratedSummaryText(agent?.quality_label || qualityLabel(percent), 80);
   const qualityNote = cleanGeneratedSummaryText(agent?.quality_note, 240);
   const nextStepText = cleanGeneratedSummaryText(
     agent?.next_step ||
-      (missed.length
+      (mode === "agent"
+        ? ""
+        : missed.length
         ? `先带上：${missed.slice(0, 2).map((item) => item.title).join("、")}`
         : ""),
     240
   );
-  const agentAnalysis = normalizeAgentAnalysisUserIds(agent?.analysis, facts.profiles);
-  const analysis = normalizeDailyAnalysis(agentAnalysis, buildFallbackAnalysis(facts, narrative, nextStepText, fallbackTitle));
+  const analysis = normalizeDailyAnalysis(
+    agentAnalysis,
+    mode === "agent" ? {} : buildFallbackAnalysis(facts, narrative, nextStepText, fallbackTitle)
+  );
 
   return {
     date,
-    title: cleanGeneratedSummaryText(agent?.title, 80) || fallbackTitle,
+    title: cleanGeneratedSummaryText(agent?.title, 80) || (mode === "agent" ? cleanGeneratedSummaryText(analysis.diary?.title, 80) : "") || fallbackTitle,
     subtitle: facts.locations.length
       ? `地点：${facts.locations.join("、")}`
       : "",
@@ -4188,6 +4596,7 @@ function getState(userId, options = {}) {
     updatedAt: store.updatedAt,
     today: businessDate(),
     selectedDate,
+    calendarContext: calendarContextForDate(selectedDate),
     weekDays,
     monthDays,
     monthSummary: getMonthSummary(store, selectedDate),
@@ -4348,11 +4757,17 @@ function archiveScheduleItem(userId, payload) {
     }
 
     const timestamp = nowIso();
-    item.archivedAt = item.archivedAt || timestamp;
-    item.archivedBy = item.archivedBy || userId;
+    const restoring = Boolean(item.archivedAt);
+    if (restoring) {
+      item.archivedAt = "";
+      item.archivedBy = "";
+    } else {
+      item.archivedAt = timestamp;
+      item.archivedBy = userId;
+    }
     item.updatedBy = userId;
     item.updatedAt = timestamp;
-    recordOperation(store, userId, "archive", "schedule", item.id, { date: item.date, title: item.title, sourceType: "schedule" });
+    recordOperation(store, userId, restoring ? "restore" : "archive", "schedule", item.id, { date: item.date, title: item.title, sourceType: "schedule" });
 
     return publicScheduleItem(item, profileIds);
   });
@@ -4456,11 +4871,17 @@ function archiveTodoItem(userId, payload) {
     }
 
     const timestamp = nowIso();
-    item.archivedAt = item.archivedAt || timestamp;
-    item.archivedBy = item.archivedBy || userId;
+    const restoring = Boolean(item.archivedAt);
+    if (restoring) {
+      item.archivedAt = "";
+      item.archivedBy = "";
+    } else {
+      item.archivedAt = timestamp;
+      item.archivedBy = userId;
+    }
     item.updatedBy = userId;
     item.updatedAt = timestamp;
-    recordOperation(store, userId, "archive", "todo", item.id, { date: item.date, title: item.title, sourceType: "todo" });
+    recordOperation(store, userId, restoring ? "restore" : "archive", "todo", item.id, { date: item.date, title: item.title, sourceType: "todo" });
 
     return publicTodoItem(item, profileIds);
   });
@@ -4884,6 +5305,7 @@ module.exports = {
   toggleCheckinItem,
   toggleDeadlineItem,
   toggleLifeCardStep,
+  toggleLifeCardTimer,
   toggleScheduleItem,
   toggleTodoItem,
   updatePersonalPage,

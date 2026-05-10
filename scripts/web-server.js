@@ -38,6 +38,7 @@ const {
   toggleCheckinItem: toggleCoupleCheckinItem,
   toggleDeadlineItem: toggleCoupleDeadlineItem,
   toggleLifeCardStep: toggleCoupleLifeCardStep,
+  toggleLifeCardTimer: toggleCoupleLifeCardTimer,
   toggleScheduleItem: toggleCoupleScheduleItem,
   toggleTodoItem: toggleCoupleTodoItem,
   updateDiaryDay: updateCoupleDiaryDay,
@@ -54,7 +55,18 @@ const rootDir = repoRoot;
 const port = Number(process.env.PORT || 2333);
 const host = process.env.HOST || "127.0.0.1";
 const backgroundJobs = new Map();
+const loginFailures = new Map();
 const startNewDayQueueDir = path.join(rootDir, "tmp", "start-new-day-jobs");
+const requireHttps = /^(1|true|yes)$/i.test(String(process.env.PEOS_REQUIRE_HTTPS || ""));
+const loginRateLimitWindowMs = Number(process.env.PEOS_LOGIN_RATE_LIMIT_WINDOW_MS || 10 * 60 * 1000);
+const loginRateLimitLockMs = Number(process.env.PEOS_LOGIN_RATE_LIMIT_LOCK_MS || 15 * 60 * 1000);
+const loginRateLimitMaxFailures = Number(process.env.PEOS_LOGIN_RATE_LIMIT_MAX_FAILURES || 6);
+const privateSecurityHeaders = {
+  "X-Robots-Tag": "noindex, nofollow, noarchive",
+  "X-Content-Type-Options": "nosniff",
+  "Referrer-Policy": "same-origin",
+  "Permissions-Policy": "camera=(), microphone=(), geolocation=()",
+};
 const mimeTypes = {
   ".css": "text/css; charset=utf-8",
   ".gif": "image/gif",
@@ -66,6 +78,7 @@ const mimeTypes = {
   ".md": "text/markdown; charset=utf-8",
   ".png": "image/png",
   ".svg": "image/svg+xml",
+  ".webmanifest": "application/manifest+json; charset=utf-8",
   ".webp": "image/webp",
 };
 const legacyWebEntryPaths = new Set([
@@ -87,6 +100,7 @@ function sendJson(res, statusCode, payload, extraHeaders = {}) {
     "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
     "Cache-Control": "no-store",
     "Content-Type": "application/json; charset=utf-8",
+    ...privateSecurityHeaders,
     ...extraHeaders,
   });
   res.end(JSON.stringify(payload));
@@ -99,6 +113,7 @@ function sendText(res, statusCode, message) {
     "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
     "Cache-Control": "no-store",
     "Content-Type": "text/plain; charset=utf-8",
+    ...privateSecurityHeaders,
   });
   res.end(message);
 }
@@ -106,9 +121,64 @@ function sendText(res, statusCode, message) {
 function sendRedirect(res, location) {
   res.writeHead(302, {
     "Cache-Control": "no-store",
+    ...privateSecurityHeaders,
     Location: location,
   });
   res.end();
+}
+
+function isHttpsRequest(req) {
+  const forwardedProto = String(req.headers["x-forwarded-proto"] || "").split(",")[0].trim().toLowerCase();
+  return Boolean(req.socket.encrypted || forwardedProto === "https");
+}
+
+function clientAddress(req) {
+  return req.socket.remoteAddress || "unknown";
+}
+
+function loginFailureKey(req, login) {
+  return `${clientAddress(req)}:${String(login || "").trim().toLowerCase() || "unknown"}`;
+}
+
+function pruneLoginFailures(now = Date.now()) {
+  for (const [key, record] of loginFailures.entries()) {
+    const expiredWindow = now - Number(record.firstAt || 0) > loginRateLimitWindowMs;
+    const expiredLock = Number(record.lockedUntil || 0) && Number(record.lockedUntil) <= now;
+    if (expiredWindow && (!record.lockedUntil || expiredLock)) {
+      loginFailures.delete(key);
+    }
+  }
+}
+
+function loginRateLimitStatus(req, login) {
+  pruneLoginFailures();
+  const key = loginFailureKey(req, login);
+  const record = loginFailures.get(key);
+  if (record?.lockedUntil && record.lockedUntil > Date.now()) {
+    return {
+      limited: true,
+      retryAfterSeconds: Math.ceil((record.lockedUntil - Date.now()) / 1000),
+    };
+  }
+  return { limited: false, key };
+}
+
+function recordLoginFailure(key) {
+  const now = Date.now();
+  const current = loginFailures.get(key);
+  const record = current && now - current.firstAt <= loginRateLimitWindowMs
+    ? current
+    : { firstAt: now, count: 0, lockedUntil: 0 };
+  record.count += 1;
+  if (record.count >= loginRateLimitMaxFailures) {
+    record.lockedUntil = now + loginRateLimitLockMs;
+  }
+  loginFailures.set(key, record);
+  return record;
+}
+
+function clearLoginFailures(req, login) {
+  loginFailures.delete(loginFailureKey(req, login));
 }
 
 function readBody(req) {
@@ -457,9 +527,25 @@ async function handleApi(req, res, url) {
     try {
       const bodyText = await readBody(req);
       const body = bodyText ? JSON.parse(bodyText) : {};
+      const rateLimit = loginRateLimitStatus(req, body.login);
+      if (rateLimit.limited) {
+        sendJson(
+          res,
+          429,
+          {
+            ok: false,
+            error: "too many login attempts",
+          },
+          {
+            "Retry-After": String(rateLimit.retryAfterSeconds),
+          }
+        );
+        return true;
+      }
       const user = verifyCoupleLogin(body.login, body.password);
 
       if (!user) {
+        recordLoginFailure(rateLimit.key);
         sendJson(res, 401, {
           ok: false,
           error: "invalid login or password",
@@ -467,6 +553,7 @@ async function handleApi(req, res, url) {
         return true;
       }
 
+      clearLoginFailures(req, body.login);
       const session = createCoupleSession(user.id);
       sendJson(
         res,
@@ -1029,6 +1116,28 @@ async function handleApi(req, res, url) {
     return true;
   }
 
+  if (req.method === "POST" && url.pathname === "/api/couple/life-cards/timer-toggle") {
+    const session = getCoupleSession(req);
+    if (!session) {
+      sendCoupleAuthRequired(res);
+      return true;
+    }
+
+    try {
+      const bodyText = await readBody(req);
+      const body = bodyText ? JSON.parse(bodyText) : {};
+      const { result } = toggleCoupleLifeCardTimer(session.userId, body);
+      sendJson(res, 200, {
+        ok: true,
+        item: result,
+        state: getCoupleState(session.userId, { date: body.date }),
+      });
+    } catch (error) {
+      sendJson(res, 400, { ok: false, error: error.message });
+    }
+    return true;
+  }
+
   if (req.method === "POST" && url.pathname === "/api/couple/daily-summary/refresh") {
     const session = getCoupleSession(req);
     if (!session) {
@@ -1343,6 +1452,15 @@ async function handleApi(req, res, url) {
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, `http://${req.headers.host || `localhost:${port}`}`);
 
+  if (requireHttps && !isHttpsRequest(req)) {
+    if (["GET", "HEAD"].includes(req.method)) {
+      sendRedirect(res, `https://${req.headers.host || `localhost:${port}`}${req.url}`);
+    } else {
+      sendText(res, 403, "HTTPS required");
+    }
+    return;
+  }
+
   if (url.pathname.startsWith("/api/")) {
     const handled = await handleApi(req, res, url);
     if (!handled) {
@@ -1382,6 +1500,7 @@ const server = http.createServer(async (req, res) => {
     res.writeHead(200, {
       "Cache-Control": "no-store",
       "Content-Type": mimeTypes[".html"],
+      ...privateSecurityHeaders,
     });
 
     if (req.method === "HEAD") {
@@ -1399,6 +1518,7 @@ const server = http.createServer(async (req, res) => {
   res.writeHead(200, {
     "Cache-Control": "no-store",
     "Content-Type": contentType,
+    ...privateSecurityHeaders,
   });
 
   if (req.method === "HEAD") {

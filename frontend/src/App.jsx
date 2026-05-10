@@ -20,15 +20,23 @@ const memoryLaneLabels = {
   care: "照顾",
 };
 const memoryLaneOrder = ["profile", "taste", "wish", "promise", "time", "care"];
+const memorySurfaceDefs = [
+  { key: "plans", title: "想做想去", icon: "calendar", caption: "地方和愿望" },
+  { key: "profile", title: "资料", icon: "bookmark", caption: "偏好和边界" },
+  { key: "dates", title: "纪念日", icon: "star", caption: "日子和承诺" },
+];
 const legacyPages = new Set(["capture", "todos", "schedule", "timeline"]);
 const defaultLifeCardTitle = "今天有没有开开心心？";
+const dailyCheckinTitle = "一起确认明天的安排";
 const defaultPromptTitleKeys = new Set([
   defaultLifeCardTitle,
   "写下今天最重要的一件事",
   "互相确认今天的状态",
+  "一起确认今天的安排",
+  dailyCheckinTitle,
 ].map(normalizedPromptKey));
 const lowSignalStoryKeys = new Set(["做别的事"].map(normalizedPromptKey));
-const badStoryTextPattern = /值得记住的是|记录留下了\s*\d+\s*条现场线索|完成了\s*今天有没有开开心心|需要顺手带到明天的是\s*今天有没有开开心心|还没有明确完成项|随手记还比较少|先补上|自动日总结/;
+const badStoryTextPattern = /值得记住的是|记录留下了\s*\d+\s*条现场线索|完成了\s*今天有没有开开心心|需要顺手带到明天的是\s*今天有没有开开心心|还没有明确完成项|没有明确贡献记录|随手记还比较少|先补上|自动日总结|每日状态对象|doneUsers|pendingUsers|createdBy|updatedBy|statusUpdatedBy|actorId|targetUserId|status_by_user|source_counts/;
 const fallbackDailyTitles = ["轻轻的一页", "小猫留光日", "慢慢亮起来", "把今天收好", "软软小片刻", "今天有小光"];
 const segmentLabels = {
   morning: "早上",
@@ -408,6 +416,7 @@ function iconPath(name) {
         <path d="M12 8v5l3 2" />
       </>
     ),
+    stop: <rect x="7" y="7" width="10" height="10" rx="2" />,
     cloud: (
       <>
         <path d="M7 18h10a4 4 0 0 0 .8-7.9A6 6 0 0 0 6.3 9 4.5 4.5 0 0 0 7 18Z" />
@@ -616,6 +625,28 @@ function durationLabel(minutes) {
   return rest ? `${hours} 小时 ${rest} 分钟` : `${hours} 小时`;
 }
 
+function compactDuration(seconds) {
+  const value = Math.max(0, Math.round(Number(seconds) || 0));
+  if (!value) return "";
+  if (value < 60) return `${value}秒`;
+  const minutes = Math.floor(value / 60);
+  if (minutes < 60) return `${minutes}分`;
+  const hours = Math.floor(minutes / 60);
+  const rest = minutes % 60;
+  return rest ? `${hours}时${rest}分` : `${hours}时`;
+}
+
+function timerTotalSeconds(card, nowMs = Date.now()) {
+  const entries = Array.isArray(card?.timeEntries) ? card.timeEntries : [];
+  return entries.reduce((total, entry) => {
+    const duration = Number(entry.durationSec) || 0;
+    if (entry.stoppedAt) return total + duration;
+    const startedAt = Date.parse(entry.startedAt || "");
+    if (!Number.isFinite(startedAt)) return total + duration;
+    return total + duration + Math.max(0, Math.round((nowMs - startedAt) / 1000));
+  }, 0);
+}
+
 function cardPlanParts(card) {
   const parts = [];
   if (card.rankReason && card.rankReason !== "后续") parts.push(card.rankReason);
@@ -638,6 +669,12 @@ function cleanCardText(value) {
   return String(value || "")
     .replace(/这是第[一1](?:条共享日程|张共享生活卡)，?可以直接改(?:掉)?。?/g, "")
     .trim();
+}
+
+function displayCardTitle(value) {
+  const text = cleanCardText(value);
+  if (/^(?:互相确认今天的状态|一起确认今天的安排)$/.test(text)) return dailyCheckinTitle;
+  return text;
 }
 
 function normalizedPromptKey(value) {
@@ -765,6 +802,17 @@ function memoryOwnerIds(item, profiles, currentUser) {
   return [item?.targetUserId, item?.ownerId, currentUser?.id].filter((id) => id && profileIds.has(id)).slice(0, 1);
 }
 
+function memorySurfaceKey(item) {
+  const kind = item?.kind || "";
+  if (kind === "wish" || kind === "goal" || kind === "purchase" || item?.itemType === "date") return "plans";
+  if (kind === "anniversary" || kind === "memory" || kind === "gratitude" || kind === "promise") return "dates";
+  return "profile";
+}
+
+function memorySurfaceDef(key) {
+  return memorySurfaceDefs.find((item) => item.key === key) || memorySurfaceDefs[1];
+}
+
 function sourceLabel(source) {
   const labels = {
     capture: "随手记",
@@ -827,10 +875,11 @@ const detailBuilders = {
     const { profiles, currentUser } = context;
     const itemType = card.itemType && itemTypeLabels[card.itemType] ? card.itemType : "thing";
     const participants = cardParticipantIds(card, profiles, currentUser);
-    const title = cleanCardText(card.title || card.sourceCaptureSummary || "记录");
+    const title = displayCardTitle(card.title || card.sourceCaptureSummary || "记录");
     const detail = summaryLine(card) || cleanCardText(card.detail || card.slot || "");
     const sourceSummary = cleanCardText(card.sourceCaptureSummary || "");
     const readOnly = card.readOnly || card.sourceType === "insight";
+    const stepStatus = card.stepProgress?.total ? `${card.stepProgress.done}/${card.stepProgress.total}` : "";
     const steps = (Array.isArray(card.steps) ? card.steps : [])
       .map((step) => ({
         id: step.id || step.title,
@@ -851,7 +900,7 @@ const detailBuilders = {
       chips: [
         { label: "时间", value: primaryTimeLabel(card) },
         { label: "归属", value: ownerLabel(card.ownerId, currentUser) },
-        { label: "状态", value: statusText(card) || card.statusLabel },
+        { label: "状态", value: stepStatus || statusText(card) || card.statusLabel },
         { label: "操作", value: namesForIds([card.updatedBy || card.createdBy].filter(Boolean), profiles) },
       ].filter((item) => item.value),
       rows: detailRows([
@@ -1293,6 +1342,24 @@ export function App() {
       });
       if (!captureResult) return;
       setData(captureResult.state);
+      const commitRoute = async (route) => {
+        if (!route) return null;
+        const result = await request("/api/couple/capture/route", {
+          method: "POST",
+          body: {
+            ...route,
+            ownerId: route.ownerId || currentUser?.id || "",
+            sourceCaptureId: route.sourceCaptureId || route.captureId,
+          },
+        });
+        if (result) {
+          setData(result.state);
+          setSelectedDate(route.date || selectedDate);
+          if (route.decision === "schedule") setFilter("all");
+          setConfirmation(null);
+        }
+        return result;
+      };
       if (mode === "agent" || mode === "template") {
         const analyzed = await request("/api/couple/capture/analyze", {
           method: "POST",
@@ -1307,6 +1374,8 @@ export function App() {
         if (mode === "agent" && analyzed?.jobId) {
           setConfirmation(null);
           startAgentJob(analyzed.jobId);
+        } else if (mode === "template" && analyzed?.confirmation?.decision === "schedule") {
+          await commitRoute(analyzed.confirmation);
         } else {
           setConfirmation(analyzed?.confirmation || null);
         }
@@ -1371,9 +1440,30 @@ export function App() {
     }
   }
 
-  async function toggleCard(card) {
+  async function toggleCardTimer(card) {
+    if (!currentUser || !card || card.readOnly || card.sourceType === "insight" || card.isDraft) return;
+    const result = await request("/api/couple/life-cards/timer-toggle", {
+      method: "POST",
+      body: {
+        sourceType: card.sourceType,
+        id: card.sourceId,
+        date: card.date,
+      },
+    });
+    if (result) {
+      setData(result.state);
+      const nextCard = result.state?.scheduleItemCards?.find((item) => item.id === card.id);
+      if (nextCard) {
+        setDetailRequest((current) => current?.type === "lifeCard" && current.payload?.id === card.id
+          ? { type: "lifeCard", payload: nextCard }
+          : current);
+      }
+    }
+  }
+
+  async function toggleCard(card, targetUserId = currentUser?.id) {
     if (!currentUser || card.readOnly || card.sourceType === "insight") return;
-    const wasCompleted = isCompletedCard(card);
+    const wasCompleted = card.statusByUser?.[targetUserId] === "done" || (!card.statusByUser?.[targetUserId] && isCompletedCard(card));
     const endpoint = {
       schedule: "/api/couple/schedule/toggle",
       todo: "/api/couple/todos/toggle",
@@ -1383,7 +1473,7 @@ export function App() {
     if (!endpoint) return;
     const result = await request(endpoint, {
       method: "POST",
-      body: { id: card.sourceId, targetUserId: currentUser.id, date: card.date, status: wasCompleted ? "todo" : "done" },
+      body: { id: card.sourceId, targetUserId, date: card.date, status: wasCompleted ? "todo" : "done" },
     });
     if (result) {
       setData(result.state);
@@ -1402,7 +1492,10 @@ export function App() {
       method: "POST",
       body: { id: card.sourceId, date: card.date },
     });
-    if (result) setData(result.state);
+    if (result) {
+      setData(result.state);
+      if (isArchivedCard(card)) setFilter("all");
+    }
   }
 
   async function deleteCard(card) {
@@ -1512,6 +1605,7 @@ export function App() {
             toggleCard={toggleCard}
             archiveCard={archiveCard}
             toggleStep={toggleCardStep}
+            toggleTimer={toggleCardTimer}
             setEditingCard={setEditingCard}
             openDetail={openDetail}
             composingRef={composingRef}
@@ -1538,6 +1632,7 @@ export function App() {
           <SettingsPage data={data} currentUser={currentUser} profiles={profiles} request={request} setData={setData} selectedDate={selectedDate} />
         )}
       </main>
+      <MobileTabBar page={page} navigate={navigate} />
       {editingCard && (
         <CardEditor
           card={editingCard}
@@ -1556,6 +1651,32 @@ export function App() {
         />
       ) : null}
     </div>
+  );
+}
+
+function MobileTabBar({ page, navigate }) {
+  const items = [
+    { id: "dashboard", label: "今天", icon: "rows" },
+    { id: "month", label: "月历", icon: "calendar" },
+    { id: "daily-summary", label: "日总结", icon: "sparkle" },
+    { id: "cat-note", label: "猫猫的话", icon: "star" },
+    { id: "goals", label: "记忆", icon: "bookmark" },
+  ];
+  return (
+    <nav className="mobile-tabbar" aria-label="手机导航">
+      {items.map((item) => (
+        <button
+          key={item.id}
+          className={cx(page === item.id && "is-active", item.id === "cat-note" && "is-cat-jump")}
+          type="button"
+          onClick={() => navigate(item.id)}
+          aria-label={item.label}
+        >
+          <Icon name={item.icon} />
+          <span>{item.label}</span>
+        </button>
+      ))}
+    </nav>
   );
 }
 
@@ -1657,6 +1778,7 @@ function Dashboard(props) {
     toggleCard,
     archiveCard,
     toggleStep,
+    toggleTimer,
     setEditingCard,
     openDetail,
     composingRef,
@@ -1691,6 +1813,7 @@ function Dashboard(props) {
         toggleCard={toggleCard}
         archiveCard={archiveCard}
         toggleStep={toggleStep}
+        toggleTimer={toggleTimer}
         setEditingCard={setEditingCard}
         openDetail={openDetail}
         chooseDate={chooseDate}
@@ -1715,7 +1838,7 @@ function DateRail({ selectedDate, chooseDate }) {
   return (
     <div className="date-rail">
       <IconButton icon="chevronLeft" label="上一天" onClick={() => chooseDate(addDays(selectedDate, -1))} />
-      <button className={cx("date-pill", open && "is-open")} type="button" onClick={() => setOpen(!open)} aria-expanded={open} aria-label="选择日期">
+      <button className={cx("date-pill", open && "is-open")} type="button" onClick={() => setOpen(!open)} aria-expanded={open} aria-label="选择日期" title={selectedDate}>
         <Icon name="calendar" />
         <span>
           <strong>{selectedDate === today() ? "今天" : shortDate(selectedDate)}</strong>
@@ -1762,24 +1885,38 @@ function Composer({ text, setText, saveRawCapture, profiles, currentUser, busy, 
   }
   const draft = routeDraft || confirmation;
   const confirmationPeople = draft ? cardParticipantIds(draft, profiles, currentUser) : [];
-  const confirmationType = draft?.isDefaultDraft
-    ? "草稿"
-    : draft?.decision === "schedule"
-      ? (itemTypeLabels[draft.itemType] || "事情")
-      : draft?.decision === "memory"
-        ? "长期记忆"
-        : draft?.decision === "dailyStory"
-          ? "日总结"
-          : "只记录";
+  const visibleDecision = draft?.decision === "schedule" ? "schedule" : "capture";
+  const confirmationType = visibleDecision === "schedule" ? "生活卡" : "随手记";
   const routeOptions = [
-    { id: "schedule", icon: "calendar", label: "生活卡" },
-    { id: "memory", icon: "bookmark", label: "记忆" },
-    { id: "dailyStory", icon: "sparkle", label: "日总结" },
-    { id: "capture", icon: "camera", label: "只记录" },
+    { id: "schedule", icon: "cards", label: "生活卡" },
+    { id: "capture", icon: "camera", label: "随手记" },
   ];
   const updateDraft = (patch) => setRouteDraft((current) => current ? { ...current, ...patch } : current);
+  const updateDestination = (decision) => {
+    setRouteDraft((current) => {
+      if (!current) return current;
+      if (decision === "schedule") {
+        return {
+          ...current,
+          decision: "schedule",
+          itemType: current.itemType || "thing",
+          date: current.date || today(),
+          segment: current.segment || "allDay",
+          ownerId: current.ownerId || currentUser?.id || "",
+        };
+      }
+      const fallbackDecision = ["memory", "dailyStory"].includes(confirmation?.decision) ? confirmation.decision : "capture";
+      return { ...current, decision: fallbackDecision };
+    });
+  };
+  const normalizeRouteForSubmit = (route) => {
+    if (!route) return route;
+    if (route.decision === "schedule") return route;
+    if (["memory", "dailyStory"].includes(route.decision)) return route;
+    return { ...route, decision: "capture" };
+  };
   const submitDraft = (event, patch = {}) => {
-    const next = { ...(draft || {}), ...patch };
+    const next = normalizeRouteForSubmit({ ...(draft || {}), ...patch });
     submitConfirmation(event, next);
   };
 
@@ -1802,8 +1939,8 @@ function Composer({ text, setText, saveRawCapture, profiles, currentUser, busy, 
           placeholder="随手记"
         />
         <div className="composer-actions">
-          <IconButton icon="bookmark" label="默认处理" disabled={busy || !text.trim()} onClick={() => submit("template")} />
-          <IconButton icon="sparkle" label="交给 Agent" primary disabled={busy || Boolean(agentJob) || !text.trim()} onClick={() => submit("agent")} />
+          <IconButton icon="bookmark" label="默认" disabled={busy || !text.trim()} onClick={() => submit("template")} />
+          <IconButton icon="sparkle" label="Agent" primary disabled={busy || Boolean(agentJob) || !text.trim()} onClick={() => submit("agent")} />
         </div>
       </form>
       {agentJob ? (
@@ -1820,8 +1957,6 @@ function Composer({ text, setText, saveRawCapture, profiles, currentUser, busy, 
               {draft.analysisMode === "agent" ? "Agent" : "猫猫的事"}
               {" · "}
               {confirmationType}
-              {draft.date ? ` · ${draft.date}` : ""}
-              {draft.segment && draft.segment !== "allDay" ? ` · ${segmentLabels[draft.segment]}` : ""}
               {draft.relatedItems?.length ? ` · +${draft.relatedItems.length}` : ""}
             </strong>
             {draft.title ? <span>{draft.title}</span> : null}
@@ -1831,17 +1966,18 @@ function Composer({ text, setText, saveRawCapture, profiles, currentUser, busy, 
                 {routeOptions.map((option) => (
                   <button
                     key={option.id}
-                    className={cx(draft.decision === option.id && "is-active")}
+                    className={cx(visibleDecision === option.id && "is-active")}
                     type="button"
-                    onClick={() => updateDraft({ decision: option.id })}
+                    onClick={() => updateDestination(option.id)}
                     aria-label={option.label}
                     title={option.label}
                   >
                     <Icon name={option.icon} />
+                    <span>{option.label}</span>
                   </button>
                 ))}
               </div>
-              {draft.decision === "schedule" ? (
+              {visibleDecision === "schedule" ? (
                 <div className="route-tune">
                   <select value={draft.itemType || "thing"} onChange={(event) => updateDraft({ itemType: event.target.value })} aria-label="类型">
                     {itemTypeOptions.map(([id, label]) => <option key={id} value={id}>{label}</option>)}
@@ -1856,7 +1992,6 @@ function Composer({ text, setText, saveRawCapture, profiles, currentUser, busy, 
           </div>
           <div className="confirm-actions">
             <IconButton icon="check" label="确认" type="submit" primary />
-            {draft.decision !== "capture" ? <IconButton icon="bookmark" label="仅记录" onClick={(event) => submitDraft(event, { decision: "capture" })} /> : null}
             <IconButton icon="x" label="取消" onClick={dismissConfirmation} />
           </div>
         </form>
@@ -1870,7 +2005,9 @@ function monthCellSignal(day, storyTitle) {
   const captureCount = Number(day.captureCount || 0);
   const diaryCount = Number(day.diaryCount || 0) || Number(day.dailyPulses?.length || 0);
   const hasStory = Boolean(storyTitle || day.summaryGenerated);
+  const calendarTags = (day.calendarMarks || []).map(calendarMarkSignal).filter(Boolean).slice(0, 2);
   const tags = [
+    ...calendarTags,
     hasStory ? { key: "story", icon: "sparkle", tone: "story", label: "日总结" } : null,
     captureCount ? { key: "capture", icon: "camera", tone: "capture", label: "随手记", value: captureCount } : null,
     cardCount ? { key: "cards", icon: "cards", tone: "cards", label: "猫猫的事", value: cardCount } : null,
@@ -1881,7 +2018,7 @@ function monthCellSignal(day, storyTitle) {
     { icon: "moon", tone: "quiet", label: "慢慢来" },
     { icon: "circle", tone: "seed", label: "留一格" },
   ];
-  const primary = tags[0] || (day.isToday
+  const primary = calendarTags[0] || tags[0] || (day.isToday
     ? { icon: "sparkle", tone: "today", label: "今天" }
     : fallbackTones[stableIndex(day.id, fallbackTones.length)]);
   const ariaParts = [
@@ -1898,6 +2035,17 @@ function monthCellSignal(day, storyTitle) {
   };
 }
 
+function calendarMarkSignal(mark) {
+  if (!mark) return null;
+  const tone = mark.tone || (mark.type === "workday" ? "workday" : mark.type === "holiday" ? "holiday" : mark.type === "solarTerm" ? "solar" : "festival");
+  return {
+    key: `${mark.type || tone}-${mark.label || mark.title}`,
+    icon: mark.icon || (mark.type === "workday" ? "clock" : mark.type === "solarTerm" ? "cloud" : "star"),
+    tone,
+    label: mark.label || mark.title,
+  };
+}
+
 function MonthCellSignals({ tags }) {
   return (
     <span className="month-cell-signals" aria-hidden="true">
@@ -1908,6 +2056,57 @@ function MonthCellSignals({ tags }) {
         </i>
       ))}
     </span>
+  );
+}
+
+function CalendarContextButton({ context, onOpen }) {
+  const marks = context?.marks || [];
+  const leading = marks[0] || null;
+  return (
+    <button className={cx("calendar-context-button", leading && `tone-${leading.tone || leading.type}`)} type="button" onClick={onOpen}>
+      <span>
+        <Icon name={leading?.icon || "calendar"} />
+      </span>
+      <strong>{leading?.title || context?.lunar || "日历"}</strong>
+      <em>{[context?.weekday, context?.lunar, context?.isWorkday ? "班" : context?.isRestDay ? "休" : ""].filter(Boolean).join(" · ")}</em>
+    </button>
+  );
+}
+
+function CalendarPopover({ context, onClose }) {
+  const marks = context?.marks || [];
+  return (
+    <div className="calendar-popover-backdrop" role="presentation" onMouseDown={onClose}>
+      <section className="calendar-popover" role="dialog" aria-modal="true" aria-label="日历提示" onMouseDown={(event) => event.stopPropagation()}>
+        <div className="calendar-popover-head">
+          <span>
+            <Icon name="calendar" />
+            <strong>{context?.date}</strong>
+          </span>
+          <IconButton icon="x" label="关闭" onClick={onClose} />
+        </div>
+        <div className="calendar-popover-base">
+          <b>{context?.weekday || "日历"}</b>
+          {context?.lunar ? <em>{context.lunar}</em> : null}
+          <i>{context?.isWorkday ? "班" : context?.isRestDay ? "休" : "平"}</i>
+        </div>
+        {marks.length ? (
+          <div className="calendar-mark-list">
+            {marks.map((mark) => (
+              <span className={`tone-${mark.tone || mark.type}`} key={`${mark.type}-${mark.title}`}>
+                <Icon name={mark.icon || "star"} />
+                <b>{mark.title}</b>
+                <em>{mark.detail}</em>
+              </span>
+            ))}
+          </div>
+        ) : (
+          <div className="calendar-mark-empty">
+            <Icon name="moon" />
+          </div>
+        )}
+      </section>
+    </div>
   );
 }
 
@@ -1941,7 +2140,7 @@ function MonthPicker({ data, selectedDate, chooseDate, open, setOpen }) {
             return (
               <button
                 key={day.id}
-                className={cx("month-cell", day.id === selectedDate && "is-active", day.isToday && "is-today", day.summaryGenerated && "has-story", cardCount && "has-card")}
+                className={cx("month-cell", day.id === selectedDate && "is-active", day.isToday && "is-today", day.summaryGenerated && "has-story", cardCount && "has-card", day.calendarMarks?.length && "has-calendar")}
                 type="button"
                 onClick={() => openDay(day)}
                 aria-label={signal.ariaLabel}
@@ -1964,8 +2163,12 @@ function MonthPicker({ data, selectedDate, chooseDate, open, setOpen }) {
 }
 
 function MonthPage({ data, selectedDate, chooseDate, setPage }) {
+  const [calendarOpen, setCalendarOpen] = useState(false);
   const monthSummary = data.monthSummary || { month: selectedDate.slice(0, 7), days: [], totalsByUser: {} };
   const selectedDay = monthSummary.days?.find((day) => day.id === selectedDate) || null;
+  const selectedCalendar = data.calendarContext?.date === selectedDate
+    ? data.calendarContext
+    : selectedDay?.calendarContext || { date: selectedDate, weekday: selectedDay?.label || "", lunar: selectedDay?.lunar || "", marks: selectedDay?.calendarMarks || [] };
   const selectedCards = useMemo(() => {
     return sortCards((data.scheduleItemCards || [])
       .filter((card) => card.date === selectedDate));
@@ -1977,6 +2180,7 @@ function MonthPage({ data, selectedDate, chooseDate, setPage }) {
     { key: "cards", icon: "cards", label: "猫猫的事", value: Number(selectedDay?.eventCount || 0) + Number(selectedDay?.todoCount || 0) || selectedCards.length },
     { key: "captures", icon: "camera", label: "随手记", value: Number(selectedDay?.captureCount || 0) || data.captures?.length || 0 },
   ];
+  useEffect(() => setCalendarOpen(false), [selectedDate]);
 
   return (
     <section className="month-page">
@@ -1996,6 +2200,7 @@ function MonthPage({ data, selectedDate, chooseDate, setPage }) {
               <span>{selectedDate}</span>
             </div>
           </div>
+          <CalendarContextButton context={selectedCalendar} onOpen={() => setCalendarOpen(true)} />
           {selectedSummaryTitle ? (
             <button className="month-story-link" type="button" onClick={() => setPage("daily-summary")}>
               <Icon name="sparkle" />
@@ -2017,20 +2222,28 @@ function MonthPage({ data, selectedDate, chooseDate, setPage }) {
           </div>
         </aside>
       </div>
+      {calendarOpen ? <CalendarPopover context={selectedCalendar} onClose={() => setCalendarOpen(false)} /> : null}
     </section>
   );
 }
 
-function LifeCardTimeline({ cards, profiles, currentUser, selectedDate, filter, setFilter, expanded, setExpanded, toggleCard, archiveCard, toggleStep, setEditingCard, openDetail, chooseDate }) {
+function LifeCardTimeline({ cards, profiles, currentUser, selectedDate, filter, setFilter, expanded, setExpanded, toggleCard, archiveCard, toggleStep, toggleTimer, setEditingCard, openDetail, chooseDate }) {
   const [isScrollDragging, setIsScrollDragging] = useState(false);
   const [isCardScrubbing, setIsCardScrubbing] = useState(false);
   const [scrubTargetId, setScrubTargetId] = useState("");
+  const [axisFocusId, setAxisFocusId] = useState("");
+  const [compactDates, setCompactDates] = useState(() => new Set());
+  const [axisHandleY, setAxisHandleY] = useState(`${dayProgressPercent(selectedDate)}%`);
   const listRef = useRef(null);
   const cardRefs = useRef(new Map());
   const scrubFrame = useRef(0);
   const scrubClearTimer = useRef(0);
   const dragState = useRef({ active: false, kind: "", startY: 0, scrollTop: 0, moved: false, blockClick: false, pointerId: null, targetId: "", latestY: 0 });
-  const lifeCards = useMemo(() => (cards || []).filter((card) => !isDefaultPromptCard(card)), [cards]);
+  const todayKey = today();
+  const lifeCards = useMemo(() => (cards || [])
+    .filter((card) => !isDefaultPromptCard(card))
+    .filter((card) => card.sourceType !== "insight")
+    .filter((card) => String(card.date || todayKey) >= todayKey), [cards, todayKey]);
   const profileIds = useMemo(() => new Set(profiles.map((profile) => profile.id)), [profiles]);
   const isSharedCard = (card) => card.ownerId === "shared" || (card.participants || []).length > 1;
   const isCurrentUserCard = (card) => card.ownerId === currentUser?.id || card.participants?.includes(currentUser?.id);
@@ -2054,6 +2267,8 @@ function LifeCardTimeline({ cards, profiles, currentUser, selectedDate, filter, 
   const visibleCards = filteredCards;
   const grouped = groupByDate(visibleCards);
   const dates = [...grouped.keys()].sort((a, b) => a.localeCompare(b));
+  const focusedCardId = scrubTargetId || axisFocusId;
+  const isFocusMode = Boolean(focusedCardId);
   const summary = useMemo(() => {
     const dayCards = lifeCards.filter((card) => card.date === selectedDate);
     const activeCards = dayCards.filter((card) => !isArchivedCard(card));
@@ -2078,6 +2293,17 @@ function LifeCardTimeline({ cards, profiles, currentUser, selectedDate, filter, 
     if (scrubFrame.current) window.cancelAnimationFrame(scrubFrame.current);
     if (scrubClearTimer.current) window.clearTimeout(scrubClearTimer.current);
   }, []);
+  useEffect(() => {
+    if (!dragState.current.active) setAxisHandleY(`${dayProgressPercent(selectedDate)}%`);
+  }, [selectedDate]);
+  useEffect(() => {
+    if (axisFocusId && !visibleCards.some((card) => card.id === axisFocusId)) setAxisFocusId("");
+  }, [axisFocusId, visibleCards]);
+  const axisPercentFromPointer = (event) => {
+    const rect = event.currentTarget.getBoundingClientRect();
+    if (!rect.height) return dayProgressPercent(selectedDate);
+    return Math.max(3, Math.min(97, ((event.clientY - rect.top) / rect.height) * 100));
+  };
   const centerCardNearPointer = (clientY, force = false) => {
     const list = listRef.current;
     if (!list) return;
@@ -2098,6 +2324,7 @@ function LifeCardTimeline({ cards, profiles, currentUser, selectedDate, filter, 
     if (!force && drag.targetId === closest.id) return;
     drag.targetId = closest.id;
     setScrubTargetId(closest.id);
+    setAxisFocusId(closest.id);
     const listRect = list.getBoundingClientRect();
     const maxTop = Math.max(0, list.scrollHeight - list.clientHeight);
     const nextTop = list.scrollTop + closest.rect.top - listRect.top - (list.clientHeight / 2) + (closest.rect.height / 2);
@@ -2138,7 +2365,12 @@ function LifeCardTimeline({ cards, profiles, currentUser, selectedDate, filter, 
       dragState.current.active = false;
       return;
     }
-    if (!isAxisDrag) setIsScrollDragging(true);
+    if (isAxisDrag) setAxisHandleY(`${axisPercentFromPointer(event)}%`);
+    if (!isAxisDrag) {
+      setAxisFocusId("");
+      setScrubTargetId("");
+      setIsScrollDragging(true);
+    }
     event.currentTarget.setPointerCapture?.(event.pointerId);
   };
   const dragScroll = (event) => {
@@ -2150,6 +2382,7 @@ function LifeCardTimeline({ cards, profiles, currentUser, selectedDate, filter, 
       drag.blockClick = true;
     }
     if (drag.kind === "card") {
+      setAxisHandleY(`${axisPercentFromPointer(event)}%`);
       if (drag.moved) {
         setIsCardScrubbing(true);
         scheduleCardScrub(event.clientY);
@@ -2186,6 +2419,38 @@ function LifeCardTimeline({ cards, profiles, currentUser, selectedDate, filter, 
     event.preventDefault();
     event.stopPropagation();
   };
+  const selectDate = (date) => {
+    setAxisFocusId("");
+    setScrubTargetId("");
+    setIsCardScrubbing(false);
+    if (date === todayKey) {
+      setAxisHandleY(`${dayProgressPercent(date)}%`);
+      listRef.current?.scrollTo({ top: 0, behavior: "smooth" });
+    }
+    chooseDate?.(date);
+  };
+  const toggleDateDensity = (date) => {
+    if (isFocusMode) {
+      setCompactDates((current) => {
+        const next = new Set(current);
+        next.delete(date);
+        return next;
+      });
+      selectDate(date);
+      return;
+    }
+    if (date !== selectedDate) {
+      selectDate(date);
+      return;
+    }
+    setCompactDates((current) => {
+      const next = new Set(current);
+      if (next.has(date)) next.delete(date);
+      else next.add(date);
+      return next;
+    });
+  };
+  const selectedCompact = compactDates.has(selectedDate);
 
   return (
     <section className="life-section">
@@ -2199,72 +2464,96 @@ function LifeCardTimeline({ cards, profiles, currentUser, selectedDate, filter, 
           </span>
         </div>
         <div className="tool-groups">
+          <button
+            className={cx("density-chip", selectedCompact && "is-compact")}
+            type="button"
+            onClick={() => toggleDateDensity(selectedDate)}
+            aria-pressed={selectedCompact ? "true" : "false"}
+            title={selectedCompact ? "切到详细" : "切到简略"}
+            aria-label={selectedCompact ? "切到详细" : "切到简略"}
+          >
+            <Icon name={selectedCompact ? "focus" : "rows"} />
+            <span>{selectedCompact ? "详细" : "简略"}</span>
+          </button>
           <div className="icon-segment" aria-label="筛选">
             {filters.map(([id, icon, label]) => (
               <button
                 key={id}
                 className={cx("filter-button", filter === id && "is-active")}
                 type="button"
-                onClick={() => setFilter(id)}
+                onClick={() => {
+                  setAxisFocusId("");
+                  setScrubTargetId("");
+                  setFilter(id);
+                }}
                 aria-label={label}
-                title={label}
-              >
-                <Icon name={icon} />
-              </button>
+              title={label}
+            >
+              <Icon name={icon} />
+              <span>{label}</span>
+            </button>
             ))}
           </div>
         </div>
       </div>
       <div
         ref={listRef}
-        className={cx("timeline-list", isScrollDragging && "is-dragging", isCardScrubbing && "is-card-scrubbing")}
-        style={{ "--day-progress": `${dayProgressPercent(selectedDate)}%` }}
+        className={cx("timeline-list", isScrollDragging && "is-dragging", isCardScrubbing && "is-card-scrubbing", isFocusMode && "is-card-focused")}
+        style={{ "--day-progress": `${dayProgressPercent(selectedDate)}%`, "--axis-handle-y": axisHandleY }}
         onPointerDown={startDragScroll}
         onPointerMove={dragScroll}
         onPointerUp={endDragScroll}
         onPointerCancel={endDragScroll}
         onClickCapture={stopDragClick}
       >
+        {dates.length ? <span className="timeline-axis-handle" aria-hidden="true" /> : null}
         {dates.length ? dates.map((date) => {
           const dayCards = grouped.get(date) || [];
           const isExpanded = expanded.has(date);
           const isSelectedDay = date === selectedDate;
-          const visible = isExpanded || isSelectedDay ? dayCards : dayCards.filter((card, index) => index < 4 || card.priority === "high" || card.sourceType === "insight");
-          const hiddenCount = dayCards.length - visible.length;
+          const isTodayGroup = date === todayKey;
+          const isCompactDay = compactDates.has(date);
+          const visible = isFocusMode ? dayCards : (isExpanded || isSelectedDay || isTodayGroup ? dayCards : dayCards.slice(0, 3));
+          const hiddenCount = isFocusMode ? 0 : dayCards.length - visible.length;
           const openCount = dayCards.filter((card) => !isCompletedCard(card) && !isArchivedCard(card)).length;
           const hasHigh = dayCards.some((card) => card.priority === "high" || Number(card.rankScore || 0) >= 60);
-          const hasScrubTarget = Boolean(scrubTargetId && dayCards.some((card) => card.id === scrubTargetId));
+          const hasScrubTarget = Boolean(focusedCardId && dayCards.some((card) => card.id === focusedCardId));
           return (
-            <section key={date} className={cx("timeline-day", date === selectedDate && "is-selected", date === today() && "is-today", hasHigh && "has-high", hasScrubTarget && "has-scrub-target")}>
-              <button className="timeline-node" type="button" onClick={() => chooseDate?.(date)} aria-label={date === today() ? `今天 ${date}` : date}>
+            <section key={date} className={cx("timeline-day", date === selectedDate && "is-selected", date === todayKey && "is-today", isCompactDay && "is-compact-day", hasHigh && "has-high", hasScrubTarget && "has-scrub-target")}>
+              <button className="timeline-node" type="button" onClick={() => selectDate(date)} aria-label={date === todayKey ? `今天 ${date}` : date}>
                 <span>{openCount || dayCards.length}</span>
               </button>
-              <button className="day-label" type="button" onClick={() => chooseDate?.(date)}>
-                <strong>{date === today() ? "今天" : shortDate(date)}</strong>
+              <button className="day-label" type="button" onClick={() => selectDate(date)} title={date}>
+                <strong>{date === todayKey ? "今天" : shortDate(date)}</strong>
                 <span>{date}</span>
               </button>
               <div className="day-cards">
-                {visible.map((card) => (
-                  <div
-                    key={card.id}
-                    className={cx("timeline-card-slot", scrubTargetId === card.id && "is-scrub-target")}
-                    ref={(node) => {
-                      if (node) cardRefs.current.set(card.id, node);
-                      else cardRefs.current.delete(card.id);
-                    }}
-                  >
-                    <LifeCard
-                      card={card}
-                      profiles={profiles}
-                      currentUser={currentUser}
+                {visible.map((card) => {
+                  const isScrubTarget = focusedCardId === card.id;
+                  const isCompactCard = (isCompactDay || (!isTodayGroup && !isSelectedDay)) && !isScrubTarget;
+                  return (
+                    <div
+                      key={card.id}
+                      className={cx("timeline-card-slot", isCompactCard && "is-compact", isScrubTarget && "is-scrub-target")}
+                      ref={(node) => {
+                        if (node) cardRefs.current.set(card.id, node);
+                        else cardRefs.current.delete(card.id);
+                      }}
+                    >
+                      <LifeCard
+                        card={card}
+                        profiles={profiles}
+                        currentUser={currentUser}
                       toggleCard={toggleCard}
                       archiveCard={archiveCard}
                       toggleStep={toggleStep}
+                      toggleTimer={toggleTimer}
                       setEditingCard={setEditingCard}
                       openDetail={openDetail}
                     />
-                  </div>
-                ))}
+                    </div>
+                  );
+                })}
                 {hiddenCount > 0 ? (
                   <button
                     className="fold-row"
@@ -2301,24 +2590,52 @@ function LifeCardTimeline({ cards, profiles, currentUser, selectedDate, filter, 
   );
 }
 
-function LifeCard({ card, profiles, currentUser, toggleCard, archiveCard, toggleStep, setEditingCard, openDetail }) {
+function LifeCard({ card, profiles, currentUser, toggleCard, archiveCard, toggleStep, toggleTimer, setEditingCard, openDetail }) {
   if (isDefaultPromptCard(card)) return null;
   const itemType = card.itemType && itemTypeLabels[card.itemType] ? card.itemType : "thing";
   const participants = cardParticipantIds(card, profiles, currentUser);
-  const title = card.title || card.sourceCaptureSummary || "记录";
+  const title = displayCardTitle(card.title || card.sourceCaptureSummary || "记录");
   const status = statusText(card);
   const summary = summaryLine(card);
   const readOnly = card.readOnly || card.sourceType === "insight";
   const isDraft = Boolean(card.isDraft);
   const isDone = isCompletedCard(card);
   const isArchived = isArchivedCard(card);
+  const isCheckin = card.sourceType === "checkin";
   const timeNote = primaryTimeLabel(card);
-  const summaryText = summary && summary !== timeNote ? summary : "";
-  const planParts = (Array.isArray(card.actionSummary) && card.actionSummary.length ? card.actionSummary : cardPlanParts(card)).slice(0, 4);
-  const miniSteps = (Array.isArray(card.steps) ? card.steps : []).filter((step) => step.title).slice(0, 3);
+  const summaryText = !isCheckin && summary && summary !== timeNote ? summary : "";
+  const planParts = isCheckin ? [] : (Array.isArray(card.actionSummary) && card.actionSummary.length ? card.actionSummary : cardPlanParts(card)).slice(0, 4);
+  const profileById = new Map((profiles || []).map((profile) => [profile.id, profile]));
+  const checkinSteps = isCheckin
+    ? participants.map((id) => ({
+        id: `checkin-${id}`,
+        title: profileById.get(id)?.displayName || ownerLabel(id, currentUser),
+        ownerId: id,
+        status: card.statusByUser?.[id] === "done" ? "done" : "todo",
+      }))
+    : [];
+  const allSteps = (isCheckin ? checkinSteps : (Array.isArray(card.steps) ? card.steps : [])).filter((step) => step.title);
+  const miniSteps = allSteps.slice(0, 3);
+  const pendingStep = !isCheckin ? allSteps.find((step) => step.status !== "done") : null;
+  const progressTotal = Number(card.stepProgress?.total);
+  const progressDone = Number(card.stepProgress?.done);
+  const stepTotal = Number.isFinite(progressTotal) && progressTotal > 0 ? progressTotal : allSteps.length;
+  const stepDone = Number.isFinite(progressDone) && progressDone >= 0 ? progressDone : allSteps.filter((step) => step.status === "done").length;
+  const compactStepTitle = pendingStep?.title || (stepTotal ? "都完成了" : "");
   const isInsight = card.sourceType === "insight";
   const ownerColor = card.ownerId === "shared" ? "#ff6fa8" : profileColor(profiles, card.ownerId, avatarColor(currentUser));
   const secondColor = participants.length > 1 ? profileColor(profiles, participants[1], "#24b99a") : ownerColor;
+  const timerActive = Boolean(card.timeTracking?.currentUserActive);
+  const [timerNow, setTimerNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (!timerActive) {
+      setTimerNow(Date.now());
+      return undefined;
+    }
+    const timer = window.setInterval(() => setTimerNow(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, [timerActive, card.timeTracking?.activeStartedAt]);
+  const totalTimeLabel = compactDuration(timerTotalSeconds(card, timerNow));
   const progressStatus = card.stepProgress?.total ? `${card.stepProgress.done}/${card.stepProgress.total}` : status;
   const displayedStatus = isArchived
     ? "已归档"
@@ -2342,21 +2659,21 @@ function LifeCard({ card, profiles, currentUser, toggleCard, archiveCard, toggle
   };
   const toggleStepAction = (event, step) => {
     stopAction(event);
+    if (isCheckin) {
+      if (step.ownerId === currentUser?.id) toggleCard?.(card, step.ownerId);
+      return;
+    }
     if (!readOnly) toggleStep?.(card, step);
   };
   return (
     <article
-      className={cx("life-card", `type-${itemType}`, isDone && "is-done", isArchived && "is-archived", readOnly && "is-readonly", isInsight && "is-insight", isDraft && "is-draft")}
+      className={cx("life-card", `type-${itemType}`, isCheckin && "is-checkin", isDone && "is-done", isArchived && "is-archived", readOnly && "is-readonly", isInsight && "is-insight", isDraft && "is-draft")}
       style={{ "--owner-one": ownerColor, "--owner-two": secondColor }}
       onDoubleClick={() => {
         if (!readOnly) setEditingCard(card);
       }}
     >
       <span className="card-accent" aria-hidden="true" />
-      <div className="card-when" aria-label={timeNote || itemTypeLabels[itemType]}>
-        <strong>{timeNote || itemTypeLabels[itemType]}</strong>
-        {displayedStatus ? <span>{displayedStatus}</span> : null}
-      </div>
       <div className="card-main">
         <button className="card-head card-open" type="button" onClick={openCard} aria-label={isDraft ? "保存猫猫的事" : "查看猫猫的事"}>
           <div className="card-people">
@@ -2365,7 +2682,15 @@ function LifeCard({ card, profiles, currentUser, toggleCard, archiveCard, toggle
           <div className="card-copy">
             <div className="card-meta">
               <span className="type-pill">{itemTypeLabels[itemType]}</span>
+              {timeNote ? <span className="time-pill">{timeNote}</span> : null}
               <span>{ownerLabel(card.ownerId, currentUser)}</span>
+              {totalTimeLabel ? (
+                <span className={cx("time-total-pill", timerActive && "is-running")}>
+                  <Icon name="clock" />
+                  {totalTimeLabel}
+                </span>
+              ) : null}
+              {displayedStatus ? <span className="status-pill">{displayedStatus}</span> : null}
               {card.priority === "high" ? <span>重要</span> : null}
             </div>
             <strong>{title}</strong>
@@ -2380,10 +2705,10 @@ function LifeCard({ card, profiles, currentUser, toggleCard, archiveCard, toggle
                   key={step.id || step.title}
                   className={cx("card-step", done && "is-done")}
                   type="button"
-                  aria-label={done ? `取消 ${step.title}` : `完成 ${step.title}`}
+                  aria-label={isCheckin ? (done ? `取消 ${step.title}` : `${step.title} 确认`) : (done ? `取消 ${step.title}` : `完成 ${step.title}`)}
                   title={step.title}
                   onClick={(event) => toggleStepAction(event, step)}
-                  disabled={readOnly}
+                  disabled={readOnly || (isCheckin && step.ownerId !== currentUser?.id)}
                 >
                   <Icon name={done ? "check" : "circle"} />
                   <span>{step.title}</span>
@@ -2391,6 +2716,23 @@ function LifeCard({ card, profiles, currentUser, toggleCard, archiveCard, toggle
               );
             })}
           </div>
+        ) : null}
+        {!isCheckin && stepTotal ? (
+          <button
+            className={cx("compact-step-summary", !pendingStep && "is-done")}
+            type="button"
+            aria-label={pendingStep ? `完成下一步 ${pendingStep.title}` : "步骤已完成"}
+            title={pendingStep ? `下一步：${pendingStep.title}` : "步骤已完成"}
+            onClick={(event) => {
+              if (pendingStep) toggleStepAction(event, pendingStep);
+              else stopAction(event);
+            }}
+            disabled={readOnly || !pendingStep}
+          >
+            <Icon name={pendingStep ? "circle" : "check"} />
+            <span>{`步骤 ${stepDone}/${stepTotal}`}</span>
+            <em>{compactStepTitle}</em>
+          </button>
         ) : null}
         {planParts.length ? (
           <div className="card-plan" aria-label="计划">
@@ -2404,15 +2746,27 @@ function LifeCard({ card, profiles, currentUser, toggleCard, archiveCard, toggle
         ) : null}
         {summaryText ? <p className="card-detail">{summaryText}</p> : null}
       </div>
-      {!readOnly && !isDraft ? (
+      {!readOnly && !isDraft && !isCheckin ? (
         <div className="card-actions">
-          {isArchived ? (
-            <span className="archive-mark" aria-label="已归档" title="已归档">
-              <Icon name="archive" />
-            </span>
-          ) : isDone ? (
+          {!isArchived ? (
             <button
-              className="done-mark"
+              className={cx("action-chip timer-toggle", timerActive && "is-active")}
+              type="button"
+              aria-label={timerActive ? "停止计时" : "开始计时"}
+              aria-pressed={timerActive ? "true" : "false"}
+              title={timerActive ? "停止计时" : "开始计时"}
+              onClick={(event) => {
+                stopAction(event);
+                toggleTimer?.(card);
+              }}
+            >
+              <Icon name={timerActive ? "stop" : "clock"} />
+              <span>{timerActive ? "停止" : "计时"}</span>
+            </button>
+          ) : null}
+          {!isArchived && isDone ? (
+            <button
+              className="action-chip done-mark"
               type="button"
               aria-label="取消完成"
               aria-pressed="true"
@@ -2420,10 +2774,11 @@ function LifeCard({ card, profiles, currentUser, toggleCard, archiveCard, toggle
               onClick={completeCard}
             >
               <Icon name="check" />
+              <span>取消</span>
             </button>
-          ) : (
+          ) : !isArchived ? (
             <button
-              className="complete-toggle"
+              className="action-chip complete-toggle"
               type="button"
               aria-label="完成"
               aria-pressed="false"
@@ -2431,23 +2786,42 @@ function LifeCard({ card, profiles, currentUser, toggleCard, archiveCard, toggle
               onClick={completeCard}
             >
               <Icon name="circle" />
+              <span>完成</span>
             </button>
-          )}
-          {!isArchived && ["schedule", "todo"].includes(card.sourceType) ? (
-            <IconButton icon="archive" label="归档" onClick={(event) => {
-              stopAction(event);
-              archiveCard?.(card);
-            }} />
           ) : null}
-          <IconButton icon="edit" label="编辑" onClick={(event) => {
-            stopAction(event);
-            setEditingCard(card);
-          }} />
+          {["schedule", "todo"].includes(card.sourceType) ? (
+            <button
+              className="action-chip archive-toggle"
+              type="button"
+              aria-label={isArchived ? "恢复归档" : "归档"}
+              title={isArchived ? "恢复归档" : "归档"}
+              onClick={(event) => {
+                stopAction(event);
+                archiveCard?.(card);
+              }}
+            >
+              <Icon name={isArchived ? "undo" : "archive"} />
+              <span>{isArchived ? "恢复" : "归档"}</span>
+            </button>
+          ) : null}
+          <button
+            className="action-chip edit-toggle"
+            type="button"
+            aria-label="编辑"
+            title="编辑"
+            onClick={(event) => {
+              stopAction(event);
+              setEditingCard(card);
+            }}
+          >
+            <Icon name="edit" />
+            <span>编辑</span>
+          </button>
         </div>
       ) : isDraft ? (
         <div className="card-actions">
           <button
-            className="complete-toggle"
+            className="action-chip complete-toggle"
             type="button"
             aria-label="保存为猫猫的事"
             aria-pressed="false"
@@ -2458,6 +2832,7 @@ function LifeCard({ card, profiles, currentUser, toggleCard, archiveCard, toggle
             }}
           >
             <Icon name="check" />
+            <span>保存</span>
           </button>
         </div>
       ) : null}
@@ -2918,12 +3293,6 @@ function DailySummaryPage({ data, profiles, currentUser, request, setData, selec
     const hooks = summary?.memoryHooks?.length ? summary.memoryHooks : selectedMemories;
     return hooks.slice(0, 8).map((item) => item.group ? memoryRow(item, context) : summaryRow(item, "记忆", context));
   }, [summary?.memoryHooks, selectedMemories, context]);
-  const sourceStats = useMemo(() => [
-    { key: "done", icon: "check", label: "完成", value: summary?.stats ? `${summary.stats.done || 0}/${summary.stats.total || 0}` : `${selectedCards.filter(isCompletedCard).length}/${selectedCards.length}` },
-    { key: "captures", icon: "camera", label: "随手记", value: summary?.sourceCounts?.captures ?? data.captures?.length ?? 0 },
-    { key: "memory", icon: "bookmark", label: "记忆", value: summary?.memoryHooks?.length ?? selectedMemories.length },
-    { key: "photos", icon: "image", label: "照片", value: summary?.photos?.length ?? 0 },
-  ], [summary, selectedCards, data.captures?.length, selectedMemories.length]);
   const analysis = summary?.analysis || {};
   const keyMoment = analysis.keyMoment?.text || analysis.keyMoment?.title
     ? analysis.keyMoment
@@ -2957,6 +3326,23 @@ function DailySummaryPage({ data, profiles, currentUser, request, setData, selec
         userIds: row.ownerIds || [],
         evidence: ["长期记忆"],
       }));
+  const dailyReview = analysis.dailyReview || {};
+  const shortcomingFallbackItems = missedRows.slice(0, 3).map((row) => ({
+    title: row.title,
+    detail: row.subtitle || nextStep,
+    userIds: row.ownerIds || [],
+    evidence: ["待推进"],
+  }));
+  const reviewDid = reviewEntryOrFallback(dailyReview.did, coreContributionItems, "今天做了什么");
+  const reviewShortcoming = reviewEntryOrFallback(dailyReview.shortcoming, shortcomingFallbackItems, "有什么不足");
+  const reviewTomorrow = reviewEntryOrFallback(dailyReview.tomorrow, carryForwardItems, "明天可以怎么做");
+  const visibleCardTotal = Math.max(selectedCards.length, completedRows.length + missedRows.length);
+  const sourceStats = [
+    { key: "done", icon: "check", label: "完成", value: visibleCardTotal ? `${completedRows.length}/${visibleCardTotal}` : "0" },
+    { key: "captures", icon: "camera", label: "随手记", value: momentRows.length },
+    { key: "memory", icon: "bookmark", label: "记忆", value: Math.max(memoryRows.length, memoryClueItems.length) },
+    { key: "photos", icon: "image", label: "照片", value: summary?.photos?.length ?? 0 },
+  ];
   useEffect(() => {
     setPulse(data.diaryDay?.userDays?.[currentUser?.id] || {});
   }, [data.diaryDay, currentUser?.id]);
@@ -3012,82 +3398,74 @@ function DailySummaryPage({ data, profiles, currentUser, request, setData, selec
 
   const generatedLabel = summary?.generatedAt ? compactDateTime(summary.generatedAt) : "";
   const visibleDiary = cleanStoryText(diary.text || narrative);
-  const hasSourceRows = Boolean(completedRows.length || missedRows.length || memoryRows.length);
-  const sourceNote = summary?.mode === "agent" ? cleanStoryText(summary.qualityNote || nextStep) : "";
 
   return (
     <section className="story-page">
       <div className="page-head">
         <div className="story-heading">
-          <p className="kicker">猫猫日记</p>
-          <h1>{summary ? title : "日总结"}</h1>
-          <span>{selectedDate}</span>
+          <h1>猫猫日记</h1>
         </div>
         <div className="story-head-actions">
-          {refreshError ? <span>{refreshError}</span> : refreshMessage ? <span>{refreshMessage}</span> : null}
+          {refreshError ? <span>{refreshError}</span> : null}
           <IconButton icon={refreshing ? "refresh" : "sparkle"} label="Agent 生成" onClick={refresh} disabled={refreshing} className={refreshing ? "is-spinning" : ""} />
         </div>
       </div>
       <DateRail selectedDate={selectedDate} chooseDate={chooseDate} />
       {summary ? (
-        <article className="story-panel story-panel-ai">
-          <div className="story-visual">
-            {summary.illustration?.type === "photo" && summary.illustration.url ? <img src={summary.illustration.url} alt={summary.illustration.alt || "当天照片"} /> : <AvatarPair profiles={data.profiles} className="story-cats" />}
-            <div className="story-visual-caption">
-              <span>{summaryModeLabel(summary.mode)}</span>
+        <article className="story-journal">
+          <div className="story-journal-top">
+            <div className="story-journal-art">
+              {summary.illustration?.type === "photo" && summary.illustration.url ? <img src={summary.illustration.url} alt={summary.illustration.alt || "当天照片"} /> : <AvatarPair profiles={data.profiles} className="story-cats" />}
+            </div>
+            <div className="story-journal-meta">
+              <span title={summaryModeLabel(summary.mode)}><Icon name="sparkle" /></span>
               {generatedLabel ? <time>{generatedLabel}</time> : null}
             </div>
+            <JournalStats stats={sourceStats} />
           </div>
-            <div className="story-copy">
-              <div className="story-copy-head">
-              <span><Icon name="sparkle" />{summary.mode === "agent" ? "AI 分析" : "整理结果"}</span>
-              <strong>{summary.qualityLabel || summaryModeLabel(summary.mode)}</strong>
-            </div>
-            {visibleDiary ? (
-              <section className="diary-sheet is-main">
-                <span>日记</span>
-                <h2>{diary.title || "日记"}</h2>
-                <p>{visibleDiary}</p>
-              </section>
-            ) : null}
-            <div className="ai-analysis-grid">
-              <AnalysisSpot icon="star" label="最开心" entry={keyMoment} profiles={profiles} />
-              <AnalysisList icon="check" label="核心贡献" entries={coreContributionItems} profiles={profiles} />
-              <AnalysisList icon="calendar" label="明天" entries={carryForwardItems} profiles={profiles} muted />
-              <AnalysisList icon="bookmark" label="长期记忆" entries={memoryClueItems} profiles={profiles} accent />
-            </div>
-            <DailySummarySourceStrip stats={sourceStats} locations={summary.locations} note={sourceNote} />
+          {visibleDiary ? (
+            <section className="story-journal-diary">
+              <h2>{diary.title || title}</h2>
+              <p>{visibleDiary}</p>
+            </section>
+          ) : null}
+          <div className="story-journal-lines">
+            <JournalLine icon="star" label="最开心" entry={keyMoment} profiles={profiles} />
+            <JournalLine icon="check" label="今天做了什么" entry={reviewDid} profiles={profiles} />
+            <JournalLine icon="edit" label="有什么不足" entry={reviewShortcoming} profiles={profiles} />
+            <JournalLine icon="calendar" label="明天可以怎么做" entry={reviewTomorrow} profiles={profiles} />
+            <JournalList icon="bookmark" label="记忆" entries={memoryClueItems} profiles={profiles} />
           </div>
         </article>
       ) : (
-        <section className="story-empty-panel">
-          <div>
-            <span>AI 整理</span>
+        <section className="story-journal story-journal-empty">
+          <div className="story-journal-top">
+            <div className="story-journal-art">
+              <AvatarPair profiles={data.profiles} className="story-cats" />
+            </div>
+            <div className="story-journal-meta">
+              <span><Icon name="sparkle" /></span>
+            </div>
+            <IconButton icon={refreshing ? "refresh" : "sparkle"} label="生成日总结" onClick={refresh} disabled={refreshing} className={refreshing ? "is-spinning" : ""} />
+          </div>
+          <section className="story-journal-diary">
             <h2>等猫猫整理</h2>
-            <button type="button" onClick={refresh} disabled={refreshing}>
-              <Icon name={refreshing ? "refresh" : "sparkle"} />
-              {refreshing ? "生成中" : "生成"}
-            </button>
-          </div>
-          <div className="story-visual">
-            <AvatarPair profiles={data.profiles} className="story-cats" />
-          </div>
+          </section>
         </section>
       )}
-      <form className="pulse-strip" onSubmit={savePulse}>
-        <CatAvatar profile={currentUser} />
-        <input type="number" min="1" max="10" value={pulse.dailyScore || ""} onChange={(event) => setPulse({ ...pulse, dailyScore: event.target.value })} aria-label="今日打分" placeholder="/10" />
-        <input value={pulse.happiestThing || ""} onChange={(event) => setPulse({ ...pulse, happiestThing: event.target.value })} aria-label="最开心的事" placeholder="最开心的事" />
-        <input value={pulse.smallAchievement || ""} onChange={(event) => setPulse({ ...pulse, smallAchievement: event.target.value })} aria-label="核心贡献" placeholder="核心贡献" />
-        <IconButton icon="check" label="保存状态" type="submit" primary />
-      </form>
-      {hasSourceRows ? (
-        <div className="story-source-grid">
-          <StoryList title="完成" rows={completedRows.slice(0, 4)} profiles={profiles} onOpen={(row) => openDetail(row.type, row.payload)} />
-          <StoryList title="明天" rows={missedRows.slice(0, 4)} profiles={profiles} onOpen={(row) => openDetail(row.type, row.payload)} muted />
-          <StoryList title="记忆" rows={memoryRows.slice(0, 4)} profiles={profiles} onOpen={(row) => openDetail(row.type, row.payload)} accent />
-        </div>
-      ) : null}
+      <details className="pulse-fold">
+        <summary>
+          <CatAvatar profile={currentUser} />
+          <span><Icon name="star" /><Icon name="check" /><Icon name="edit" /></span>
+          <Icon name="chevronDown" />
+        </summary>
+        <form className="pulse-strip" onSubmit={savePulse}>
+          <input type="number" min="1" max="10" value={pulse.dailyScore || ""} onChange={(event) => setPulse({ ...pulse, dailyScore: event.target.value })} aria-label="今日打分" placeholder="/10" />
+          <input value={pulse.happiestThing || ""} onChange={(event) => setPulse({ ...pulse, happiestThing: event.target.value })} aria-label="最开心的事" placeholder="最开心的事" />
+          <input value={pulse.smallAchievement || ""} onChange={(event) => setPulse({ ...pulse, smallAchievement: event.target.value })} aria-label="核心贡献" placeholder="核心贡献" />
+          <IconButton icon="check" label="保存状态" type="submit" primary />
+        </form>
+      </details>
       <CollapsibleSourceList title="随手记" rows={momentRows} profiles={profiles} onOpen={(row) => openDetail(row.type, row.payload)} />
     </section>
   );
@@ -3118,6 +3496,78 @@ function CollapsibleSourceList({ title, rows, profiles, onOpen }) {
         ))}
       </div>
     </details>
+  );
+}
+
+function JournalStats({ stats }) {
+  const visible = (stats || []).filter((item) => {
+    const value = String(item?.value ?? "").trim();
+    return value && value !== "0" && value !== "0/0";
+  });
+  if (!visible.length) return null;
+  return (
+    <div className="journal-stats" aria-label="来源">
+      {visible.map((item) => (
+        <span key={item.key} title={`${item.label} ${item.value}`} aria-label={`${item.label} ${item.value}`}>
+          <Icon name={item.icon} />
+          <b>{item.value}</b>
+        </span>
+      ))}
+    </div>
+  );
+}
+
+function JournalLine({ icon, label, entry, profiles }) {
+  const title = analysisTitle(entry);
+  const detail = analysisDetail(entry);
+  if (!title && !detail) return null;
+  return (
+    <section className="journal-line">
+      <span className="journal-line-icon" title={label} aria-label={label}>
+        <Icon name={icon} />
+      </span>
+      <div>
+        <article>
+          {title ? <h3>{title}</h3> : null}
+          {title && detail && detail !== title ? <p>{detail}</p> : null}
+          {!title && detail ? <h3>{detail}</h3> : null}
+        </article>
+      </div>
+      <AvatarPair profiles={profiles} ids={analysisUserIds(entry)} />
+    </section>
+  );
+}
+
+function JournalList({ icon, label, entries, profiles }) {
+  const rows = (entries || [])
+    .map((entry) => ({
+      entry,
+      title: analysisTitle(entry),
+      detail: analysisDetail(entry),
+    }))
+    .filter((row) => row.title || row.detail)
+    .slice(0, 3);
+  const ownerIds = [...new Set(rows.flatMap((row) => analysisUserIds(row.entry)))];
+  if (!rows.length) return null;
+  return (
+    <section className="journal-line">
+      <span className="journal-line-icon" title={label} aria-label={label}>
+        <Icon name={icon} />
+      </span>
+      <div>
+        {rows.map((row, index) => {
+          const title = row.title || shortText(row.detail, 18);
+          const detail = row.detail && row.detail !== title ? row.detail : "";
+          return (
+            <article key={`${label}-${title}-${index}`}>
+              {title ? <h3>{title}</h3> : null}
+              {detail ? <p>{detail}</p> : null}
+            </article>
+          );
+        })}
+      </div>
+      <AvatarPair profiles={profiles} ids={ownerIds} />
+    </section>
   );
 }
 
@@ -3158,6 +3608,28 @@ function analysisTitle(entry, fallback = "") {
 
 function analysisDetail(entry) {
   return cleanStoryText(entry?.text || entry?.detail || "");
+}
+
+function hasAnalysisEntry(entry) {
+  return Boolean(analysisTitle(entry) || analysisDetail(entry));
+}
+
+function reviewEntryOrFallback(entry, fallbackItems, fallbackTitle) {
+  if (hasAnalysisEntry(entry)) return entry;
+  const rows = (fallbackItems || []).filter(hasAnalysisEntry).slice(0, 2);
+  if (!rows.length) return null;
+  const text = rows.map((row) => {
+    const title = analysisTitle(row);
+    const detail = analysisDetail(row);
+    if (title && detail && title !== detail) return `${title}：${detail}`;
+    return title || detail;
+  }).filter(Boolean).join("；");
+  return {
+    title: fallbackTitle,
+    text,
+    userIds: [...new Set(rows.flatMap((row) => analysisUserIds(row)))],
+    evidence: rows.flatMap((row) => Array.isArray(row.evidence) ? row.evidence : []).slice(0, 3),
+  };
 }
 
 function AnalysisEvidence({ entry }) {
@@ -3230,15 +3702,23 @@ function StoryList({ title, rows, profiles, onOpen, muted, accent }) {
 function MemoryPage({ data, profiles, currentUser, request, setData, selectedDate, openDetail }) {
   const page = data.personalPages?.[currentUser?.id] || {};
   const [form, setForm] = useState(page);
+  const [activeSurface, setActiveSurface] = useState("");
   const memoryItems = data.memoryItems || [];
-  const memoryGroups = useMemo(() => {
-    return memoryItems.reduce((groups, item) => {
-      const group = memoryLaneLabels[item.group] ? item.group : "care";
-      if (!groups[group]) groups[group] = [];
-      groups[group].push(item);
-      return groups;
-    }, {});
+  const memorySurfaces = useMemo(() => {
+    const groups = Object.fromEntries(memorySurfaceDefs.map((item) => [item.key, []]));
+    memoryItems.forEach((item) => {
+      const key = memorySurfaceKey(item);
+      groups[key].push(item);
+    });
+    return memorySurfaceDefs.map((surface) => ({
+      ...surface,
+      items: groups[surface.key] || [],
+    }));
   }, [memoryItems]);
+  const firstFilledSurface = memorySurfaces.find((surface) => surface.items.length) || memorySurfaces[0];
+  const selectedSurface = memorySurfaces.find((surface) => surface.key === activeSurface) || firstFilledSurface;
+  const featuredMemory = selectedSurface?.items?.[0] || null;
+  const listedMemories = (selectedSurface?.items || []).slice(featuredMemory ? 1 : 0, featuredMemory ? 9 : 8);
   useEffect(() => setForm(page), [page.userId, page.updatedAt]);
 
   async function save(event) {
@@ -3257,32 +3737,44 @@ function MemoryPage({ data, profiles, currentUser, request, setData, selectedDat
           <h1>长期记忆</h1>
         </div>
       </div>
-      <div className="memory-overview">
-        {memoryLaneOrder.map((lane) => (
-          <button key={lane} type="button" onClick={() => document.getElementById(`memory-lane-${lane}`)?.scrollIntoView({ behavior: "smooth", block: "center" })}>
-            <strong>{(memoryGroups[lane] || []).length}</strong>
-            <span>{memoryLaneLabels[lane]}</span>
-          </button>
-        ))}
-      </div>
-      <div className="memory-shelves">
-        {memoryLaneOrder.map((lane) => {
-          const items = (memoryGroups[lane] || []).slice(0, 8);
-          return (
-            <section key={lane} id={`memory-lane-${lane}`} className="memory-lane">
-              <div className="memory-lane-head">
-                <strong>{memoryLaneLabels[lane]}</strong>
-                <span>{items.length}</span>
-              </div>
-              <div className="memory-stack">
-                {items.length ? items.map((item) => (
-                  <MemoryItemCard key={item.id} item={item} profiles={profiles} currentUser={currentUser} onOpen={() => openDetail("memoryItem", item)} />
-                )) : <EmptyState profiles={profiles} />}
-              </div>
-            </section>
-          );
-        })}
-      </div>
+      <section className="memory-hub">
+        <div className="memory-switch" aria-label="长期记忆分类">
+          {memorySurfaces.map((surface) => (
+            <button
+              className={cx(surface.key === selectedSurface.key && "is-active")}
+              key={surface.key}
+              type="button"
+              onClick={() => setActiveSurface(surface.key)}
+              aria-pressed={surface.key === selectedSurface.key}
+            >
+              <Icon name={surface.icon} />
+              <span>
+                <strong>{surface.title}</strong>
+                <em>{surface.caption}</em>
+              </span>
+              <b className={cx(!surface.items.length && "is-empty")}>{surface.items.length || ""}</b>
+            </button>
+          ))}
+        </div>
+        <div className="memory-stage">
+          <div className="memory-stage-head">
+            <span><Icon name={selectedSurface.icon} />{selectedSurface.title}</span>
+            {selectedSurface.items.length ? <strong>{selectedSurface.items.length}</strong> : null}
+          </div>
+          {featuredMemory ? (
+            <MemoryItemCard item={featuredMemory} profiles={profiles} currentUser={currentUser} onOpen={() => openDetail("memoryItem", featuredMemory)} featured />
+          ) : (
+            <EmptyState profiles={profiles} />
+          )}
+          {listedMemories.length ? (
+            <div className="memory-feed">
+              {listedMemories.map((item) => (
+                <MemoryItemCard key={item.id} item={item} profiles={profiles} currentUser={currentUser} onOpen={() => openDetail("memoryItem", item)} />
+              ))}
+            </div>
+          ) : null}
+        </div>
+      </section>
       <details className="memory-editor">
         <summary>
           <CatAvatar profile={currentUser} />
@@ -3310,14 +3802,15 @@ function MemoryPage({ data, profiles, currentUser, request, setData, selectedDat
   );
 }
 
-function MemoryItemCard({ item, profiles, currentUser, onOpen }) {
+function MemoryItemCard({ item, profiles, currentUser, onOpen, featured = false }) {
   const ids = memoryOwnerIds(item, profiles, currentUser);
+  const surface = memorySurfaceDef(memorySurfaceKey(item));
   return (
-    <button className={cx("memory-card", `memory-${item.group || "care"}`)} type="button" onClick={onOpen}>
+    <button className={cx("memory-card", `memory-${item.group || "care"}`, `is-${surface.key}`, featured && "is-featured")} type="button" onClick={onOpen}>
       <div className="memory-card-head">
-        <AvatarPair profiles={profiles} ids={ids} />
-        <span>{item.kindLabel}</span>
+        <span><Icon name={surface.icon} />{item.kindLabel}</span>
         {item.actionable ? <Icon name="sparkle" /> : null}
+        <AvatarPair profiles={profiles} ids={ids} />
       </div>
       <strong>{item.title}</strong>
       {item.detail ? <p>{item.detail}</p> : null}

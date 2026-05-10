@@ -97,6 +97,64 @@
             "additionalProperties": false
           }
         },
+        "daily_review": {
+          "type": "object",
+          "properties": {
+            "did": {
+              "type": "object",
+              "properties": {
+                "title": { "type": "string" },
+                "text": { "type": "string" },
+                "user_ids": {
+                  "type": "array",
+                  "items": { "type": "string" }
+                },
+                "evidence": {
+                  "type": "array",
+                  "items": { "type": "string" }
+                }
+              },
+              "required": ["title", "text", "user_ids", "evidence"],
+              "additionalProperties": false
+            },
+            "shortcoming": {
+              "type": "object",
+              "properties": {
+                "title": { "type": "string" },
+                "text": { "type": "string" },
+                "user_ids": {
+                  "type": "array",
+                  "items": { "type": "string" }
+                },
+                "evidence": {
+                  "type": "array",
+                  "items": { "type": "string" }
+                }
+              },
+              "required": ["title", "text", "user_ids", "evidence"],
+              "additionalProperties": false
+            },
+            "tomorrow": {
+              "type": "object",
+              "properties": {
+                "title": { "type": "string" },
+                "text": { "type": "string" },
+                "user_ids": {
+                  "type": "array",
+                  "items": { "type": "string" }
+                },
+                "evidence": {
+                  "type": "array",
+                  "items": { "type": "string" }
+                }
+              },
+              "required": ["title", "text", "user_ids", "evidence"],
+              "additionalProperties": false
+            }
+          },
+          "required": ["did", "shortcoming", "tomorrow"],
+          "additionalProperties": false
+        },
         "diary": {
           "type": "object",
           "properties": {
@@ -107,7 +165,7 @@
           "additionalProperties": false
         }
       },
-      "required": ["key_moment", "core_contributions", "carry_forward", "memory_clues", "diary"],
+      "required": ["key_moment", "core_contributions", "carry_forward", "memory_clues", "daily_review", "diary"],
       "additionalProperties": false
     }
   },
