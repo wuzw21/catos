@@ -1,12 +1,14 @@
 const crypto = require("crypto");
-const { spawnSync } = require("child_process");
+const { spawn, spawnSync } = require("child_process");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
 const { contentPath, relativeToContent, repoPath, repoRoot } = require("./lib/runtime-paths.js");
 
 const storePath = contentPath("private", "couple-workspace.json");
+const captureAnalysisSchemaPath = repoPath("schemas", "couple-capture-analysis.schema.json");
 const dailySummarySchemaPath = repoPath("schemas", "couple-daily-summary.schema.json");
+const dailySummarySkillPath = repoPath("skills", "couple-daily-diary", "SKILL.md");
 
 const segmentDefinitions = [
   { key: "allDay", label: "全天" },
@@ -30,6 +32,8 @@ const validStatuses = new Set(["todo", "done"]);
 const validPriorities = new Set(["low", "normal", "high"]);
 const validTodoBuckets = new Set(["today", "future"]);
 const validScheduleItemTypes = new Set(["thing", "work", "date", "purchase", "reminder", "checkin", "habit"]);
+const validCaptureDecisions = new Set(["capture", "schedule", "memory", "dailyStory"]);
+const validMemoryKinds = new Set(["preference", "wish", "purchase", "promise", "care", "anniversary", "memory", "gratitude", "repair", "identity", "goal", "list"]);
 const validImageMimeTypes = new Set(["image/png", "image/jpeg", "image/webp", "image/gif"]);
 const maxImageBytes = 5 * 1024 * 1024;
 const weekdayLabels = ["周日", "周一", "周二", "周三", "周四", "周五", "周六"];
@@ -75,6 +79,14 @@ const captureAgentPrompt = [
   "输出轻确认，不直接写入最终生活卡，除非用户确认。",
 ].join("\n");
 const defaultLifeCardTitle = "今天有没有开开心心？";
+const defaultLifeCardTitleKey = defaultLifeCardTitle.replace(/[？?。!！\s]/g, "");
+const placeholderTitleKeys = new Set([
+  defaultLifeCardTitle,
+  "写下今天最重要的一件事",
+  "互相确认今天的状态",
+].map((value) => value.replace(/[？?。!！\s]/g, "")));
+const lowSignalSummaryTitleKeys = new Set(["做别的事", "日记", "今日", "今天", "日总结", "共同回忆"].map((value) => value.replace(/[？?。!！\s]/g, "")));
+const badGeneratedSummaryPattern = /值得记住的是|记录留下了\s*\d+\s*条现场线索|完成了\s*今天有没有开开心心|需要顺手带到明天的是\s*今天有没有开开心心|还没有明确完成项|随手记还比较少|先补上|自动日总结/;
 const importantEventPattern = /答辩|考试|面试|汇报|演讲|提交|材料|ddl|deadline|截止|证件|面谈|复试|重要(?!的一件事)/i;
 const anniversaryPattern = /纪念日|周年|生日|情人节|七夕|圣诞|跨年|节日|纪念/i;
 const promisePattern = /答应|承诺|说好|我(?:会|来|去|周末|今晚|明天|下次|之后|以后)?[^。！？\n]{0,18}(?:帮你|给你|带你|陪你|替你|负责|弄|整理|修|买|订|处理|搞定)/;
@@ -82,6 +94,7 @@ const wishPattern = /想(?:要|去|吃|买|看|体验|喝|逛|试|拍|一起)?|�
 const preferencePattern = /喜欢|不喜欢|讨厌|雷区|边界|偏好|好闻|爱吃|不爱|不要太|别太|太吵|安静/;
 const gratitudePattern = /谢谢|感谢|辛苦|帮我|帮了|照顾|做了|准备了/;
 const repairPattern = /吵架|争执|生气|委屈|难过|不开心|冷战|道歉|修复/;
+const dayRolloverHour = 3;
 
 function pad(value) {
   return String(value).padStart(2, "0");
@@ -89,6 +102,14 @@ function pad(value) {
 
 function formatDate(date = new Date()) {
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
+}
+
+function businessDate(date = new Date()) {
+  const shifted = new Date(date);
+  if (shifted.getHours() < dayRolloverHour) {
+    shifted.setDate(shifted.getDate() - 1);
+  }
+  return formatDate(shifted);
 }
 
 function parseDate(dateText) {
@@ -109,7 +130,7 @@ function daysBetween(startDateText, endDateText) {
   return Math.floor((end.getTime() - start.getTime()) / 86400000);
 }
 
-function normalizeDate(dateText, fallback = formatDate()) {
+function normalizeDate(dateText, fallback = businessDate()) {
   const value = String(dateText || "").trim();
   return parseDate(value) ? value : fallback;
 }
@@ -202,6 +223,132 @@ function sanitizeList(items, maxItems = 8, maxLength = 180) {
     .map((item) => sanitizeText(item, maxLength))
     .filter(Boolean)
     .slice(0, maxItems);
+}
+
+function sanitizeTextMap(input, maxLength = 80) {
+  return Object.fromEntries(
+    Object.entries(input && typeof input === "object" ? input : {})
+      .map(([key, value]) => [sanitizeText(key, 80), sanitizeText(value, maxLength)])
+      .filter(([key, value]) => key && value)
+  );
+}
+
+function normalizedTitleKey(value) {
+  return sanitizeText(value, 200).replace(/[？?。!！\s]/g, "");
+}
+
+function isDefaultLifeCardTitle(value) {
+  const key = normalizedTitleKey(value);
+  return key === defaultLifeCardTitleKey || placeholderTitleKeys.has(key);
+}
+
+function isLowSignalSummaryTitle(value) {
+  return lowSignalSummaryTitleKeys.has(normalizedTitleKey(value));
+}
+
+function isGenericSummaryTitle(value) {
+  const text = sanitizeText(value, 120);
+  if (!text) return false;
+  return /^\d{1,2}[/-]\d{1,2}\s*的共同回忆$/.test(text) ||
+    /^\d{4}-\d{2}-\d{2}$/.test(text) ||
+    /^\d{1,2}\s*月\s*\d{1,2}\s*日(?:的)?(?:共同回忆|日总结)?$/.test(text);
+}
+
+function cleanGeneratedSummaryText(input, maxLength = 500) {
+  const text = sanitizeText(input, maxLength);
+  if (!text) return "";
+  if (isDefaultLifeCardTitle(text) || isLowSignalSummaryTitle(text) || isGenericSummaryTitle(text)) return "";
+  if (badGeneratedSummaryPattern.test(text) || /^完成\s*\d+\s*\/\s*\d+$/.test(text)) return "";
+  return text;
+}
+
+function stableIndex(key, size) {
+  if (!size) return 0;
+  let hash = 0;
+  String(key).split("").forEach((char) => {
+    hash = (hash * 31 + char.charCodeAt(0)) % 1000003;
+  });
+  return hash % size;
+}
+
+function titleBit(value, maxLength = 6) {
+  const text = cleanGeneratedSummaryText(value, 80)
+    .replace(/[「」"“”'《》]/g, "")
+    .replace(/[，。！？、,.!?；;：:\n\r]/g, " ")
+    .replace(/^(今天|今日|我们|一起|猫猫|大猫|小猫|把|在)\s*/g, "")
+    .trim();
+  if (!text || /^\d+$/.test(text)) return "";
+  return text.split(/\s+/)[0].slice(0, maxLength);
+}
+
+function titleVariant(date, bit, templates) {
+  const list = templates.map((template) => template(bit)).map((item) => cleanGeneratedSummaryText(item, 16)).filter(Boolean);
+  return list[stableIndex(`${date}:${bit}`, list.length)] || "";
+}
+
+function buildCuteSummaryTitle(facts) {
+  const pulses = facts.status_by_user || [];
+  const happyBit = titleBit(pulses.find((person) => person.happiestThing)?.happiestThing);
+  if (happyBit) {
+    return titleVariant(facts.date, happyBit, [
+      (bit) => `${bit}发光`,
+      (bit) => `${bit}被抱住`,
+      (bit) => `${bit}小闪光`,
+    ]);
+  }
+
+  const contributionBit = titleBit(pulses.find((person) => person.smallAchievement)?.smallAchievement);
+  if (contributionBit) {
+    return titleVariant(facts.date, contributionBit, [
+      (bit) => `${bit}向前挪`,
+      (bit) => `${bit}长出小芽`,
+      (bit) => `${bit}落地啦`,
+    ]);
+  }
+
+  const completedBit = titleBit((facts.completed_items || []).find(isMeaningfulSummaryThing)?.title);
+  if (completedBit) {
+    return titleVariant(facts.date, completedBit, [
+      (bit) => `${bit}完成啦`,
+      (bit) => `${bit}收进口袋`,
+      (bit) => `${bit}有进度`,
+    ]);
+  }
+
+  const captureBit = titleBit((facts.captures || []).map(meaningfulCaptureText).find(Boolean));
+  if (captureBit) {
+    return titleVariant(facts.date, captureBit, [
+      (bit) => `${bit}小纸条`,
+      (bit) => `${bit}留一格`,
+      (bit) => `${bit}被记住`,
+    ]);
+  }
+
+  const locationBit = titleBit(facts.locations?.[0], 5);
+  if (locationBit) return `${locationBit}小闪光`;
+
+  if ((facts.relationshipInsights || []).length) return ["小愿望亮灯", "记忆冒小芽", "心事收好"][stableIndex(facts.date, 3)];
+  if ((facts.missed_items || []).some(isMeaningfulSummaryThing)) return ["明天的小尾巴", "还有一点点", "轻轻带到明天"][stableIndex(facts.date, 3)];
+
+  return [
+    "轻轻的一页",
+    "小猫留光日",
+    "慢慢亮起来",
+    "把今天收好",
+    "软软小片刻",
+    "今天有小光",
+  ][stableIndex(facts.date, 6)];
+}
+
+function normalizeSummaryTitle(summary, fallbackTitle = "") {
+  const direct = cleanGeneratedSummaryText(summary?.title, 80);
+  if (direct) return direct;
+  const analysis = normalizeDailyAnalysis(summary?.analysis);
+  const diaryTitle = cleanGeneratedSummaryText(analysis.diary?.title, 80);
+  if (diaryTitle) return diaryTitle;
+  const keyTitle = cleanGeneratedSummaryText(analysis.keyMoment?.title, 80);
+  if (keyTitle) return keyTitle;
+  return cleanGeneratedSummaryText(fallbackTitle, 80);
 }
 
 function normalizeDurationMin(value, fallback = 0) {
@@ -590,6 +737,8 @@ function publicProfile(profile) {
     avatarUrl: profile.avatarUrl || "",
     color: profile.color,
     initials: profile.initials,
+    updatedBy: profile.updatedBy || "",
+    updatedAt: profile.updatedAt || "",
   };
 }
 
@@ -634,7 +783,7 @@ function getWeekDays(dateText) {
       id: formatDate(date),
       label: weekdayLabels[date.getDay()],
       shortLabel: `${pad(date.getMonth() + 1)}-${pad(date.getDate())}`,
-      isToday: formatDate(date) === formatDate(),
+      isToday: formatDate(date) === businessDate(),
     };
   });
 }
@@ -651,7 +800,7 @@ function getTimelineDays(dateText) {
       date: id,
       label: weekdayLabels[date.getDay()],
       shortLabel: `${pad(date.getMonth() + 1)}-${pad(date.getDate())}`,
-      isToday: id === formatDate(),
+      isToday: id === businessDate(),
     };
   });
 }
@@ -660,7 +809,7 @@ function getMonthDays(dateText) {
   const selected = parseDate(normalizeDate(dateText)) || new Date();
   const first = new Date(selected.getFullYear(), selected.getMonth(), 1);
   const last = new Date(selected.getFullYear(), selected.getMonth() + 1, 0);
-  const today = formatDate();
+  const today = businessDate();
 
   return Array.from({ length: last.getDate() }, (_, index) => {
     const date = new Date(first);
@@ -724,6 +873,28 @@ function syncArchiveWithCompletion(item, userId) {
   }
 }
 
+function markStatusOperation(item, targetUserId, userId, timestamp = nowIso()) {
+  if (!targetUserId || !userId) return;
+  item.statusUpdatedBy = {
+    ...(item.statusUpdatedBy || {}),
+    [targetUserId]: userId,
+  };
+  item.statusUpdatedAt = {
+    ...(item.statusUpdatedAt || {}),
+    [targetUserId]: timestamp,
+  };
+}
+
+function markCheckinStatusOperation(item, date, targetUserId, userId, timestamp = nowIso()) {
+  if (!date || !targetUserId || !userId) return;
+  item.statusMetaByDate = item.statusMetaByDate || {};
+  item.statusMetaByDate[date] = item.statusMetaByDate[date] || {};
+  item.statusMetaByDate[date][targetUserId] = {
+    updatedBy: userId,
+    updatedAt: timestamp,
+  };
+}
+
 function applyStepAwareStatusToggle(item, targetUserId, userId, payload = {}) {
   const currentStatus = validStatuses.has(item.statusByUser?.[targetUserId])
     ? item.statusByUser[targetUserId]
@@ -779,6 +950,8 @@ function createScheduleItem(store, payload, userId) {
     ownerId,
     participants: normalizedParticipants,
     statusByUser: Object.fromEntries(normalizedParticipants.map((id) => [id, "todo"])),
+    statusUpdatedBy: {},
+    statusUpdatedAt: {},
     createdBy: userId,
     updatedBy: userId,
     createdAt: timestamp,
@@ -816,6 +989,8 @@ function createTodoItem(store, payload, userId) {
     ownerId,
     participants,
     statusByUser: Object.fromEntries(participants.map((id) => [id, "todo"])),
+    statusUpdatedBy: {},
+    statusUpdatedAt: {},
     createdBy: userId,
     updatedBy: userId,
     createdAt: timestamp,
@@ -847,6 +1022,7 @@ function createCheckinItem(store, payload, userId) {
     ownerId: "shared",
     participants,
     statusByDate: {},
+    statusMetaByDate: {},
     createdBy: userId,
     updatedBy: userId,
     createdAt: timestamp,
@@ -877,6 +1053,8 @@ function createDeadlineItem(store, payload, userId) {
     ownerId,
     participants,
     statusByUser: Object.fromEntries(participants.map((id) => [id, "todo"])),
+    statusUpdatedBy: {},
+    statusUpdatedAt: {},
     createdBy: userId,
     updatedBy: userId,
     createdAt: timestamp,
@@ -911,6 +1089,7 @@ function createDefaultStore() {
     todoItems: [],
     checkinItems: [],
     deadlineItems: [],
+    operations: [],
     diaryDays: {},
     dailySummaries: {},
     personalPages: {
@@ -971,6 +1150,7 @@ function ensureStoreShape(store) {
   shaped.todoItems = Array.isArray(shaped.todoItems) ? shaped.todoItems : [];
   shaped.checkinItems = Array.isArray(shaped.checkinItems) ? shaped.checkinItems : [];
   shaped.deadlineItems = Array.isArray(shaped.deadlineItems) ? shaped.deadlineItems : [];
+  shaped.operations = Array.isArray(shaped.operations) ? shaped.operations : [];
   shaped.diaryDays = shaped.diaryDays && typeof shaped.diaryDays === "object" ? shaped.diaryDays : {};
   shaped.dailySummaries = shaped.dailySummaries && typeof shaped.dailySummaries === "object" ? shaped.dailySummaries : {};
   shaped.personalPages = shaped.personalPages && typeof shaped.personalPages === "object" ? shaped.personalPages : {};
@@ -989,6 +1169,7 @@ function ensureStoreShape(store) {
           longTermGoal: sanitizeText(current.longTermGoal || "", 500),
           identityGoal: sanitizeText(current.identityGoal || "", 500),
           notes: sanitizeText(current.notes || "", 1200),
+          updatedBy: sanitizeText(current.updatedBy || profile.id, 80),
           updatedAt: current.updatedAt || "",
         },
       ];
@@ -999,7 +1180,22 @@ function ensureStoreShape(store) {
     ownerId: "shared",
     participants: profileIds,
     statusByDate: item.statusByDate && typeof item.statusByDate === "object" ? item.statusByDate : {},
+    statusMetaByDate: item.statusMetaByDate && typeof item.statusMetaByDate === "object" ? item.statusMetaByDate : {},
   }));
+  shaped.operations = shaped.operations
+    .filter((item) => item && typeof item === "object")
+    .map((item) => ({
+      id: sanitizeText(item.id, 80) || makeId("op"),
+      action: sanitizeText(item.action, 80),
+      entityType: sanitizeText(item.entityType, 80),
+      entityId: sanitizeText(item.entityId, 120),
+      date: item.date ? normalizeDate(item.date) : "",
+      actorId: sanitizeText(item.actorId, 80),
+      targetUserId: sanitizeText(item.targetUserId, 80),
+      createdAt: item.createdAt || nowIso(),
+      meta: item.meta && typeof item.meta === "object" ? item.meta : {},
+    }))
+    .slice(-500);
   shaped.updatedAt = shaped.updatedAt || nowIso();
   return shaped;
 }
@@ -1024,6 +1220,28 @@ function writeStore(store) {
   fs.writeFileSync(tempPath, `${JSON.stringify(payload, null, 2)}\n`, "utf8");
   fs.renameSync(tempPath, storePath);
   return payload;
+}
+
+function recordOperation(store, userId, action, entityType, entityId, meta = {}) {
+  if (!store || !userId || !action) return;
+  store.operations = Array.isArray(store.operations) ? store.operations : [];
+  const date = meta.date ? normalizeDate(meta.date) : "";
+  store.operations.push({
+    id: makeId("op"),
+    action: sanitizeText(action, 80),
+    entityType: sanitizeText(entityType, 80),
+    entityId: sanitizeText(entityId, 120),
+    date,
+    actorId: sanitizeText(userId, 80),
+    targetUserId: sanitizeText(meta.targetUserId, 80),
+    createdAt: nowIso(),
+    meta: {
+      sourceType: sanitizeText(meta.sourceType, 80),
+      title: sanitizeText(meta.title, 180),
+      status: sanitizeText(meta.status, 40),
+    },
+  });
+  store.operations = store.operations.slice(-500);
 }
 
 function readPublicBootstrap() {
@@ -1104,6 +1322,8 @@ function getDiaryDaySnapshot(store, date) {
       happiestThing: current.happiestThing || "",
       smallAchievement: current.smallAchievement || "",
       images: Array.isArray(current.images) ? current.images.map(publicDiaryAsset).filter(Boolean) : [],
+      createdBy: current.createdBy || profile.id,
+      updatedBy: current.updatedBy || "",
       updatedAt: current.updatedAt || "",
     };
   });
@@ -1143,6 +1363,7 @@ function publicPersonalPage(page, profile) {
     longTermGoal: source.longTermGoal || "",
     identityGoal: source.identityGoal || "",
     notes: source.notes || "",
+    updatedBy: source.updatedBy || source.userId || profile.id,
     updatedAt: source.updatedAt || "",
   };
 }
@@ -1159,6 +1380,22 @@ function publicCapture(capture) {
     visibility: validVisibilities.has(capture.visibility) ? capture.visibility : "shared",
     location: capture.location || "",
     assets: Array.isArray(capture.assets) ? capture.assets.map(publicDiaryAsset).filter(Boolean) : [],
+    analysisRuns: (Array.isArray(capture.analysisRuns) ? capture.analysisRuns : [])
+      .map((run) => ({
+        id: sanitizeText(run?.id, 80),
+        analysisMode: sanitizeText(run?.analysisMode, 40),
+        analyzer: sanitizeText(run?.analyzer, 80),
+        decision: sanitizeText(run?.decision, 40),
+        itemType: normalizeScheduleItemType(run?.itemType, "thing"),
+        memoryKind: sanitizeText(run?.memoryKind, 40),
+        title: sanitizeText(run?.title, 120),
+        date: sanitizeText(run?.date, 20),
+        segment: normalizeSegment(run?.segment),
+        confidence: Number.isFinite(Number(run?.confidence)) ? Number(run.confidence) : 0,
+        createdAt: sanitizeText(run?.createdAt, 40),
+      }))
+      .filter((run) => run.id)
+      .slice(0, 8),
     createdBy: capture.createdBy || "",
     createdAt: capture.createdAt || "",
   };
@@ -1174,6 +1411,20 @@ function publicSummaryThing(item) {
     participants: Array.isArray(item.participants) ? item.participants : [],
     doneUsers: Array.isArray(item.doneUsers) ? item.doneUsers : [],
     pendingUsers: Array.isArray(item.pendingUsers) ? item.pendingUsers : [],
+    createdBy: item.createdBy || "",
+    updatedBy: item.updatedBy || "",
+    archivedBy: item.archivedBy || "",
+    statusUpdatedBy: sanitizeTextMap(item.statusUpdatedBy),
+    statusUpdatedAt: sanitizeTextMap(item.statusUpdatedAt, 40),
+    statusActors: Array.isArray(item.statusActors)
+      ? item.statusActors.map((actor) => ({
+          userId: sanitizeText(actor.userId, 80),
+          status: sanitizeText(actor.status, 40),
+          updatedBy: sanitizeText(actor.updatedBy, 80),
+          updatedAt: sanitizeText(actor.updatedAt, 40),
+        })).filter((actor) => actor.userId)
+      : [],
+    sourceCaptureId: item.sourceCaptureId || "",
   };
 }
 
@@ -1261,13 +1512,14 @@ function publicDailySummary(summary) {
 
   return {
     date: summary.date || "",
-    title: summary.title || "",
-    subtitle: summary.subtitle || "",
-    narrative: summary.narrative || "",
+    title: normalizeSummaryTitle(summary),
+    subtitle: cleanGeneratedSummaryText(summary.subtitle, 180),
+    narrative: cleanGeneratedSummaryText(summary.narrative, 900),
     qualityScore: Number(summary.qualityScore) || 0,
-    qualityLabel: summary.qualityLabel || "",
-    qualityNote: summary.qualityNote || "",
-    nextStep: summary.nextStep || "",
+    qualityLabel: cleanGeneratedSummaryText(summary.qualityLabel, 80),
+    qualityNote: cleanGeneratedSummaryText(summary.qualityNote, 240),
+    nextStep: cleanGeneratedSummaryText(summary.nextStep, 240),
+    analysis: normalizeDailyAnalysis(summary.analysis),
     illustration: summary.illustration || { type: "pixel", url: "", alt: "像素小猫日总结" },
     people: Array.isArray(summary.people) ? summary.people : [],
     completed: Array.isArray(summary.completed) ? summary.completed.map(publicSummaryThing) : [],
@@ -1307,6 +1559,8 @@ function publicScheduleItem(item, profileIds) {
         validStatuses.has(item.statusByUser?.[id]) ? item.statusByUser[id] : "todo",
       ])
     ),
+    statusUpdatedBy: sanitizeTextMap(item.statusUpdatedBy),
+    statusUpdatedAt: sanitizeTextMap(item.statusUpdatedAt, 40),
     createdBy: item.createdBy || "",
     updatedBy: item.updatedBy || "",
     createdAt: item.createdAt || "",
@@ -1341,6 +1595,8 @@ function publicTodoItem(item, profileIds) {
         validStatuses.has(item.statusByUser?.[id]) ? item.statusByUser[id] : "todo",
       ])
     ),
+    statusUpdatedBy: sanitizeTextMap(item.statusUpdatedBy),
+    statusUpdatedAt: sanitizeTextMap(item.statusUpdatedAt, 40),
     createdBy: item.createdBy || "",
     updatedBy: item.updatedBy || "",
     createdAt: item.createdAt || "",
@@ -1354,6 +1610,7 @@ function publicTodoItem(item, profileIds) {
 function publicCheckinItem(item, profileIds, date) {
   const normalizedParticipants = profileIds;
   const dayStatus = item.statusByDate?.[date] || {};
+  const dayStatusMeta = item.statusMetaByDate?.[date] || {};
   return {
     id: item.id,
     date: normalizeDate(date),
@@ -1371,6 +1628,16 @@ function publicCheckinItem(item, profileIds, date) {
         id,
         validStatuses.has(dayStatus[id]) ? dayStatus[id] : "todo",
       ])
+    ),
+    statusUpdatedBy: Object.fromEntries(
+      normalizedParticipants
+        .map((id) => [id, sanitizeText(dayStatusMeta[id]?.updatedBy, 80)])
+        .filter(([, value]) => value)
+    ),
+    statusUpdatedAt: Object.fromEntries(
+      normalizedParticipants
+        .map((id) => [id, sanitizeText(dayStatusMeta[id]?.updatedAt, 40)])
+        .filter(([, value]) => value)
     ),
     createdBy: item.createdBy || "",
     updatedBy: item.updatedBy || "",
@@ -1404,6 +1671,8 @@ function publicDeadlineItem(item, profileIds) {
         validStatuses.has(item.statusByUser?.[id]) ? item.statusByUser[id] : "todo",
       ])
     ),
+    statusUpdatedBy: sanitizeTextMap(item.statusUpdatedBy),
+    statusUpdatedAt: sanitizeTextMap(item.statusUpdatedAt, 40),
     createdBy: item.createdBy || "",
     updatedBy: item.updatedBy || "",
     createdAt: item.createdAt || "",
@@ -1584,8 +1853,8 @@ function analyzeCapture(userId, payload = {}) {
   const segment = templateMatched ? resolveCaptureSegment(scheduleClause || text, "allDay") : "allDay";
   const title = templateMatched
     ? (cleanCaptureTitle(scheduleClause) || cleanCaptureTitle(text) || shortText(text, 80))
-    : defaultLifeCardTitle;
-  const detail = templateMatched ? sanitizeText(text === title ? "" : text, 800) : "";
+    : (cleanCaptureTitle(text) || shortText(text, 80));
+  const detail = templateMatched ? sanitizeText(text === title ? "" : text, 800) : sanitizeText(text === title ? "" : text, 800);
   const priority = /重要|必须|ddl|deadline|截止|答辩|考试|面试/i.test(text) ? "high" : "normal";
   const planning = templateMatched
     ? buildLifeCardPlanning({
@@ -1598,7 +1867,16 @@ function analyzeCapture(userId, payload = {}) {
         participants: [ownerId].filter(Boolean),
         priority,
       })
-    : { plannedAt: "", dueAt: "", durationMin: 0, steps: [], timeBlocks: [] };
+    : buildLifeCardPlanning({
+        title,
+        detail,
+        itemType,
+        date,
+        segment,
+        ownerId,
+        participants: [ownerId].filter(Boolean),
+        priority,
+      });
   const base = {
     captureId: capture?.id || sanitizeText(payload.captureId, 80),
     sourceCaptureId: capture?.id || sanitizeText(payload.captureId, 80),
@@ -1625,6 +1903,393 @@ function analyzeCapture(userId, payload = {}) {
     agentPrompt: analysisMode === "agent" ? captureAgentPrompt : "",
     relatedItems: decision === "schedule" && templateMatched ? analyzeRelatedScheduleItems(text, title, base) : [],
   };
+}
+
+function normalizeCaptureDecision(value, fallback = "capture") {
+  return validCaptureDecisions.has(value) ? value : fallback;
+}
+
+function normalizeMemoryKind(value) {
+  return validMemoryKinds.has(value) ? value : "";
+}
+
+function publicCaptureAgentContextItem(item, sourceType) {
+  if (!item) return null;
+  return {
+    id: item.id || "",
+    sourceType,
+    date: item.date || "",
+    title: sanitizeText(item.title || item.text, 140),
+    detail: sanitizeText(item.detail || item.slot || item.text, 220),
+    itemType: normalizeScheduleItemType(item.itemType, sourceType === "schedule" ? "date" : "thing"),
+    ownerId: item.ownerId || item.createdBy || "",
+    participants: Array.isArray(item.participants) ? item.participants.slice(0, 4) : [],
+    priority: validPriorities.has(item.priority) ? item.priority : "normal",
+    repeatRule: sanitizeText(item.repeatRule, 80),
+    plannedAt: normalizeDateTime(item.plannedAt),
+    dueAt: normalizeDateTime(item.dueAt),
+  };
+}
+
+function buildCaptureAgentFacts(store, userId, payload, capture, text, selectedDate, ownerId, templateDraft) {
+  const profileIds = getProfileIds(store);
+  const startDate = addDays(selectedDate, -14);
+  const endDate = addDays(selectedDate, 90);
+  const datedContext = [
+    ...store.todoItems.map((item) => publicCaptureAgentContextItem(item, "todo")),
+    ...store.scheduleItems.map((item) => publicCaptureAgentContextItem(item, "schedule")),
+    ...store.deadlineItems.map((item) => publicCaptureAgentContextItem(item, "deadline")),
+    ...store.checkinItems.map((item) => publicCaptureAgentContextItem(item, "checkin")),
+  ]
+    .filter(Boolean)
+    .filter((item) => !item.date || (item.date >= startDate && item.date <= endDate))
+    .sort((a, b) => String(a.date).localeCompare(String(b.date)) || String(a.title).localeCompare(String(b.title)))
+    .slice(0, 30);
+
+  return {
+    currentDate: businessDate(),
+    selectedDate,
+    userId,
+    ownerId,
+    profiles: store.profiles.map(publicProfile),
+    profileIds,
+    rawCapture: {
+      id: capture?.id || sanitizeText(payload.captureId, 80),
+      date: capture?.date || selectedDate,
+      text,
+      rawKind: capture?.rawKind || payload.rawKind || "raw",
+      rawFormat: capture?.rawFormat || payload.rawFormat || "markdown",
+      createdBy: capture?.createdBy || userId,
+      createdAt: capture?.createdAt || "",
+    },
+    routeDestinations: captureRouteDestinations,
+    allowedScheduleItemTypes: [...validScheduleItemTypes],
+    allowedMemoryKinds: [...validMemoryKinds],
+    segments: segmentDefinitions,
+    templateDraft,
+    nearbyLifeCards: datedContext,
+    recentCaptures: store.captures
+      .filter((item) => captureVisibleToUser(item, userId))
+      .slice(0, 16)
+      .map((item) => ({
+        id: item.id,
+        date: item.date,
+        text: sanitizeText(item.text, 180),
+        analysisIntent: item.analysisIntent || "",
+        createdBy: item.createdBy,
+        createdAt: item.createdAt,
+      })),
+  };
+}
+
+function buildCaptureAgentStructuredPrompt(facts) {
+  return [
+    captureAgentPrompt,
+    "",
+    "你正在给前端生成一条轻确认，不要写入数据，不要修改文件，不要运行命令。",
+    "输出必须严格符合 JSON schema。",
+    "",
+    "决策要求：",
+    "- decision=schedule：用户明确说了要发生、要提醒、要买、要做、要约、要打卡、要养成习惯的事。",
+    "- decision=memory：偏好、心愿、承诺、照顾线索、纪念线索、感谢、修复、关系资料、长期目标。",
+    "- decision=dailyStory：适合进入当天日总结素材，但不是未来行动或长期记忆。",
+    "- decision=capture：只保留 raw，不需要任何生活卡或长期记忆。",
+    "- itemType 默认 thing；工作/作业/会议用 work；购买用 purchase；约会/一起出去用 date；提醒/截止用 reminder；打卡用 checkin；周期习惯用 habit。",
+    "- ownerId 默认当前用户；只有明确共同参与才用 shared。participants 必须从 profileIds 或 shared 对应成员中选择。",
+    "- 相对日期必须按 selectedDate 解析，例如今天下午、周日、下周一。",
+    "- 如果一句话包含多个动作，用 relatedItems 拆出子生活卡；标题必须短，不要重复日期词。",
+    "- 如果无法匹配明确动作，返回 decision=capture，title 可以概括 raw。",
+    "",
+    "输入上下文 JSON：",
+    JSON.stringify(facts, null, 2),
+  ].join("\n");
+}
+
+function runCaptureAgentCodex(facts, options = {}) {
+  if (!fs.existsSync(captureAnalysisSchemaPath)) {
+    return Promise.reject(new Error(`schema not found: ${captureAnalysisSchemaPath}`));
+  }
+
+  const outputPath = path.join(os.tmpdir(), `couple-capture-analysis-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.json`);
+  const args = [
+    "exec",
+    "--ephemeral",
+    "--skip-git-repo-check",
+    "-C",
+    repoRoot,
+    "--output-schema",
+    captureAnalysisSchemaPath,
+    "-o",
+    outputPath,
+    buildCaptureAgentStructuredPrompt(facts),
+  ];
+
+  if (options.model) {
+    args.splice(1, 0, "--model", options.model);
+  }
+
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    let timedOut = false;
+    let stdout = "";
+    let stderr = "";
+    const child = spawn("codex", args, {
+      cwd: repoRoot,
+      env: {
+        ...process.env,
+        OTEL_SDK_DISABLED: "true",
+      },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    const timeout = Number(options.timeoutMs || 120000);
+    const timer = setTimeout(() => {
+      timedOut = true;
+      child.kill("SIGTERM");
+    }, timeout);
+
+    const finish = (error, value) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      if (error) {
+        reject(error);
+      } else {
+        resolve(value);
+      }
+    };
+
+    child.stdout.on("data", (chunk) => {
+      stdout += chunk.toString();
+    });
+    child.stderr.on("data", (chunk) => {
+      stderr += chunk.toString();
+    });
+    child.on("error", (error) => finish(error));
+    child.on("close", (code) => {
+      if (timedOut) {
+        finish(new Error(`codex capture analysis timed out after ${timeout}ms`));
+        return;
+      }
+      if (code !== 0) {
+        finish(new Error((stderr || stdout || "codex exec failed").trim()));
+        return;
+      }
+      if (!fs.existsSync(outputPath)) {
+        finish(new Error("codex output file was not created"));
+        return;
+      }
+
+      try {
+        const raw = fs.readFileSync(outputPath, "utf8").trim();
+        if (!raw) throw new Error("codex returned empty structured output");
+        finish(null, JSON.parse(raw));
+      } catch (error) {
+        finish(error);
+      } finally {
+        try {
+          fs.unlinkSync(outputPath);
+        } catch {
+          // Temporary output cleanup is best-effort.
+        }
+      }
+    });
+  });
+}
+
+function normalizeAgentRelatedItem(store, userId, source, fallback) {
+  const raw = source || {};
+  const text = `${raw.title || ""} ${raw.detail || ""}`.trim();
+  const date = normalizeDate(raw.date, resolveCaptureDate(text || fallback.text, fallback.date));
+  const segment = normalizeSegment(raw.segment || resolveCaptureSegment(text || fallback.text, fallback.segment));
+  const itemType = normalizeScheduleItemType(raw.itemType, inferScheduleItemType(raw, fallback.itemType));
+  const ownerId = normalizeOwnerId(store, raw.ownerId || fallback.ownerId, userId);
+  const participants = normalizeParticipants(store, ownerId, raw.participants, userId);
+  const title = sanitizeText(raw.title || cleanCaptureTitle(text), 180);
+  const detail = sanitizeText(raw.detail || "", 800);
+  const priority = validPriorities.has(raw.priority) ? raw.priority : fallback.priority;
+  const rawSteps = normalizeLifeCardSteps(raw.steps, participants);
+  const steps = rawSteps.length
+    ? rawSteps
+    : [{ title, ownerId, estimateMin: normalizeDurationMin(raw.durationMin, 0), status: "todo", sortOrder: 0 }];
+  const planning = buildLifeCardPlanning({
+    title,
+    detail,
+    itemType,
+    date,
+    segment,
+    ownerId,
+    participants,
+    priority,
+    plannedAt: raw.plannedAt,
+    dueAt: raw.dueAt,
+    durationMin: raw.durationMin,
+    steps,
+  });
+
+  if (!title) return null;
+  return {
+    title,
+    detail,
+    itemType,
+    date,
+    segment,
+    ownerId,
+    participants,
+    repeatRule: sanitizeText(raw.repeatRule || (itemType === "habit" ? "daily" : ""), 120),
+    priority,
+    ...planning,
+  };
+}
+
+function normalizeCaptureAgentConfirmation(store, userId, payload, capture, text, agentOutput) {
+  const selectedDate = normalizeDate(payload.date || capture?.date);
+  const fallbackDecision = inferCaptureDecision(text);
+  const decision = normalizeCaptureDecision(agentOutput?.decision, fallbackDecision);
+  const baseText = `${agentOutput?.title || ""} ${agentOutput?.detail || ""} ${text || ""}`;
+  const date = normalizeDate(agentOutput?.date, resolveCaptureDate(baseText, selectedDate));
+  const segment = normalizeSegment(agentOutput?.segment || resolveCaptureSegment(baseText, "allDay"));
+  const itemType = normalizeScheduleItemType(agentOutput?.itemType, inferScheduleItemType(agentOutput, "thing"));
+  const ownerId = normalizeOwnerId(store, agentOutput?.ownerId || payload.ownerId || userId, userId);
+  const participants = normalizeParticipants(store, ownerId, agentOutput?.participants, userId);
+  const title = sanitizeText(
+    agentOutput?.title || (decision === "schedule" ? cleanCaptureTitle(text) : shortText(text, 80)) || defaultLifeCardTitle,
+    180
+  );
+  const detail = sanitizeText(agentOutput?.detail || (decision === "schedule" && title !== text ? text : ""), 800);
+  const priority = validPriorities.has(agentOutput?.priority)
+    ? agentOutput.priority
+    : (/重要|必须|ddl|deadline|截止|答辩|考试|面试/i.test(text) ? "high" : "normal");
+  const rawRelatedItems = Array.isArray(agentOutput?.relatedItems) ? agentOutput.relatedItems : [];
+  const relatedTitleKeys = rawRelatedItems
+    .map((item) => normalizedTitleKey(item?.title))
+    .filter(Boolean);
+  const filteredSteps = normalizeLifeCardSteps(agentOutput?.steps, participants)
+    .filter((step) => {
+      const key = normalizedTitleKey(step.title);
+      return !relatedTitleKeys.some((relatedKey) => key.includes(relatedKey) || relatedKey.includes(key));
+    });
+  const steps = filteredSteps.length
+    ? filteredSteps
+    : (decision === "schedule" && rawRelatedItems.length
+        ? [{ title, ownerId, estimateMin: normalizeDurationMin(agentOutput?.durationMin, 0), status: "todo", sortOrder: 0 }]
+        : agentOutput?.steps);
+  const planning = buildLifeCardPlanning({
+    title,
+    detail,
+    itemType,
+    date,
+    segment,
+    ownerId,
+    participants,
+    priority,
+    plannedAt: agentOutput?.plannedAt,
+    dueAt: agentOutput?.dueAt,
+    durationMin: agentOutput?.durationMin,
+    steps,
+  });
+  const fallback = {
+    text,
+    date,
+    segment,
+    itemType,
+    ownerId,
+    priority,
+  };
+  const primaryTitleKey = normalizedTitleKey(title);
+  const relatedItems = decision === "schedule"
+    ? rawRelatedItems
+        .map((item) => normalizeAgentRelatedItem(store, userId, item, fallback))
+        .filter(Boolean)
+        .filter((item) => normalizedTitleKey(item.title) !== primaryTitleKey)
+        .slice(0, 4)
+    : [];
+
+  return {
+    captureId: capture?.id || sanitizeText(payload.captureId, 80),
+    sourceCaptureId: capture?.id || sanitizeText(payload.captureId, 80),
+    text,
+    decision,
+    itemType,
+    memoryKind: normalizeMemoryKind(agentOutput?.memoryKind),
+    date,
+    segment,
+    ownerId,
+    participants,
+    title,
+    detail,
+    repeatRule: sanitizeText(agentOutput?.repeatRule || (itemType === "habit" ? "daily" : ""), 120),
+    priority,
+    ...planning,
+    analysisMode: "agent",
+    templateMatched: false,
+    isDefaultDraft: false,
+    analyzer: "local-codex",
+    routeDestinations: captureRouteDestinations,
+    agentPrompt: captureAgentPrompt,
+    confirmationText: sanitizeText(agentOutput?.confirmationText, 220),
+    reason: sanitizeText(agentOutput?.reason, 360),
+    confidence: Number.isFinite(Number(agentOutput?.confidence)) ? Number(agentOutput.confidence) : 0,
+    relatedItems,
+  };
+}
+
+function recordCaptureAnalysis(userId, confirmation) {
+  const captureId = sanitizeText(confirmation?.sourceCaptureId || confirmation?.captureId, 80);
+  if (!captureId) return null;
+  return mutateStore((store) => {
+    const capture = store.captures.find((item) => item.id === captureId);
+    if (!capture) return null;
+    const analysis = {
+      id: makeId("capture-analysis"),
+      analysisMode: confirmation.analysisMode || "agent",
+      analyzer: confirmation.analyzer || "local-codex",
+      decision: confirmation.decision || "capture",
+      itemType: confirmation.itemType || "thing",
+      memoryKind: confirmation.memoryKind || "",
+      title: confirmation.title || "",
+      date: confirmation.date || capture.date,
+      segment: confirmation.segment || "allDay",
+      confidence: Number.isFinite(Number(confirmation.confidence)) ? Number(confirmation.confidence) : 0,
+      createdBy: userId,
+      createdAt: nowIso(),
+    };
+    capture.analysisRuns = [analysis, ...(Array.isArray(capture.analysisRuns) ? capture.analysisRuns : [])].slice(0, 12);
+    recordOperation(store, userId, "analyze", "capture", capture.id, {
+      date: capture.date,
+      title: analysis.title,
+      sourceType: "capture-analysis",
+    });
+    return publicCapture(capture);
+  });
+}
+
+async function analyzeCaptureWithAgent(userId, payload = {}) {
+  const store = readStore();
+  const capture = payload.captureId
+    ? store.captures.find((item) => item.id === payload.captureId)
+    : null;
+  const text = sanitizeText(capture?.text || payload.text, 1200);
+  if (!text) {
+    throw new Error("capture text is required");
+  }
+
+  const selectedDate = normalizeDate(payload.date || capture?.date);
+  const ownerId = normalizeOwnerId(store, payload.ownerId || userId, userId);
+  const templateDraft = analyzeCapture(userId, {
+    ...payload,
+    text,
+    date: selectedDate,
+    ownerId,
+    analysisMode: "template",
+  });
+  const facts = buildCaptureAgentFacts(store, userId, payload, capture, text, selectedDate, ownerId, templateDraft);
+  const agentOutput = await runCaptureAgentCodex(facts, {
+    model: payload.model,
+    timeoutMs: payload.timeoutMs,
+  });
+  const confirmation = normalizeCaptureAgentConfirmation(store, userId, payload, capture, text, agentOutput);
+  recordCaptureAnalysis(userId, confirmation);
+  return confirmation;
 }
 
 function shortText(input, maxLength = 64) {
@@ -2115,6 +2780,8 @@ function publicInsightScheduleItemCard(store, insight, userId) {
     ownerId: insight.ownerId || "shared",
     participants,
     statusByUser: Object.fromEntries(participants.map((id) => [id, "todo"])),
+    statusUpdatedBy: {},
+    statusUpdatedAt: {},
     completion: {
       done: 0,
       total: participants.length,
@@ -2305,6 +2972,8 @@ function publicScheduleItemCard(store, publicItem, sourceType, userId, options =
     ownerId: publicItem.ownerId || "shared",
     participants,
     statusByUser: publicItem.statusByUser || {},
+    statusUpdatedBy: publicItem.statusUpdatedBy || {},
+    statusUpdatedAt: publicItem.statusUpdatedAt || {},
     completion: {
       done: doneUsers.length,
       total: participants.length,
@@ -2341,6 +3010,11 @@ function publicScheduleItemCard(store, publicItem, sourceType, userId, options =
 function buildScheduleItemCards(store, userId, selectedDate, relationshipInsights = null) {
   const profileIds = getProfileIds(store);
   const today = normalizeDate(selectedDate);
+  const dateWindowStart = (() => {
+    const date = parseDate(today) || new Date();
+    date.setDate(date.getDate() - 14);
+    return formatDate(date);
+  })();
   const dateWindowEnd = (() => {
     const date = parseDate(today) || new Date();
     date.setDate(date.getDate() + 90);
@@ -2349,7 +3023,7 @@ function buildScheduleItemCards(store, userId, selectedDate, relationshipInsight
   const segmentWeight = Object.fromEntries(segmentDefinitions.map((item, index) => [item.key, index]));
   const includeDatedItem = (item) => {
     const date = normalizeDate(item.date);
-    return date >= today && date <= dateWindowEnd;
+    return date >= dateWindowStart && date <= dateWindowEnd;
   };
 
   const scheduleCards = store.scheduleItems
@@ -2452,6 +3126,11 @@ function createLifeCardsFromConfirmation(userId, payload = {}) {
         store.scheduleItems.push(created);
         publicItem = publicScheduleItem(created, profileIds);
       }
+      recordOperation(store, userId, "create", sourceType, created.id, {
+        date: body.date,
+        title: created.title,
+        sourceType,
+      });
 
       return {
         raw: created,
@@ -2584,7 +3263,7 @@ function getMonthSummary(store, selectedDate) {
       todoCount: store.todoItems.filter((item) => !isArchived(item) && item.date === day.id).length,
       captureCount: store.captures.filter((item) => item.date === day.id).length,
       summaryGenerated: Boolean(dailySummary),
-      summaryTitle: sanitizeText(dailySummary?.title, 80),
+      summaryTitle: normalizeSummaryTitle(dailySummary),
       dailyPulses,
       diaryCount: Object.values(diarySource).filter(
         (item) => item?.markdown || item?.note || item?.focus || item?.mood ||
@@ -2612,10 +3291,28 @@ function getCheckinItemsForSummary(store, date) {
   });
 }
 
-function summarizeThing(kind, item, statusByUser) {
+function isMeaningfulSummaryThing(item) {
+  const title = sanitizeText(item?.title, 180);
+  if (!title || isDefaultLifeCardTitle(title)) return false;
+  if (isLowSignalSummaryTitle(title)) return false;
+  if (!item?.sourceCaptureId && /^(?:写下今天最重要的一件事|互相确认今天的状态)$/.test(title)) return false;
+  return true;
+}
+
+function summarizeThing(kind, item, statusByUser, statusMeta = {}) {
   const participants = Array.isArray(item.participants) ? item.participants : [];
   const doneUsers = participants.filter((id) => statusByUser?.[id] === "done");
   const pendingUsers = participants.filter((id) => statusByUser?.[id] !== "done");
+  const statusUpdatedBy = Object.fromEntries(
+    participants
+      .map((id) => [id, sanitizeText(statusMeta[id]?.updatedBy || item.statusUpdatedBy?.[id], 80)])
+      .filter(([, value]) => value)
+  );
+  const statusUpdatedAt = Object.fromEntries(
+    participants
+      .map((id) => [id, sanitizeText(statusMeta[id]?.updatedAt || item.statusUpdatedAt?.[id], 40)])
+      .filter(([, value]) => value)
+  );
 
   return {
     id: item.id || "",
@@ -2626,6 +3323,18 @@ function summarizeThing(kind, item, statusByUser) {
     participants,
     doneUsers,
     pendingUsers,
+    createdBy: item.createdBy || "",
+    updatedBy: item.updatedBy || "",
+    archivedBy: item.archivedBy || "",
+    sourceCaptureId: item.sourceCaptureId || "",
+    statusUpdatedBy,
+    statusUpdatedAt,
+    statusActors: participants.map((id) => ({
+      userId: id,
+      status: statusByUser?.[id] === "done" ? "done" : "todo",
+      updatedBy: statusUpdatedBy[id] || "",
+      updatedAt: statusUpdatedAt[id] || "",
+    })),
   };
 }
 
@@ -2637,32 +3346,248 @@ function qualityLabel(percent) {
   return "等待开始";
 }
 
+function displayNameById(facts, userId) {
+  const profile = (facts.profiles || []).find((item) => item.id === userId);
+  return profile?.displayName || userId || "";
+}
+
+function meaningfulCaptureText(capture) {
+  const text = sanitizeText(capture?.text, 120).replace(/\s+/g, " ");
+  if (!text || /^\d+$/.test(text)) return "";
+  if (isDefaultLifeCardTitle(text) || isLowSignalSummaryTitle(text)) return "";
+  return text;
+}
+
 function buildFallbackNarrative(facts) {
-  const completedText = facts.completed.length
-    ? `值得记住的是，完成了 ${facts.completed.slice(0, 3).map((item) => item.title).join("、")}`
-    : "这一天还没有明确完成项，但记录和状态仍保留了当天的线索";
-  const missedText = facts.missed.length
-    ? `需要顺手带到明天的是 ${facts.missed.slice(0, 3).map((item) => item.title).join("、")}`
-    : "没有明显遗漏项";
-  const placeText = facts.locations.length ? `共同瞬间出现在 ${facts.locations.join("、")}` : "";
-  const captureText = facts.captures.length
-    ? `记录留下了 ${facts.captures.length} 条现场线索`
-    : "记录还比较少";
-  const insightText = facts.relationshipInsights?.length
-    ? `后端还记住了 ${facts.relationshipInsights.slice(0, 2).map((item) => item.title).join("、")}`
-    : "";
-  return [completedText, missedText, placeText || captureText, insightText]
-    .filter(Boolean)
-    .join("。") + "。";
+  const sentences = [];
+  const pulseParts = (facts.status_by_user || []).flatMap((person) => {
+    const name = displayNameById(facts, person.userId);
+    return [
+      person.happiestThing ? `${name}最开心的是 ${person.happiestThing}` : "",
+      person.smallAchievement ? `${name}的核心贡献是 ${person.smallAchievement}` : "",
+    ].filter(Boolean);
+  });
+  const captureParts = (facts.captures || []).map(meaningfulCaptureText).filter(Boolean);
+  const completedTitles = (facts.completed_items || [])
+    .filter(isMeaningfulSummaryThing)
+    .map((item) => item.title)
+    .slice(0, 3);
+  const missedTitles = (facts.missed_items || [])
+    .filter(isMeaningfulSummaryThing)
+    .map((item) => item.title)
+    .slice(0, 2);
+
+  if (pulseParts.length) {
+    sentences.push(pulseParts.slice(0, 3).join("；"));
+  } else if (captureParts.length) {
+    sentences.push(`随手记里留下了：${captureParts.slice(0, 2).join("；")}`);
+  }
+  if (completedTitles.length) sentences.push(`已完成：${completedTitles.join("、")}`);
+  if (missedTitles.length) sentences.push(`明天继续：${missedTitles.join("、")}`);
+  if (facts.locations?.length) sentences.push(`地点：${facts.locations.slice(0, 2).join("、")}`);
+
+  return sentences.length ? `${sentences.join("。")}。` : "";
+}
+
+function analysisUserIds(input) {
+  const source = Array.isArray(input?.userIds) ? input.userIds :
+    Array.isArray(input?.user_ids) ? input.user_ids : [];
+  return sanitizeList(source, 6, 80);
+}
+
+function analysisEvidence(input) {
+  return sanitizeList(input?.evidence, 4, 160).filter((item) => cleanGeneratedSummaryText(item, 160));
+}
+
+function normalizeAgentUserId(value, profiles = []) {
+  const raw = sanitizeText(value, 80);
+  if (!raw) return "";
+  const matched = profiles.find((profile) =>
+    profile.id === raw ||
+    profile.displayName === raw ||
+    profile.initials === raw ||
+    profile.login === raw
+  );
+  return matched?.id || raw;
+}
+
+function normalizeAgentAnalysisUserIds(analysis, profiles = []) {
+  if (!analysis || typeof analysis !== "object") return analysis;
+  const normalizeEntry = (entry) => {
+    if (!entry || typeof entry !== "object") return entry;
+    const ids = Array.isArray(entry.user_ids)
+      ? entry.user_ids
+      : Array.isArray(entry.userIds)
+        ? entry.userIds
+        : [];
+    const user_ids = [...new Set(ids.map((id) => normalizeAgentUserId(id, profiles)).filter(Boolean))];
+    return {
+      ...entry,
+      user_ids,
+    };
+  };
+  const normalizeItems = (items) => Array.isArray(items) ? items.map(normalizeEntry) : items;
+  return {
+    ...analysis,
+    key_moment: normalizeEntry(analysis.key_moment || analysis.keyMoment),
+    core_contributions: normalizeItems(analysis.core_contributions || analysis.coreContributions),
+    carry_forward: normalizeItems(analysis.carry_forward || analysis.carryForward),
+    memory_clues: normalizeItems(analysis.memory_clues || analysis.memoryClues),
+  };
+}
+
+function normalizeAnalysisBlock(input = {}, fallback = {}) {
+  const source = input && typeof input === "object" ? input : {};
+  const backup = fallback && typeof fallback === "object" ? fallback : {};
+  return {
+    title: cleanGeneratedSummaryText(source.title || backup.title, 100),
+    text: cleanGeneratedSummaryText(source.text || source.detail || backup.text || backup.detail, 500),
+    userIds: analysisUserIds(source).length ? analysisUserIds(source) : analysisUserIds(backup),
+    evidence: analysisEvidence(source).length ? analysisEvidence(source) : analysisEvidence(backup),
+  };
+}
+
+function normalizeAnalysisItem(input = {}, fallback = {}) {
+  const block = normalizeAnalysisBlock(input, fallback);
+  return {
+    kind: cleanGeneratedSummaryText(input?.kind || fallback?.kind, 40),
+    title: block.title,
+    detail: cleanGeneratedSummaryText(input?.detail || input?.text || fallback?.detail || fallback?.text, 500),
+    userIds: block.userIds,
+    evidence: block.evidence,
+  };
+}
+
+function normalizeAnalysisItems(items, fallbackItems = [], maxItems = 4) {
+  const source = Array.isArray(items) && items.length ? items : fallbackItems;
+  return (Array.isArray(source) ? source : [])
+    .map((item) => normalizeAnalysisItem(item))
+    .filter((item) => item.title || item.detail)
+    .slice(0, maxItems);
+}
+
+function normalizeDailyAnalysis(input = {}, fallback = {}) {
+  const source = input && typeof input === "object" ? input : {};
+  const backup = fallback && typeof fallback === "object" ? fallback : {};
+  const diarySource = source.diary || backup.diary || {};
+  return {
+    keyMoment: normalizeAnalysisBlock(source.key_moment || source.keyMoment, backup.keyMoment),
+    coreContributions: normalizeAnalysisItems(source.core_contributions || source.coreContributions, backup.coreContributions, 4),
+    carryForward: normalizeAnalysisItems(source.carry_forward || source.carryForward, backup.carryForward, 4),
+    memoryClues: normalizeAnalysisItems(source.memory_clues || source.memoryClues, backup.memoryClues, 4),
+    diary: {
+      title: cleanGeneratedSummaryText(diarySource.title || "日记", 100) || "日记",
+      text: cleanGeneratedSummaryText(diarySource.text || diarySource.detail || backup.diary?.text || backup.diary?.detail, 1200),
+    },
+  };
+}
+
+function buildFallbackAnalysis(facts, narrative, nextStep, title = "") {
+  const pulses = facts.status_by_user || [];
+  const happiest = pulses.find((person) => person.happiestThing);
+  const captureTexts = (facts.captures || []).map(meaningfulCaptureText).filter(Boolean);
+  const firstCompleted = (facts.completed_items || []).find(isMeaningfulSummaryThing);
+
+  const keyMoment = happiest
+    ? {
+        title: "最开心",
+        text: `${displayNameById(facts, happiest.userId)}：${happiest.happiestThing}`,
+        userIds: [happiest.userId],
+        evidence: ["每日状态"],
+      }
+    : captureTexts.length
+      ? {
+          title: "现场",
+          text: captureTexts[0],
+          userIds: [],
+          evidence: ["随手记"],
+        }
+      : firstCompleted
+        ? {
+            title: "推进",
+            text: firstCompleted.title,
+            userIds: firstCompleted.doneUsers || [],
+            evidence: [firstCompleted.kind || "猫猫的事"],
+          }
+        : {
+            title: "今日",
+            text: narrative || "",
+            userIds: [],
+            evidence: [],
+          };
+
+  const coreContributions = pulses
+    .filter((person) => person.smallAchievement)
+    .map((person) => ({
+      title: displayNameById(facts, person.userId),
+      detail: person.smallAchievement,
+      userIds: [person.userId],
+      evidence: ["核心贡献"],
+    }));
+  if (!coreContributions.length) {
+    (facts.completed_items || []).filter(isMeaningfulSummaryThing).slice(0, 3).forEach((item) => {
+      coreContributions.push({
+        title: item.title,
+        detail: item.detail || "已完成",
+        userIds: item.doneUsers || [],
+        evidence: [item.kind || "猫猫的事"],
+      });
+    });
+  }
+
+  const carryForward = (facts.missed_items || [])
+    .filter(isMeaningfulSummaryThing)
+    .slice(0, 3)
+    .map((item) => ({
+      title: item.title,
+      detail: item.detail || nextStep || "",
+      userIds: item.pendingUsers || [],
+      evidence: [item.kind || "猫猫的事"],
+    }));
+
+  const memoryClues = (facts.relationshipInsights || [])
+    .slice(0, 3)
+    .map((item) => ({
+      kind: item.kind || "memory",
+      title: item.title || item.kindLabel || "记忆",
+      detail: item.sourceText || item.detail || "",
+      userIds: [item.targetUserId, item.ownerId].filter((id) => id && id !== "shared"),
+      evidence: [item.sourceCaptureId ? "随手记" : "长期记忆"],
+    }))
+    .filter((item) => item.title || item.detail);
+
+  return normalizeDailyAnalysis({}, {
+    keyMoment,
+    coreContributions,
+    carryForward,
+    memoryClues,
+    diary: {
+      title: title || "日记",
+      text: narrative || "",
+    },
+  });
 }
 
 function buildAgentPrompt(facts) {
+  const skillText = fs.existsSync(dailySummarySkillPath)
+    ? fs.readFileSync(dailySummarySkillPath, "utf8").trim()
+    : "";
   return [
-    "你是双人共享工作台的 Daily Story 助手。请基于输入事实生成一天的 AI 回忆页。",
-    "只能使用输入事实，不允许编造。",
-    "风格克制具体，不要使用固定标题或报表口吻。",
-    "需要覆盖：今日标题、共同瞬间、完成/延期事项、照片地点、每个人的状态、明日建议。",
-    "输出必须严格符合给定 JSON schema。",
+    "你是 PEOS 双人生活系统的 Daily Story Agent。请基于输入事实生成一天的共享日总结。",
+    "严格规则：",
+    "- 只能使用输入事实，不允许编造事件、地点、照片、情绪或完成状态。",
+    "- 必须区分人：profiles 是人员表；createdBy/updatedBy 是操作人；doneUsers/pendingUsers 是状态对象；statusUpdatedBy[userId] 是这个人的状态由谁操作。",
+    "- 如果事实不足以判断是谁做的，就写成记录里没有明确归属，不要猜。",
+    "- 忽略默认占位卡：今天有没有开开心心？、写下今天最重要的一件事、互相确认今天的状态。",
+    "- 优先使用每日状态里的最开心的事、核心贡献、随手记、完成状态和长期记忆线索。",
+    "- 随手记是证据来源，不要逐条平铺复述；要先整理成 key_moment/core_contributions/carry_forward/memory_clues/diary。",
+    "- 文字要像给两个人看的回忆，不要写后台、系统、记录留下了几条线索、完成率报表这类话。",
+    "- title 必须是 4-12 个中文左右的可爱小标题，要抓当天最有特征的一点，短暂、具体、每天不一样。",
+    "- title 禁止写日期、05/09、共同回忆、日总结、今日、这一天，也不要套用固定模板。",
+    "- next_step 只写明天最值得顺手带上的一件事；没有事实就留轻一点，不要硬编。",
+    "- analysis.key_moment 写最值得记住的一件事；core_contributions 写每个人可归属的贡献；carry_forward 写明天顺手带上的事；memory_clues 写长期记忆线索；diary.text 写一篇可直接展示的小日记。",
+    "- 输出必须严格符合给定 JSON schema。",
+    skillText ? "\n参考 skill：\n" + skillText : "",
     "",
     "输入事实 JSON：",
     JSON.stringify(facts, null, 2),
@@ -2723,12 +3648,15 @@ function getDailySummaryFacts(store, date, options = {}) {
   const relationshipInsights = buildRelationshipInsights(store, options.userId || profileIds[0] || "", date).slice(0, 8);
   const scheduleThings = store.scheduleItems
     .filter((item) => item.date === date)
-    .map((item) => summarizeThing(scheduleItemTypeLabels[normalizeScheduleItemType(item.itemType, "date")] || "生活卡", item, item.statusByUser || {}));
+    .map((item) => summarizeThing(scheduleItemTypeLabels[normalizeScheduleItemType(item.itemType, "date")] || "猫猫的事", item, item.statusByUser || {}))
+    .filter(isMeaningfulSummaryThing);
   const todoThings = store.todoItems
     .filter((item) => item.date === date && normalizeTodoBucket(item.bucket) !== "future")
-    .map((item) => summarizeThing(scheduleItemTypeLabels[normalizeScheduleItemType(item.itemType, "thing")] || "事情", item, item.statusByUser || {}));
+    .map((item) => summarizeThing(scheduleItemTypeLabels[normalizeScheduleItemType(item.itemType, "thing")] || "事情", item, item.statusByUser || {}))
+    .filter(isMeaningfulSummaryThing);
   const checkinThings = getCheckinItemsForSummary(store, date)
-    .map((item) => summarizeThing("打卡", item, item.statusByDate?.[date] || {}));
+    .map((item) => summarizeThing("打卡", item, item.statusByDate?.[date] || {}, item.statusMetaByDate?.[date] || {}))
+    .filter(isMeaningfulSummaryThing);
   const things = [...todoThings, ...scheduleThings, ...checkinThings];
   const completed = things.filter((item) => item.participants.length && item.pendingUsers.length === 0);
   const missed = things.filter((item) => item.pendingUsers.length > 0);
@@ -2755,6 +3683,9 @@ function getDailySummaryFacts(store, date, options = {}) {
       dailyScore: normalizeDailyScore(day.dailyScore, 0),
       happiestThing: day.happiestThing || "",
       smallAchievement: day.smallAchievement || "",
+      createdBy: day.createdBy || profile.id,
+      updatedBy: day.updatedBy || "",
+      updatedAt: day.updatedAt || "",
     };
   });
   const stats = people.reduce(
@@ -2777,10 +3708,27 @@ function getDailySummaryFacts(store, date, options = {}) {
     captures: captures.map((capture) => ({
       text: capture.text,
       mode: capture.mode,
+      rawKind: capture.rawKind,
+      rawFormat: capture.rawFormat,
+      analysisIntent: capture.analysisIntent,
       location: capture.location,
       createdBy: capture.createdBy,
+      createdAt: capture.createdAt,
       photoCount: capture.assets.length,
     })),
+    operations: store.operations
+      .filter((operation) => operation.date === date || String(operation.createdAt || "").slice(0, 10) === date)
+      .slice(-40)
+      .map((operation) => ({
+        action: operation.action,
+        entityType: operation.entityType,
+        entityId: operation.entityId,
+        actorId: operation.actorId,
+        targetUserId: operation.targetUserId,
+        title: operation.meta?.title || "",
+        status: operation.meta?.status || "",
+        createdAt: operation.createdAt,
+      })),
     locations,
     photos: photos.map(publicDiaryAsset).filter(Boolean),
     status_by_user: people,
@@ -2793,6 +3741,7 @@ function getDailySummaryFacts(store, date, options = {}) {
       locations: locations.length,
       dailyPulses: people.filter((person) => person.dailyScore || person.happiestThing || person.smallAchievement).length,
       relationshipInsights: relationshipInsights.length,
+      operations: store.operations.filter((operation) => operation.date === date || String(operation.createdAt || "").slice(0, 10) === date).length,
     },
     relationshipInsights,
   };
@@ -2812,47 +3761,42 @@ function buildDailySummary(store, date, userId, options = {}) {
       });
       mode = "agent";
     } catch (error) {
+      if (options.requireAgent) {
+        throw new Error(`daily summary agent failed: ${error.message}`);
+      }
       mode = "fallback";
     }
   }
 
-  const fallbackTitle = `${date.slice(5).replace("-", "/")} 的共同回忆`;
+  const fallbackTitle = buildCuteSummaryTitle(facts);
   const completed = facts.completed_items.map(publicSummaryThing);
   const missed = facts.missed_items.map(publicSummaryThing);
   const photos = facts.photos.map(publicDiaryAsset).filter(Boolean);
-  const narrative = sanitizeText(agent?.narrative || buildFallbackNarrative({
-    completed,
-    missed,
-    locations: facts.locations,
-    captures: facts.captures,
-    relationshipInsights: facts.relationshipInsights,
-  }), 900);
-  const label = sanitizeText(agent?.quality_label || qualityLabel(percent), 80);
-  const qualityNote = sanitizeText(
-    agent?.quality_note ||
-      (facts.completion.total
-        ? `完成质量 ${percent}%，共 ${facts.completion.done}/${facts.completion.total} 个状态点完成。`
-        : "今天还没有足够的生活卡或打卡数据。"),
+  const narrative = cleanGeneratedSummaryText(agent?.narrative, 900) || cleanGeneratedSummaryText(buildFallbackNarrative(facts), 900);
+  const label = cleanGeneratedSummaryText(agent?.quality_label || qualityLabel(percent), 80);
+  const qualityNote = cleanGeneratedSummaryText(agent?.quality_note, 240);
+  const nextStepText = cleanGeneratedSummaryText(
+    agent?.next_step ||
+      (missed.length
+        ? `先带上：${missed.slice(0, 2).map((item) => item.title).join("、")}`
+        : ""),
     240
   );
+  const agentAnalysis = normalizeAgentAnalysisUserIds(agent?.analysis, facts.profiles);
+  const analysis = normalizeDailyAnalysis(agentAnalysis, buildFallbackAnalysis(facts, narrative, nextStepText, fallbackTitle));
 
   return {
     date,
-    title: sanitizeText(agent?.title || fallbackTitle, 80),
+    title: cleanGeneratedSummaryText(agent?.title, 80) || fallbackTitle,
     subtitle: facts.locations.length
       ? `地点：${facts.locations.join("、")}`
-      : "由记录、生活卡、照片、地点和每日状态生成",
+      : "",
     narrative,
     qualityScore: percent,
     qualityLabel: label,
     qualityNote,
-    nextStep: sanitizeText(
-      agent?.next_step ||
-        (missed.length
-          ? `先补上：${missed.slice(0, 2).map((item) => item.title).join("、")}`
-          : "保持今天的节奏，明天先写下最重要的一件事。"),
-      240
-    ),
+    nextStep: nextStepText,
+    analysis,
     illustration: photos[0]
       ? { type: "photo", url: photos[0].url, alt: photos[0].name || "当天照片" }
       : { type: "pixel", url: "", alt: "像素小猫日总结" },
@@ -2889,7 +3833,7 @@ function getState(userId, options = {}) {
     apiVersion: store.apiVersion,
     revision: store.revision,
     updatedAt: store.updatedAt,
-    today: formatDate(),
+    today: businessDate(),
     selectedDate,
     weekDays,
     monthDays,
@@ -2965,6 +3909,7 @@ function upsertScheduleItem(userId, payload) {
     if (!existing) {
       const created = createScheduleItem(store, payload, userId);
       store.scheduleItems.push(created);
+      recordOperation(store, userId, "create", "schedule", created.id, { date: created.date, title: created.title, sourceType: "schedule" });
       return publicScheduleItem(created, profileIds);
     }
 
@@ -3005,6 +3950,7 @@ function upsertScheduleItem(userId, payload) {
       throw new Error("schedule title is required");
     }
 
+    recordOperation(store, userId, "update", "schedule", existing.id, { date: existing.date, title: existing.title, sourceType: "schedule" });
     return publicScheduleItem(existing, profileIds);
   });
 }
@@ -3023,8 +3969,17 @@ function toggleScheduleItem(userId, payload) {
     }
 
     applyStepAwareStatusToggle(item, targetUserId, userId, payload);
+    const timestamp = nowIso();
+    markStatusOperation(item, targetUserId, userId, timestamp);
     item.updatedBy = userId;
-    item.updatedAt = nowIso();
+    item.updatedAt = timestamp;
+    recordOperation(store, userId, "toggle-status", "schedule", item.id, {
+      date: item.date,
+      title: item.title,
+      targetUserId,
+      status: item.statusByUser?.[targetUserId],
+      sourceType: "schedule",
+    });
 
     return publicScheduleItem(item, profileIds);
   });
@@ -3043,6 +3998,7 @@ function archiveScheduleItem(userId, payload) {
     item.archivedBy = item.archivedBy || userId;
     item.updatedBy = userId;
     item.updatedAt = timestamp;
+    recordOperation(store, userId, "archive", "schedule", item.id, { date: item.date, title: item.title, sourceType: "schedule" });
 
     return publicScheduleItem(item, profileIds);
   });
@@ -3055,6 +4011,7 @@ function deleteScheduleItem(userId, payload) {
       throw new Error("schedule item not found");
     }
     const [removed] = store.scheduleItems.splice(index, 1);
+    recordOperation(store, userId, "delete", "schedule", removed.id, { date: removed.date, title: removed.title, sourceType: "schedule" });
     return {
       id: removed.id,
       deletedBy: userId,
@@ -3070,6 +4027,7 @@ function upsertTodoItem(userId, payload) {
     if (!existing) {
       const created = createTodoItem(store, payload, userId);
       store.todoItems.push(created);
+      recordOperation(store, userId, "create", "todo", created.id, { date: created.date, title: created.title, sourceType: "todo" });
       return publicTodoItem(created, profileIds);
     }
 
@@ -3101,6 +4059,7 @@ function upsertTodoItem(userId, payload) {
       throw new Error("todo title is required");
     }
 
+    recordOperation(store, userId, "update", "todo", existing.id, { date: existing.date, title: existing.title, sourceType: "todo" });
     return publicTodoItem(existing, profileIds);
   });
 }
@@ -3119,8 +4078,17 @@ function toggleTodoItem(userId, payload) {
     }
 
     applyStepAwareStatusToggle(item, targetUserId, userId, payload);
+    const timestamp = nowIso();
+    markStatusOperation(item, targetUserId, userId, timestamp);
     item.updatedBy = userId;
-    item.updatedAt = nowIso();
+    item.updatedAt = timestamp;
+    recordOperation(store, userId, "toggle-status", "todo", item.id, {
+      date: item.date,
+      title: item.title,
+      targetUserId,
+      status: item.statusByUser?.[targetUserId],
+      sourceType: "todo",
+    });
     return publicTodoItem(item, profileIds);
   });
 }
@@ -3138,6 +4106,7 @@ function archiveTodoItem(userId, payload) {
     item.archivedBy = item.archivedBy || userId;
     item.updatedBy = userId;
     item.updatedAt = timestamp;
+    recordOperation(store, userId, "archive", "todo", item.id, { date: item.date, title: item.title, sourceType: "todo" });
 
     return publicTodoItem(item, profileIds);
   });
@@ -3150,6 +4119,7 @@ function deleteTodoItem(userId, payload) {
       throw new Error("todo item not found");
     }
     const [removed] = store.todoItems.splice(index, 1);
+    recordOperation(store, userId, "delete", "todo", removed.id, { date: removed.date, title: removed.title, sourceType: "todo" });
     return {
       id: removed.id,
       deletedBy: userId,
@@ -3165,6 +4135,7 @@ function upsertCheckinItem(userId, payload) {
     if (!existing) {
       const created = createCheckinItem(store, payload, userId);
       store.checkinItems.push(created);
+      recordOperation(store, userId, "create", "checkin", created.id, { date: normalizeDate(payload.date), title: created.title, sourceType: "checkin" });
       return publicCheckinItem(created, profileIds, normalizeDate(payload.date));
     }
 
@@ -3185,6 +4156,7 @@ function upsertCheckinItem(userId, payload) {
       throw new Error("checkin title is required");
     }
 
+    recordOperation(store, userId, "update", "checkin", existing.id, { date: normalizeDate(payload.date), title: existing.title, sourceType: "checkin" });
     return publicCheckinItem(existing, profileIds, normalizeDate(payload.date));
   });
 }
@@ -3208,13 +4180,22 @@ function toggleCheckinItem(userId, payload) {
     const currentStatus = validStatuses.has(item.statusByDate[date][targetUserId])
       ? item.statusByDate[date][targetUserId]
       : "todo";
+    const timestamp = nowIso();
     item.statusByDate[date][targetUserId] = validStatuses.has(payload.status)
       ? payload.status
       : currentStatus === "done"
         ? "todo"
         : "done";
+    markCheckinStatusOperation(item, date, targetUserId, userId, timestamp);
     item.updatedBy = userId;
-    item.updatedAt = nowIso();
+    item.updatedAt = timestamp;
+    recordOperation(store, userId, "toggle-status", "checkin", item.id, {
+      date,
+      title: item.title,
+      targetUserId,
+      status: item.statusByDate[date][targetUserId],
+      sourceType: "checkin",
+    });
 
     return publicCheckinItem(item, profileIds, date);
   });
@@ -3227,6 +4208,7 @@ function deleteCheckinItem(userId, payload) {
       throw new Error("checkin item not found");
     }
     const [removed] = store.checkinItems.splice(index, 1);
+    recordOperation(store, userId, "delete", "checkin", removed.id, { title: removed.title, sourceType: "checkin" });
     return {
       id: removed.id,
       deletedBy: userId,
@@ -3242,6 +4224,7 @@ function upsertDeadlineItem(userId, payload) {
     if (!existing) {
       const created = createDeadlineItem(store, payload, userId);
       store.deadlineItems.push(created);
+      recordOperation(store, userId, "create", "deadline", created.id, { date: created.date, title: created.title, sourceType: "deadline" });
       return publicDeadlineItem(created, profileIds);
     }
 
@@ -3270,6 +4253,7 @@ function upsertDeadlineItem(userId, payload) {
       throw new Error("deadline title is required");
     }
 
+    recordOperation(store, userId, "update", "deadline", existing.id, { date: existing.date, title: existing.title, sourceType: "deadline" });
     return publicDeadlineItem(existing, profileIds);
   });
 }
@@ -3300,8 +4284,17 @@ function toggleDeadlineItem(userId, payload) {
       [targetUserId]: nextStatus,
     };
     syncArchiveWithCompletion(item, userId);
+    const timestamp = nowIso();
+    markStatusOperation(item, targetUserId, userId, timestamp);
     item.updatedBy = userId;
-    item.updatedAt = nowIso();
+    item.updatedAt = timestamp;
+    recordOperation(store, userId, "toggle-status", "deadline", item.id, {
+      date: item.date,
+      title: item.title,
+      targetUserId,
+      status: item.statusByUser?.[targetUserId],
+      sourceType: "deadline",
+    });
 
     return publicDeadlineItem(item, profileIds);
   });
@@ -3314,6 +4307,7 @@ function deleteDeadlineItem(userId, payload) {
       throw new Error("deadline item not found");
     }
     const [removed] = store.deadlineItems.splice(index, 1);
+    recordOperation(store, userId, "delete", "deadline", removed.id, { date: removed.date, title: removed.title, sourceType: "deadline" });
     return {
       id: removed.id,
       deletedBy: userId,
@@ -3326,8 +4320,10 @@ function updateDiaryDay(userId, payload) {
     const date = normalizeDate(payload.date);
     const current = store.diaryDays[date] || { date, userDays: {}, sharedNotes: [] };
     const userDay = current.userDays[userId] || { userId, energy: 3, images: [] };
+    const timestamp = nowIso();
     current.userDays[userId] = {
       ...userDay,
+      createdBy: userDay.createdBy || userId,
       mood: sanitizeText(payload.mood ?? userDay.mood, 40),
       energy: Math.max(1, Math.min(5, Number(payload.energy ?? userDay.energy) || 3)),
       focus: sanitizeText(payload.focus ?? userDay.focus, 160),
@@ -3337,9 +4333,11 @@ function updateDiaryDay(userId, payload) {
       happiestThing: sanitizeText(payload.happiestThing ?? userDay.happiestThing, 220),
       smallAchievement: sanitizeText(payload.smallAchievement ?? userDay.smallAchievement, 220),
       images: Array.isArray(userDay.images) ? userDay.images.map(publicDiaryAsset).filter(Boolean) : [],
-      updatedAt: nowIso(),
+      updatedBy: userId,
+      updatedAt: timestamp,
     };
     store.diaryDays[date] = current;
+    recordOperation(store, userId, "update", "daily-pulse", `${date}:${userId}`, { date, targetUserId: userId, sourceType: "daily-pulse" });
     return getDiaryDaySnapshot(store, date);
   });
 }
@@ -3355,12 +4353,16 @@ function addDiaryAsset(userId, payload) {
 
     const current = store.diaryDays[date] || { date, userDays: {}, sharedNotes: [] };
     const userDay = current.userDays[userId] || { userId, energy: 3, images: [] };
+    const timestamp = nowIso();
     current.userDays[userId] = {
       ...userDay,
+      createdBy: userDay.createdBy || userId,
       images: [...(Array.isArray(userDay.images) ? userDay.images : []), asset],
-      updatedAt: nowIso(),
+      updatedBy: userId,
+      updatedAt: timestamp,
     };
     store.diaryDays[date] = current;
+    recordOperation(store, userId, "add-asset", "daily-pulse", `${date}:${userId}`, { date, targetUserId: userId, sourceType: "daily-pulse" });
 
     return {
       asset: publicDiaryAsset(asset),
@@ -3408,6 +4410,7 @@ function addCapture(userId, payload) {
     };
     store.captures.unshift(capture);
     store.captures = store.captures.slice(0, 300);
+    recordOperation(store, userId, "create", "capture", capture.id, { date, title: capture.text, sourceType: "capture" });
     return capture;
   });
 }
@@ -3428,10 +4431,12 @@ function updatePersonalPage(userId, payload) {
       longTermGoal: sanitizeText(payload.longTermGoal ?? current.longTermGoal, 500),
       identityGoal: sanitizeText(payload.identityGoal ?? current.identityGoal, 500),
       notes: sanitizeText(payload.notes ?? current.notes, 1200),
+      updatedBy: userId,
       updatedAt: nowIso(),
     };
     store.personalPages = store.personalPages || {};
     store.personalPages[userId] = next;
+    recordOperation(store, userId, "update", "personal-page", userId, { targetUserId: userId, title: next.title, sourceType: "personal-page" });
     return publicPersonalPage(next, profile);
   });
 }
@@ -3449,12 +4454,13 @@ function updateProfile(userId, payload = {}) {
     profile.initials = sanitizeText(payload.initials ?? profile.initials ?? nextName.slice(0, 1), 2) ||
       nextName.slice(0, 1);
     profile.color = normalizeColor(payload.color, profile.color || "#ff5c9a");
+    const timestamp = nowIso();
 
     const avatar = sanitizeText(payload.avatar ?? profile.avatar ?? "pink-cat", 40);
     profile.avatar = avatar || "pink-cat";
     if (payload.avatarAsset?.dataUrl) {
       const asset = createImageAsset(userId, payload.avatarAsset, {
-        date: formatDate(),
+        date: businessDate(),
         idPrefix: "avatar",
         pathParts: ["avatars", userId],
         prefix: "avatar",
@@ -3472,8 +4478,12 @@ function updateProfile(userId, payload = {}) {
     const personalPage = store.personalPages?.[userId];
     if (personalPage && (!personalPage.title || personalPage.title === currentName)) {
       personalPage.title = nextName;
-      personalPage.updatedAt = nowIso();
+      personalPage.updatedBy = userId;
+      personalPage.updatedAt = timestamp;
     }
+    profile.updatedBy = userId;
+    profile.updatedAt = timestamp;
+    recordOperation(store, userId, "update", "profile", userId, { targetUserId: userId, title: nextName, sourceType: "profile" });
 
     return publicProfile(profile);
   });
@@ -3485,11 +4495,13 @@ function refreshDailySummary(userId, payload = {}) {
     const summary = buildDailySummary(store, date, userId || "system", {
       includePrivate: payload.includePrivate === true,
       useAgent: payload.useAgent === true,
+      requireAgent: payload.requireAgent === true,
       model: payload.model,
       timeoutMs: payload.timeoutMs,
     });
     store.dailySummaries = store.dailySummaries || {};
     store.dailySummaries[date] = summary;
+    recordOperation(store, userId || "system", "refresh", "daily-summary", date, { date, sourceType: "daily-summary", title: summary.title });
     return publicDailySummary(summary);
   });
 }
@@ -3498,8 +4510,10 @@ module.exports = {
   addCapture,
   addDiaryAsset,
   analyzeCapture,
+  analyzeCaptureWithAgent,
   archiveScheduleItem,
   archiveTodoItem,
+  businessDate,
   createLifeCardsFromConfirmation,
   deleteCheckinItem,
   deleteDeadlineItem,

@@ -15,8 +15,102 @@
     },
     "next_step": {
       "type": "string"
+    },
+    "analysis": {
+      "type": "object",
+      "properties": {
+        "key_moment": {
+          "type": "object",
+          "properties": {
+            "title": { "type": "string" },
+            "text": { "type": "string" },
+            "user_ids": {
+              "type": "array",
+              "items": { "type": "string" }
+            },
+            "evidence": {
+              "type": "array",
+              "items": { "type": "string" }
+            }
+          },
+          "required": ["title", "text", "user_ids", "evidence"],
+          "additionalProperties": false
+        },
+        "core_contributions": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "title": { "type": "string" },
+              "detail": { "type": "string" },
+              "user_ids": {
+                "type": "array",
+                "items": { "type": "string" }
+              },
+              "evidence": {
+                "type": "array",
+                "items": { "type": "string" }
+              }
+            },
+            "required": ["title", "detail", "user_ids", "evidence"],
+            "additionalProperties": false
+          }
+        },
+        "carry_forward": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "title": { "type": "string" },
+              "detail": { "type": "string" },
+              "user_ids": {
+                "type": "array",
+                "items": { "type": "string" }
+              },
+              "evidence": {
+                "type": "array",
+                "items": { "type": "string" }
+              }
+            },
+            "required": ["title", "detail", "user_ids", "evidence"],
+            "additionalProperties": false
+          }
+        },
+        "memory_clues": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "kind": { "type": "string" },
+              "title": { "type": "string" },
+              "detail": { "type": "string" },
+              "user_ids": {
+                "type": "array",
+                "items": { "type": "string" }
+              },
+              "evidence": {
+                "type": "array",
+                "items": { "type": "string" }
+              }
+            },
+            "required": ["kind", "title", "detail", "user_ids", "evidence"],
+            "additionalProperties": false
+          }
+        },
+        "diary": {
+          "type": "object",
+          "properties": {
+            "title": { "type": "string" },
+            "text": { "type": "string" }
+          },
+          "required": ["title", "text"],
+          "additionalProperties": false
+        }
+      },
+      "required": ["key_moment", "core_contributions", "carry_forward", "memory_clues", "diary"],
+      "additionalProperties": false
     }
   },
-  "required": ["title", "narrative", "quality_label", "quality_note", "next_step"],
+  "required": ["title", "narrative", "quality_label", "quality_note", "next_step", "analysis"],
   "additionalProperties": false
 }

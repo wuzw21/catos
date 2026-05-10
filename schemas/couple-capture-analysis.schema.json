@@ -1,0 +1,156 @@
+{
+  "type": "object",
+  "properties": {
+    "decision": {
+      "type": "string",
+      "enum": ["capture", "schedule", "memory", "dailyStory"]
+    },
+    "itemType": {
+      "type": "string",
+      "enum": ["thing", "work", "date", "purchase", "reminder", "checkin", "habit"]
+    },
+    "memoryKind": {
+      "type": "string",
+      "enum": ["", "preference", "wish", "purchase", "promise", "care", "anniversary", "memory", "gratitude", "repair", "identity", "goal", "list"]
+    },
+    "title": {
+      "type": "string"
+    },
+    "detail": {
+      "type": "string"
+    },
+    "date": {
+      "type": "string"
+    },
+    "segment": {
+      "type": "string",
+      "enum": ["allDay", "morning", "noon", "afternoon", "evening"]
+    },
+    "ownerId": {
+      "type": "string"
+    },
+    "participants": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "priority": {
+      "type": "string",
+      "enum": ["low", "normal", "high"]
+    },
+    "repeatRule": {
+      "type": "string"
+    },
+    "plannedAt": {
+      "type": "string"
+    },
+    "dueAt": {
+      "type": "string"
+    },
+    "durationMin": {
+      "type": "number"
+    },
+    "steps": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "title": {
+            "type": "string"
+          },
+          "ownerId": {
+            "type": "string"
+          },
+          "estimateMin": {
+            "type": "number"
+          }
+        },
+        "required": ["title", "ownerId", "estimateMin"],
+        "additionalProperties": false
+      }
+    },
+    "relatedItems": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "itemType": {
+            "type": "string",
+            "enum": ["thing", "work", "date", "purchase", "reminder", "checkin", "habit"]
+          },
+          "title": {
+            "type": "string"
+          },
+          "detail": {
+            "type": "string"
+          },
+          "date": {
+            "type": "string"
+          },
+          "segment": {
+            "type": "string",
+            "enum": ["allDay", "morning", "noon", "afternoon", "evening"]
+          },
+          "ownerId": {
+            "type": "string"
+          },
+          "participants": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "priority": {
+            "type": "string",
+            "enum": ["low", "normal", "high"]
+          },
+          "repeatRule": {
+            "type": "string"
+          },
+          "plannedAt": {
+            "type": "string"
+          },
+          "dueAt": {
+            "type": "string"
+          },
+          "durationMin": {
+            "type": "number"
+          },
+          "steps": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "title": {
+                  "type": "string"
+                },
+                "ownerId": {
+                  "type": "string"
+                },
+                "estimateMin": {
+                  "type": "number"
+                }
+              },
+              "required": ["title", "ownerId", "estimateMin"],
+              "additionalProperties": false
+            }
+          }
+        },
+        "required": ["itemType", "title", "detail", "date", "segment", "ownerId", "participants", "priority", "repeatRule", "plannedAt", "dueAt", "durationMin", "steps"],
+        "additionalProperties": false
+      }
+    },
+    "confirmationText": {
+      "type": "string"
+    },
+    "reason": {
+      "type": "string"
+    },
+    "confidence": {
+      "type": "number"
+    }
+  },
+  "required": ["decision", "itemType", "memoryKind", "title", "detail", "date", "segment", "ownerId", "participants", "priority", "repeatRule", "plannedAt", "dueAt", "durationMin", "steps", "relatedItems", "confirmationText", "reason", "confidence"],
+  "additionalProperties": false
+}

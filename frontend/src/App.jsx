@@ -22,6 +22,14 @@ const memoryLaneLabels = {
 const memoryLaneOrder = ["profile", "taste", "wish", "promise", "time", "care"];
 const legacyPages = new Set(["capture", "todos", "schedule", "timeline"]);
 const defaultLifeCardTitle = "今天有没有开开心心？";
+const defaultPromptTitleKeys = new Set([
+  defaultLifeCardTitle,
+  "写下今天最重要的一件事",
+  "互相确认今天的状态",
+].map(normalizedPromptKey));
+const lowSignalStoryKeys = new Set(["做别的事"].map(normalizedPromptKey));
+const badStoryTextPattern = /值得记住的是|记录留下了\s*\d+\s*条现场线索|完成了\s*今天有没有开开心心|需要顺手带到明天的是\s*今天有没有开开心心|还没有明确完成项|随手记还比较少|先补上|自动日总结/;
+const fallbackDailyTitles = ["轻轻的一页", "小猫留光日", "慢慢亮起来", "把今天收好", "软软小片刻", "今天有小光"];
 const segmentLabels = {
   morning: "早上",
   noon: "中午",
@@ -30,13 +38,229 @@ const segmentLabels = {
   allDay: "全天",
 };
 const weekLabels = ["一", "二", "三", "四", "五", "六", "日"];
+const dayRolloverHour = 3;
+const deepNightNoticeText = "夜已深了，猫猫要早点休息哦！";
 
 function today() {
-  return formatDate(new Date());
+  return businessDate();
 }
 
 function formatDate(date) {
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+}
+
+function businessDate(date = new Date()) {
+  const shifted = new Date(date);
+  if (shifted.getHours() < dayRolloverHour) {
+    shifted.setDate(shifted.getDate() - 1);
+  }
+  return formatDate(shifted);
+}
+
+function clockLabel(date = new Date()) {
+  return `${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`;
+}
+
+function stableIndex(key, size) {
+  if (!size) return 0;
+  let hash = 0;
+  String(key).split("").forEach((char) => {
+    hash = (hash * 31 + char.charCodeAt(0)) % 1000003;
+  });
+  return hash % size;
+}
+
+function useMinuteNow() {
+  const [now, setNow] = useState(() => new Date());
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(new Date()), 60000);
+    return () => window.clearInterval(timer);
+  }, []);
+  return now;
+}
+
+const catNoticeLines = {
+  morning: [
+    "猫猫今天从一小口水开始。",
+    "先把最轻的一件事放到手边。",
+    "猫猫醒了，今天也慢慢来。",
+  ],
+  noon: [
+    "猫猫要记得吃饭，事情可以排队。",
+    "午间暂停一下，给自己留一点空白。",
+    "现在适合补一点能量，再继续推进。",
+  ],
+  afternoon: [
+    "下午的猫猫适合只抓一件重点。",
+    "把乱乱的事收成一小步就很好。",
+    "今天还长，猫猫不要急。",
+  ],
+  evening: [
+    "晚上适合把今天最值得记住的事留下。",
+    "猫猫可以慢慢收尾，不用把全部都做完。",
+    "先记一笔，剩下的明天也会在。",
+  ],
+  night: [
+    "猫猫今天已经很努力了，可以开始收灯。",
+    "夜里适合只留下重要的，不追新的。",
+    "猫猫把最后一件小事放好，就准备休息。",
+  ],
+};
+
+const catMoodWeather = ["软绵绵", "小晴天", "微风", "热乎乎", "安静雨", "月亮亮"];
+const catNoticeDetails = {
+  morning: "慢慢开始。",
+  noon: "先吃饭。",
+  afternoon: "只抓重点。",
+  evening: "轻轻收尾。",
+  night: "收灯就好。",
+  deepNight: "月亮值班，睡醒再看。",
+};
+const catNoticeKindMeta = {
+  future: { title: "未来", icon: "calendar", detail: "一起慢慢靠近。" },
+  wish: { title: "想去", icon: "bookmark", detail: "还在小口袋里。" },
+  fragment: { title: "小碎片", icon: "camera", detail: "先好好藏着。" },
+  time: { title: "回忆", icon: "sparkle", detail: "轻轻翻到这一页。" },
+};
+const catNoticeTemplates = {
+  future: [
+    (text) => `未来的我们会遇见「${text}」。`,
+    (text) => `把「${text}」放进下一站。`,
+    (text) => `猫猫未来的小格子里有「${text}」。`,
+  ],
+  wish: [
+    (text) => `猫猫想去的「${text}」，我还记得。`,
+    (text) => `以前说过的「${text}」，还亮着。`,
+    (text) => `等一个舒服的日子，去靠近「${text}」。`,
+  ],
+  fragment: [
+    (text) => `小碎片掉出来了：${text}`,
+    (text) => `今天先把「${text}」放进口袋。`,
+    (text) => `猫猫的小纸条写着：${text}`,
+  ],
+  time: [
+    (text) => `翻到这一页：${text}`,
+    (text) => `这天的标题还在：${text}`,
+    (text) => `共同回忆闪了一下：${text}`,
+  ],
+};
+const fallbackCatNoticeCandidates = [
+  { kind: "future", text: "一个不用赶路的小约会", line: "未来留一格给慢慢散步。" },
+  { kind: "wish", text: "想去的地方", line: "猫猫想去的地方，我会记得。" },
+  { kind: "fragment", text: "今天的小碎片", line: "今天的小碎片也值得被抱一下。" },
+  { kind: "time", text: "共同回忆", line: "共同回忆会自己发光。" },
+];
+
+function catNoticePeriod(date = new Date()) {
+  const hour = date.getHours();
+  if (hour < dayRolloverHour) return "deepNight";
+  if (hour >= 22) return "night";
+  if (hour < 11) return "morning";
+  if (hour < 14) return "noon";
+  if (hour < 18) return "afternoon";
+  return "evening";
+}
+
+function cleanNoticeBit(value, max = 22) {
+  const text = cleanStoryText(value || "")
+    .replace(/\s+/g, " ")
+    .replace(/^["“”'「」]+|["“”'「」]+$/g, "")
+    .trim();
+  if (!text || /^\d{1,4}$/.test(text)) return "";
+  return shortText(text, max);
+}
+
+function noticeFromCandidate(candidate, key) {
+  const meta = catNoticeKindMeta[candidate.kind] || catNoticeKindMeta.fragment;
+  const templates = catNoticeTemplates[candidate.kind] || catNoticeTemplates.fragment;
+  const text = candidate.line || templates[stableIndex(`${key}:${candidate.id || candidate.text}`, templates.length)](candidate.text);
+  return {
+    kind: candidate.kind,
+    icon: candidate.icon || meta.icon,
+    title: candidate.title || meta.title,
+    text,
+    detail: candidate.detail || meta.detail,
+    isLong: text.length > 25,
+  };
+}
+
+function buildCatNoticeCandidates(data, dateKey) {
+  const futureCards = (data?.scheduleItemCards || [])
+    .filter((card) => card.date >= dateKey)
+    .filter((card) => !isArchivedCard(card) && !isDefaultPromptCard(card))
+    .filter((card) => card.date > dateKey || !isCompletedCard(card))
+    .slice(0, 10)
+    .map((card) => {
+      const text = cleanNoticeBit(card.title || card.sourceCaptureSummary || card.detail);
+      const label = card.date > dateKey ? shortDate(card.date) : "今天";
+      return text ? {
+        id: card.id,
+        kind: "future",
+        text,
+        detail: `${label} · ${card.itemTypeLabel || "猫猫的事"}`,
+      } : null;
+    })
+    .filter(Boolean);
+  const pagePlans = Object.values(data?.personalPages || {})
+    .flatMap((page) => [page.longTermGoal, page.identityGoal])
+    .map((value, index) => {
+      const text = cleanNoticeBit(value);
+      return text ? { id: `page-plan-${index}`, kind: "future", text, detail: "长期记忆" } : null;
+    })
+    .filter(Boolean);
+  const wishes = (data?.memoryItems || [])
+    .filter((item) => item.group === "wish" || ["wish", "purchase"].includes(item.kind) || /想去|想吃|想买|想看|好想|以后/.test(`${item.title || ""}${item.detail || ""}`))
+    .map((item) => {
+      const text = cleanNoticeBit(item.title || item.detail);
+      return text ? { id: item.id, kind: "wish", text, detail: item.kindLabel || "长期记忆" } : null;
+    })
+    .filter(Boolean)
+    .slice(0, 10);
+  const captures = (data?.captures || [])
+    .map((capture) => {
+      const text = cleanNoticeBit(capture.text);
+      return text ? { id: capture.id, kind: "fragment", text, detail: "随手记" } : null;
+    })
+    .filter(Boolean)
+    .slice(0, 8);
+  const storyTitles = (data?.monthSummary?.days || [])
+    .filter((day) => day.summaryTitle)
+    .sort((a, b) => String(b.id).localeCompare(String(a.id)))
+    .slice(0, 8)
+    .map((day) => {
+      const text = cleanNoticeBit(day.summaryTitle, 26);
+      return text ? { id: `story-${day.id}`, kind: "time", text, detail: shortDate(day.id) } : null;
+    })
+    .filter(Boolean);
+  return [...futureCards, ...pagePlans, ...wishes, ...captures, ...storyTitles];
+}
+
+function buildCatNotice(date = new Date(), variant = 0, data = null) {
+  const period = catNoticePeriod(date);
+  const dateKey = businessDate(date);
+  const isNightLocked = period === "deepNight" || period === "night";
+  const key = isNightLocked ? `${dateKey}:${period}` : `${dateKey}:${period}:${variant}`;
+  const lines = catNoticeLines[period] || catNoticeLines.evening;
+  const candidates = isNightLocked ? [] : buildCatNoticeCandidates(data, dateKey);
+  const candidate = candidates.length
+    ? candidates[stableIndex(`${key}:candidate`, candidates.length)]
+    : fallbackCatNoticeCandidates[stableIndex(`${key}:fallback`, fallbackCatNoticeCandidates.length)];
+  const dynamicNotice = !isNightLocked ? noticeFromCandidate(candidate, key) : null;
+  const text = period === "deepNight" ? deepNightNoticeText : dynamicNotice?.text || lines[stableIndex(key, lines.length)];
+  const weather = catMoodWeather[stableIndex(`${key}:weather`, catMoodWeather.length)];
+  return {
+    period,
+    kind: dynamicNotice?.kind || period,
+    icon: dynamicNotice?.icon || (period === "deepNight" || period === "night" ? "moon" : "sparkle"),
+    text,
+    time: clockLabel(date),
+    date: dateKey,
+    weather,
+    isNightLocked,
+    isLong: Boolean(dynamicNotice?.isLong || text.length > 25),
+    title: dynamicNotice?.title || (period === "deepNight" ? "晚安" : period === "night" ? "收灯" : "猫猫的话"),
+    detail: dynamicNotice?.detail || catNoticeDetails[period] || catNoticeDetails.evening,
+  };
 }
 
 function parseDate(value) {
@@ -86,7 +310,8 @@ function getCalendarDays(value) {
 function routeFromHash() {
   const raw = window.location.hash.replace(/^#/, "") || "dashboard";
   if (legacyPages.has(raw)) return "dashboard";
-  return ["dashboard", "month", "daily-summary", "goals", "settings"].includes(raw) ? raw : "dashboard";
+  if (raw === "cat-words") return "cat-note";
+  return ["dashboard", "month", "daily-summary", "cat-note", "goals", "settings"].includes(raw) ? raw : "dashboard";
 }
 
 function shortDate(value) {
@@ -169,6 +394,23 @@ function iconPath(name) {
         <circle cx="12" cy="12" r="4" />
       </>
     ),
+    moon: (
+      <>
+        <path d="M19 14.4A7.6 7.6 0 0 1 9.6 5 8 8 0 1 0 19 14.4Z" />
+        <path d="M16 4.5h.01M20 8h.01" />
+      </>
+    ),
+    clock: (
+      <>
+        <circle cx="12" cy="12" r="8" />
+        <path d="M12 8v5l3 2" />
+      </>
+    ),
+    cloud: (
+      <>
+        <path d="M7 18h10a4 4 0 0 0 .8-7.9A6 6 0 0 0 6.3 9 4.5 4.5 0 0 0 7 18Z" />
+      </>
+    ),
     user: (
       <>
         <circle cx="12" cy="8" r="3.5" />
@@ -211,6 +453,12 @@ function iconPath(name) {
         <path d="M5.5 6.5v4h4" />
         <path d="M5.5 16.5A8 8 0 0 0 17.3 17.3" />
         <path d="M18.5 17.5v-4h-4" />
+      </>
+    ),
+    send: (
+      <>
+        <path d="M21 3 10 14" />
+        <path d="m21 3-7 18-4-7-7-4Z" />
       </>
     ),
     logout: (
@@ -343,6 +591,14 @@ function formatDateTimeShort(value) {
   return `${date} ${match[2]}:${match[3]}`;
 }
 
+function compactDateTime(value) {
+  return formatDateTimeShort(value) || String(value || "").replace("T", " ").slice(0, 16);
+}
+
+function summaryModeLabel(mode) {
+  return mode === "agent" ? "Agent" : "本地";
+}
+
 function dateTimeLocalValue(value) {
   const raw = String(value || "");
   const match = raw.match(/^(\d{4}-\d{2}-\d{2})T(\d{2}):(\d{2})/);
@@ -372,7 +628,8 @@ function dayProgressPercent(date) {
   if (date < today()) return 100;
   if (date > today()) return 0;
   const now = new Date();
-  return Math.round(((now.getHours() * 60 + now.getMinutes()) / 1440) * 100);
+  const shiftedMinutes = ((now.getHours() - dayRolloverHour + 24) % 24) * 60 + now.getMinutes();
+  return Math.round((shiftedMinutes / 1440) * 100);
 }
 
 function cleanCardText(value) {
@@ -381,15 +638,45 @@ function cleanCardText(value) {
     .trim();
 }
 
+function normalizedPromptKey(value) {
+  return String(value || "").replace(/[？?。!！\s]/g, "").trim();
+}
+
+function isDefaultPromptText(value) {
+  return defaultPromptTitleKeys.has(normalizedPromptKey(value));
+}
+
+function isGenericStoryTitle(value) {
+  const text = cleanCardText(value || "");
+  if (!text) return true;
+  return isDefaultPromptText(text) ||
+    lowSignalStoryKeys.has(normalizedPromptKey(text)) ||
+    /自动日总结|为什么值得记住/.test(text) ||
+    /^\d{1,2}[/-]\d{1,2}\s*的共同回忆$/.test(text) ||
+    /^\d{4}-\d{2}-\d{2}$/.test(text) ||
+    /^\d{1,2}\s*月\s*\d{1,2}\s*日(?:的)?(?:共同回忆|日总结)?$/.test(text) ||
+    /^(共同回忆|日记|今日|今天|日总结|Daily Story)$/i.test(text);
+}
+
 function storyDisplayTitle(summary, date) {
-  const title = cleanCardText(summary?.title || "");
-  if (!title || /自动日总结|为什么值得记住/.test(title)) return date;
-  return title;
+  const candidates = [
+    summary?.title,
+    summary?.analysis?.diary?.title,
+    summary?.analysis?.keyMoment?.title,
+    summary?.analysis?.keyMoment?.text,
+    ...(summary?.people || []).flatMap((person) => [person.happiestThing, person.smallAchievement]),
+    ...(summary?.moments || []).map((item) => item.text),
+    ...(summary?.completed || []).map((item) => item.title),
+  ];
+  const picked = candidates
+    .map((item) => cleanNoticeBit(item, 12))
+    .find((item) => item && !isGenericStoryTitle(item));
+  return picked || fallbackDailyTitles[stableIndex(date, fallbackDailyTitles.length)];
 }
 
 function cleanStoryText(value) {
   const text = cleanCardText(value || "");
-  if (!text || /还没有明确完成项|随手记还比较少|先补上|自动日总结/.test(text)) return "";
+  if (!text || isDefaultPromptText(text) || lowSignalStoryKeys.has(normalizedPromptKey(text)) || badStoryTextPattern.test(text) || /^完成\s*\d+\s*\/\s*\d+$/.test(text)) return "";
   return text;
 }
 
@@ -404,12 +691,15 @@ function profileColor(profiles, id, fallback = "#ff6fa8") {
 }
 
 function isCompletedCard(card) {
-  return Boolean(card?.archivedAt || card?.completion?.allDone || card?.completion?.currentUserDone);
+  return Boolean(card?.completion?.allDone || card?.completion?.currentUserDone);
+}
+
+function isArchivedCard(card) {
+  return Boolean(card?.archivedAt);
 }
 
 function isDefaultPromptCard(card) {
-  return cleanCardText(card?.title) === "今天有没有开开心心？" &&
-    (!card?.itemType || card.itemType === "thing");
+  return isDefaultPromptText(card?.title) && (!card?.itemType || card.itemType === "thing");
 }
 
 function makeDefaultLifeCard(date, currentUser) {
@@ -493,6 +783,43 @@ function detailRows(rows) {
   return rows.filter((row) => row && row.value);
 }
 
+function compactLifeCardRow(card, context, activeId = "") {
+  const itemType = card.itemType && itemTypeLabels[card.itemType] ? card.itemType : "thing";
+  return {
+    id: card.id,
+    title: cleanCardText(card.title || card.sourceCaptureSummary || "记录"),
+    subtitle: [card.date === today() ? "今天" : shortDate(card.date), primaryTimeLabel(card), itemTypeLabels[itemType]].filter(Boolean).join(" · "),
+    ownerIds: cardParticipantIds(card, context.profiles, context.currentUser),
+    active: card.id === activeId,
+    action: { type: "open-detail", detailType: "lifeCard", payload: card },
+  };
+}
+
+function lifeCardDetailSections(card, context) {
+  const cards = Array.isArray(context.cards) ? context.cards.filter((item) => !isDefaultPromptCard(item)) : [];
+  if (!cards.length) return [];
+  const anchorDate = card.date || context.selectedDate || today();
+  const sameDayCards = sortCards(cards
+    .filter((item) => !isArchivedCard(item))
+    .filter((item) => item.date === anchorDate));
+  const futureTodoCards = sortCards(cards
+    .filter((item) => !isArchivedCard(item) && !isCompletedCard(item))
+    .filter((item) => item.sourceType === "todo")
+    .filter((item) => String(item.date || "") > anchorDate || item.bucket === "future")
+    .filter((item) => item.id !== card.id))
+    .slice(0, 5);
+  return [
+    sameDayCards.length ? {
+      title: anchorDate === today() ? "今天" : shortDate(anchorDate),
+      rows: sameDayCards.map((item) => compactLifeCardRow(item, context, card.id)),
+    } : null,
+    futureTodoCards.length ? {
+      title: "接下来",
+      rows: futureTodoCards.map((item) => compactLifeCardRow(item, context, card.id)),
+    } : null,
+  ].filter(Boolean);
+}
+
 const detailBuilders = {
   lifeCard(card, context) {
     const { profiles, currentUser } = context;
@@ -513,6 +840,7 @@ const detailBuilders = {
         { label: "时间", value: primaryTimeLabel(card) },
         { label: "归属", value: ownerLabel(card.ownerId, currentUser) },
         { label: "状态", value: statusText(card) || card.statusLabel },
+        { label: "操作", value: namesForIds([card.updatedBy || card.createdBy].filter(Boolean), profiles) },
       ].filter((item) => item.value),
       rows: detailRows([
         card.plannedAt ? { label: "开始", value: formatDateTimeShort(card.plannedAt) } : null,
@@ -524,6 +852,7 @@ const detailBuilders = {
         card.priority === "high" ? { label: "优先级", value: "重要" } : null,
         card.steps?.length ? { label: "拆解", value: card.steps.map((step) => step.title).join(" / "), wide: true } : null,
       ]),
+      sections: lifeCardDetailSections(card, context),
       images: [],
       actions: [
         !readOnly ? { type: "edit-card", icon: "edit", label: "编辑", card } : null,
@@ -584,7 +913,16 @@ const detailBuilders = {
   },
   summaryItem(payload, context) {
     const { item, status = "日总结" } = payload || {};
-    const ownerIds = item?.participants?.length ? item.participants : [item?.ownerId, item?.targetUserId].filter(Boolean);
+    const actorIds = [...new Set([
+      ...Object.values(item?.statusUpdatedBy || {}),
+      item?.updatedBy,
+      item?.createdBy,
+    ].filter(Boolean))];
+    const ownerIds = item?.doneUsers?.length
+      ? item.doneUsers
+      : actorIds.length
+        ? actorIds
+        : item?.participants?.length ? item.participants : [item?.ownerId, item?.targetUserId].filter(Boolean);
     const title = cleanCardText(item?.title || item?.text || item?.kindLabel || status);
     const body = cleanStoryText(item?.detail || item?.sourceText || item?.text || "");
     return {
@@ -597,6 +935,7 @@ const detailBuilders = {
       chips: [
         item?.doneUsers?.length ? { label: "完成", value: namesForIds(item.doneUsers, context.profiles) } : null,
         item?.pendingUsers?.length ? { label: "待推进", value: namesForIds(item.pendingUsers, context.profiles) } : null,
+        actorIds.length ? { label: "操作", value: namesForIds(actorIds, context.profiles) } : null,
         item?.location ? { label: "位置", value: item.location } : null,
       ].filter((part) => part && part.value),
       rows: detailRows([
@@ -694,8 +1033,8 @@ function summaryRow(item, status, context) {
 function sortCards(cards) {
   const segmentWeight = { morning: 0, noon: 1, afternoon: 2, evening: 3, allDay: 4 };
   const rank = (card) => {
-    if (card.archivedAt) return 5;
-    if (card.completion?.allDone) return 4;
+    if (isArchivedCard(card)) return 5;
+    if (isCompletedCard(card)) return 4;
     if (card.priority === "high") return 0;
     if (card.sourceType === "insight") return 1;
     if (card.priority === "low") return 3;
@@ -732,6 +1071,7 @@ function useHashRoute() {
 export function App() {
   const [page, setPage] = useHashRoute();
   const [selectedDate, setSelectedDate] = useState(today());
+  const now = useMinuteNow();
   const [bootstrap, setBootstrap] = useState(null);
   const [data, setData] = useState(null);
   const [login, setLogin] = useState("");
@@ -740,7 +1080,8 @@ export function App() {
   const [busy, setBusy] = useState(false);
   const [composerText, setComposerText] = useState("");
   const [confirmation, setConfirmation] = useState(null);
-  const [filter, setFilter] = useState("open");
+  const [agentJob, setAgentJob] = useState(null);
+  const [filter, setFilter] = useState("all");
   const [expanded, setExpanded] = useState(() => new Set());
   const [editingCard, setEditingCard] = useState(null);
   const [detailRequest, setDetailRequest] = useState(null);
@@ -788,6 +1129,19 @@ export function App() {
     setSelectedDate(result.state.selectedDate || date);
   }, [data, request, selectedDate]);
 
+  const waitForJob = useCallback(async (jobId) => {
+    for (let attempt = 0; attempt < 180; attempt += 1) {
+      const result = await request(`/api/jobs/${encodeURIComponent(jobId)}`);
+      const job = result?.job;
+      if (job?.status === "completed") return job.result;
+      if (job?.status === "failed") {
+        throw new Error(job.error || "Agent 分析失败");
+      }
+      await new Promise((resolve) => window.setTimeout(resolve, attempt < 8 ? 650 : 1200));
+    }
+    throw new Error("Agent 分析超时");
+  }, [request]);
+
   useEffect(() => {
     loadSession();
   }, []);
@@ -802,7 +1156,14 @@ export function App() {
 
   const profiles = data?.profiles || bootstrap?.profiles || [];
   const currentUser = data?.currentUser || null;
-  const detailContext = useMemo(() => ({ profiles, currentUser, selectedDate }), [profiles, currentUser, selectedDate]);
+  const catNotice = useMemo(() => buildCatNotice(now, 0, data), [now, data]);
+  const showDeepNightNotice = data && catNotice.period === "deepNight" && page !== "cat-note";
+  const detailContext = useMemo(() => ({
+    profiles,
+    currentUser,
+    selectedDate,
+    cards: data?.scheduleItemCards || [],
+  }), [profiles, currentUser, selectedDate, data?.scheduleItemCards]);
   const activeDetail = useMemo(() => {
     if (!detailRequest) return null;
     return buildDetail(detailRequest.type, detailRequest.payload, detailContext);
@@ -854,11 +1215,33 @@ export function App() {
     setDetailRequest({ type, payload });
   }
 
+  function startAgentJob(jobId) {
+    if (!jobId) return;
+    setAgentJob({ id: jobId, status: "running" });
+    waitForJob(jobId)
+      .then((result) => {
+        if (result?.state) {
+          setData(result.state);
+          setSelectedDate(result.state.selectedDate || selectedDate);
+        }
+        setConfirmation(result?.confirmation || null);
+        setAgentJob(null);
+      })
+      .catch((err) => {
+        setAgentJob(null);
+        setError(err.message);
+      });
+  }
+
   async function handleDetailAction(action) {
     if (!action) return;
     if (action.type === "edit-card" && action.card) {
       setDetailRequest(null);
       setEditingCard(action.card);
+      return;
+    }
+    if (action.type === "open-detail" && action.detailType && action.payload) {
+      setDetailRequest({ type: action.detailType, payload: action.payload });
       return;
     }
     if (action.type === "go-date" && action.date) {
@@ -904,7 +1287,12 @@ export function App() {
             analysisMode: mode,
           },
         });
-        setConfirmation(analyzed?.confirmation || null);
+        if (mode === "agent" && analyzed?.jobId) {
+          setConfirmation(null);
+          startAgentJob(analyzed.jobId);
+        } else {
+          setConfirmation(analyzed?.confirmation || null);
+        }
       } else {
         setConfirmation(null);
       }
@@ -936,7 +1324,7 @@ export function App() {
       if (result) {
         setData(result.state);
         setSelectedDate(confirmation.date || selectedDate);
-        setFilter("open");
+        setFilter("all");
         setConfirmation(null);
       }
     } catch (err) {
@@ -962,7 +1350,7 @@ export function App() {
     });
     if (result) {
       setData(result.state);
-      if (wasCompleted) setFilter("open");
+      if (wasCompleted) setFilter("all");
     }
   }
 
@@ -1033,6 +1421,8 @@ export function App() {
       timeBlocks: payload.timeBlocks || card.timeBlocks || [],
       bucket: card.isDraft ? (payload.date > today() ? "future" : "today") : (card.bucket || (payload.date > selectedDate ? "future" : "today")),
       priority: card.priority || "normal",
+      relatedGroupId: card.relatedGroupId || "",
+      parentItemId: card.parentItemId || "",
     };
     const result = await request(endpoint, { method: "POST", body });
     if (result) {
@@ -1061,6 +1451,7 @@ export function App() {
     <div className="app-shell">
       <TopNav page={page} navigate={navigate} profiles={profiles} currentUser={currentUser} logout={logout} />
       <main className="workspace">
+        {showDeepNightNotice ? <NightNoticeBanner notice={catNotice} onOpen={() => navigate("cat-note")} /> : null}
         {page === "dashboard" && (
           <Dashboard
             data={data}
@@ -1071,6 +1462,7 @@ export function App() {
             composerText={composerText}
             setComposerText={setComposerText}
             confirmation={confirmation}
+            agentJob={agentJob}
             submitConfirmation={submitConfirmation}
             dismissConfirmation={() => setConfirmation(null)}
             saveRawCapture={saveRawCapture}
@@ -1090,19 +1482,16 @@ export function App() {
         {page === "month" && (
           <MonthPage
             data={data}
-            profiles={profiles}
-            currentUser={currentUser}
             selectedDate={selectedDate}
             chooseDate={chooseDate}
             setPage={navigate}
-            toggleCard={toggleCard}
-            archiveCard={archiveCard}
-            setEditingCard={setEditingCard}
-            openDetail={openDetail}
           />
         )}
         {page === "daily-summary" && (
-          <DailySummaryPage data={data} profiles={profiles} currentUser={currentUser} request={request} setData={setData} selectedDate={selectedDate} openDetail={openDetail} />
+          <DailySummaryPage data={data} profiles={profiles} currentUser={currentUser} request={request} setData={setData} selectedDate={selectedDate} chooseDate={chooseDate} openDetail={openDetail} />
+        )}
+        {page === "cat-note" && (
+          <CatNoticePage profiles={profiles} currentUser={currentUser} now={now} data={data} request={request} setData={setData} setSelectedDate={setSelectedDate} />
         )}
         {page === "goals" && (
           <MemoryPage data={data} profiles={profiles} currentUser={currentUser} request={request} setData={setData} selectedDate={selectedDate} openDetail={openDetail} />
@@ -1171,11 +1560,12 @@ function LoginScreen({ bootstrap, profiles, login, setLogin, password, setPasswo
 
 function TopNav({ page, navigate, profiles, currentUser, logout }) {
   const items = [
-    ["dashboard", "猫猫日记本"],
-    ["month", "月历"],
-    ["daily-summary", "日总结"],
-    ["goals", "长期记忆"],
-    ["settings", "设置"],
+    { id: "dashboard", label: "猫猫日记本" },
+    { id: "month", label: "月历" },
+    { id: "daily-summary", label: "日总结" },
+    { id: "cat-note", label: "猫猫的话", icon: "sparkle" },
+    { id: "goals", label: "长期记忆" },
+    { id: "settings", label: "设置" },
   ];
   return (
     <header className="topbar">
@@ -1184,9 +1574,16 @@ function TopNav({ page, navigate, profiles, currentUser, logout }) {
         <span>猫猫日记本</span>
       </button>
       <nav className="nav-tabs" aria-label="主导航">
-        {items.map(([id, label]) => (
-          <button key={id} className={cx(page === id && "is-active")} type="button" onClick={() => navigate(id)}>
-            {label}
+        {items.map((item) => (
+          <button
+            key={item.id}
+            className={cx(page === item.id && "is-active", item.id === "cat-note" && "is-cat-jump")}
+            type="button"
+            onClick={() => navigate(item.id)}
+            aria-label={item.id === "cat-note" ? "打开猫猫的话" : item.label}
+          >
+            {item.icon ? <Icon name={item.icon} /> : null}
+            <span>{item.label}</span>
           </button>
         ))}
       </nav>
@@ -1209,6 +1606,7 @@ function Dashboard(props) {
     composerText,
     setComposerText,
     confirmation,
+    agentJob,
     submitConfirmation,
     dismissConfirmation,
     saveRawCapture,
@@ -1232,7 +1630,10 @@ function Dashboard(props) {
         text={composerText}
         setText={setComposerText}
         saveRawCapture={saveRawCapture}
+        profiles={profiles}
+        currentUser={currentUser}
         busy={busy}
+        agentJob={agentJob}
         confirmation={confirmation}
         submitConfirmation={submitConfirmation}
         dismissConfirmation={dismissConfirmation}
@@ -1310,10 +1711,20 @@ function DateRail({ selectedDate, chooseDate }) {
   );
 }
 
-function Composer({ text, setText, saveRawCapture, busy, confirmation, submitConfirmation, dismissConfirmation, composingRef }) {
+function Composer({ text, setText, saveRawCapture, profiles, currentUser, busy, agentJob, confirmation, submitConfirmation, dismissConfirmation, composingRef }) {
   async function submit(mode) {
     await saveRawCapture(mode, []);
   }
+  const confirmationPeople = confirmation ? cardParticipantIds(confirmation, profiles, currentUser) : [];
+  const confirmationType = confirmation?.isDefaultDraft
+    ? "草稿"
+    : confirmation?.decision === "schedule"
+      ? (itemTypeLabels[confirmation.itemType] || "事情")
+      : confirmation?.decision === "memory"
+        ? "长期记忆"
+        : confirmation?.decision === "dailyStory"
+          ? "日总结"
+          : "只记录";
 
   return (
     <section className="composer-band">
@@ -1331,20 +1742,27 @@ function Composer({ text, setText, saveRawCapture, busy, confirmation, submitCon
           }}
           rows={1}
           aria-label="随手记"
-          placeholder="写一句"
+          placeholder="随手记"
         />
         <div className="composer-actions">
-          <IconButton icon="bookmark" label="随手记" disabled={busy || !text.trim()} onClick={() => submit("save")} />
-          <IconButton icon="sparkle" label="交给 Agent" primary disabled={busy || !text.trim()} onClick={() => submit("agent")} />
+          <IconButton icon="bookmark" label="默认处理" disabled={busy || !text.trim()} onClick={() => submit("template")} />
+          <IconButton icon="sparkle" label="交给 Agent" primary disabled={busy || Boolean(agentJob) || !text.trim()} onClick={() => submit("agent")} />
         </div>
       </form>
+      {agentJob ? (
+        <div className="agent-strip" role="status" aria-live="polite">
+          <Icon name="sparkle" />
+          <span>Agent 分析中</span>
+        </div>
+      ) : null}
       {confirmation ? (
         <form className="confirm-strip" onSubmit={submitConfirmation}>
-          <div>
+          <AvatarPair profiles={profiles} ids={confirmationPeople} />
+          <div className="confirm-copy">
             <strong>
               {confirmation.analysisMode === "agent" ? "Agent" : "猫猫的事"}
               {" · "}
-              {confirmation.isDefaultDraft ? "草稿" : confirmation.decision === "schedule" ? (itemTypeLabels[confirmation.itemType] || "事情") : confirmation.decision === "memory" ? "长期记忆" : "只记录"}
+              {confirmationType}
               {confirmation.date ? ` · ${confirmation.date}` : ""}
               {confirmation.segment && confirmation.segment !== "allDay" ? ` · ${segmentLabels[confirmation.segment]}` : ""}
               {confirmation.relatedItems?.length ? ` · +${confirmation.relatedItems.length}` : ""}
@@ -1361,16 +1779,54 @@ function Composer({ text, setText, saveRawCapture, busy, confirmation, submitCon
   );
 }
 
-function MonthPicker({ data, selectedDate, chooseDate, open, setOpen, setPage }) {
+function monthCellSignal(day, storyTitle) {
+  const cardCount = Number(day.eventCount || 0) + Number(day.todoCount || 0);
+  const captureCount = Number(day.captureCount || 0);
+  const diaryCount = Number(day.diaryCount || 0) || Number(day.dailyPulses?.length || 0);
+  const hasStory = Boolean(storyTitle || day.summaryGenerated);
+  const tags = [
+    hasStory ? { key: "story", icon: "sparkle", tone: "story", label: "日总结" } : null,
+    captureCount ? { key: "capture", icon: "camera", tone: "capture", label: "随手记", value: captureCount } : null,
+    cardCount ? { key: "cards", icon: "cards", tone: "cards", label: "猫猫的事", value: cardCount } : null,
+    diaryCount ? { key: "pulse", icon: "star", tone: "pulse", label: "每日状态", value: diaryCount } : null,
+  ].filter(Boolean);
+  const fallbackTones = [
+    { icon: "cloud", tone: "soft", label: "小碎片" },
+    { icon: "moon", tone: "quiet", label: "慢慢来" },
+    { icon: "circle", tone: "seed", label: "留一格" },
+  ];
+  const primary = tags[0] || (day.isToday
+    ? { icon: "sparkle", tone: "today", label: "今天" }
+    : fallbackTones[stableIndex(day.id, fallbackTones.length)]);
+  const ariaParts = [
+    day.id,
+    primary.label,
+    cardCount ? `${cardCount} 个猫猫的事` : "",
+    captureCount ? `${captureCount} 条随手记` : "",
+    hasStory ? "有日总结" : "",
+  ].filter(Boolean);
+  return {
+    primary,
+    tags: tags.length ? tags.slice(0, 3) : [{ key: "soft", icon: primary.icon, tone: primary.tone, label: primary.label }],
+    ariaLabel: ariaParts.join("，"),
+  };
+}
+
+function MonthCellSignals({ tags }) {
+  return (
+    <span className="month-cell-signals" aria-hidden="true">
+      {tags.map((tag) => (
+        <i key={tag.key} className={`tone-${tag.tone}`}>
+          <Icon name={tag.icon} />
+          {tag.value && tag.value > 1 ? <b>{tag.value}</b> : null}
+        </i>
+      ))}
+    </span>
+  );
+}
+
+function MonthPicker({ data, selectedDate, chooseDate, open, setOpen }) {
   const summary = data.monthSummary || { month: selectedDate.slice(0, 7), days: [] };
-  const memoryCountByDate = useMemo(() => {
-    return (data.memoryItems || []).reduce((counts, item) => {
-      const date = item.suggestedDate || String(item.updatedAt || "").slice(0, 10);
-      if (!date) return counts;
-      counts[date] = (counts[date] || 0) + 1;
-      return counts;
-    }, {});
-  }, [data.memoryItems]);
   const gridDays = useMemo(() => {
     const days = summary.days || [];
     const first = parseDate(days[0]?.id || selectedDate);
@@ -1379,7 +1835,6 @@ function MonthPicker({ data, selectedDate, chooseDate, open, setOpen, setPage })
   }, [summary.days, selectedDate]);
   async function openDay(day) {
     await chooseDate(day.id);
-    if (day.summaryGenerated) setPage?.("daily-summary");
   }
   return (
     <section className={cx("month-picker", !open && "is-collapsed")}>
@@ -1395,25 +1850,24 @@ function MonthPicker({ data, selectedDate, chooseDate, open, setOpen, setPage })
           {gridDays.map((day) => {
             if (day.isPad) return <span key={day.id} className="month-pad" aria-hidden="true" />;
             const cardCount = Number(day.eventCount || 0) + Number(day.todoCount || 0);
-            const memoryCount = Number(memoryCountByDate[day.id] || 0);
-            const storyTitle = day.summaryTitle || (day.id === selectedDate && data.dailySummary ? storyDisplayTitle(data.dailySummary, day.id) : "");
+            const storyTitle = cleanStoryText(day.summaryTitle) || (day.id === selectedDate && data.dailySummary ? storyDisplayTitle(data.dailySummary, day.id) : "");
+            const signal = monthCellSignal(day, storyTitle);
             return (
               <button
                 key={day.id}
-                className={cx("month-cell", day.id === selectedDate && "is-active", day.isToday && "is-today", day.summaryGenerated && "has-story", (cardCount || memoryCount || day.summaryGenerated) && "has-card")}
+                className={cx("month-cell", day.id === selectedDate && "is-active", day.isToday && "is-today", day.summaryGenerated && "has-story", cardCount && "has-card")}
                 type="button"
                 onClick={() => openDay(day)}
-                aria-label={day.summaryGenerated ? `${day.id}，打开日总结` : day.id}
+                aria-label={signal.ariaLabel}
               >
                 <span className="month-cell-top">
                   <b>{day.dayNumber}</b>
-                  <span className="month-dots">
-                    {cardCount ? <i className="card-dot" title="猫猫的事">{cardCount}</i> : null}
-                    {memoryCount ? <i className="memory-dot" title="长期记忆">{memoryCount}</i> : null}
-                    {day.summaryGenerated ? <i className="story-dot" /> : null}
+                  <span className={`month-cell-charm tone-${signal.primary.tone}`} aria-hidden="true">
+                    <Icon name={signal.primary.icon} />
                   </span>
                 </span>
                 {storyTitle ? <em className="month-story-title">{storyTitle}</em> : null}
+                <MonthCellSignals tags={signal.tags} />
               </button>
             );
           })}
@@ -1423,60 +1877,20 @@ function MonthPicker({ data, selectedDate, chooseDate, open, setOpen, setPage })
   );
 }
 
-function MonthPage({ data, profiles, currentUser, selectedDate, chooseDate, setPage, toggleCard, archiveCard, setEditingCard, openDetail }) {
+function MonthPage({ data, selectedDate, chooseDate, setPage }) {
   const monthSummary = data.monthSummary || { month: selectedDate.slice(0, 7), days: [], totalsByUser: {} };
   const selectedDay = monthSummary.days?.find((day) => day.id === selectedDate) || null;
-  const context = useMemo(() => ({ profiles, currentUser, selectedDate }), [profiles, currentUser, selectedDate]);
-  const memoryCountByDate = useMemo(() => {
-    return (data.memoryItems || []).reduce((counts, item) => {
-      const date = item.suggestedDate || String(item.updatedAt || "").slice(0, 10);
-      if (!date) return counts;
-      counts[date] = (counts[date] || 0) + 1;
-      return counts;
-    }, {});
-  }, [data.memoryItems]);
-  const monthStats = useMemo(() => {
-    const days = monthSummary.days || [];
-    return {
-      activeDays: days.filter((day) => Number(day.eventCount || 0) + Number(day.todoCount || 0) + Number(memoryCountByDate[day.id] || 0) + (day.summaryGenerated ? 1 : 0)).length,
-      cards: days.reduce((sum, day) => sum + Number(day.eventCount || 0) + Number(day.todoCount || 0), 0),
-      memories: days.reduce((sum, day) => sum + Number(memoryCountByDate[day.id] || 0), 0),
-      stories: days.filter((day) => day.summaryGenerated).length,
-    };
-  }, [memoryCountByDate, monthSummary.days]);
   const selectedCards = useMemo(() => {
     return sortCards((data.scheduleItemCards || [])
-      .filter((card) => card.date === selectedDate)
-      .filter((card) => !isCompletedCard(card)));
+      .filter((card) => card.date === selectedDate));
   }, [data.scheduleItemCards, selectedDate]);
-  const completedCards = useMemo(() => {
-    return sortCards((data.scheduleItemCards || [])
-      .filter((card) => card.date === selectedDate)
-      .filter(isCompletedCard));
-  }, [data.scheduleItemCards, selectedDate]);
-  const selectedMemories = useMemo(() => {
-    return (data.memoryItems || []).filter((item) => {
-      const date = item.suggestedDate || String(item.updatedAt || "").slice(0, 10);
-      return date === selectedDate;
-    }).slice(0, 6);
-  }, [data.memoryItems, selectedDate]);
-  const memoryRows = useMemo(() => selectedMemories.map((item) => memoryRow(item, context)), [selectedMemories, context]);
-  const peopleStats = profiles.map((profile) => ({
-    profile,
-    percent: Number(monthSummary.totalsByUser?.[profile.id]?.percent || 0),
-  }));
-  const selectedSummaryTitle = selectedDay?.summaryTitle || (data.dailySummary?.date === selectedDate ? storyDisplayTitle(data.dailySummary, selectedDate) : "");
-  const selectedPulseRows = useMemo(() => {
-    const source = selectedDay?.dailyPulses?.length
-      ? selectedDay.dailyPulses
-      : profiles.map((profile) => ({
-          userId: profile.id,
-          displayName: profile.displayName,
-          color: profile.color,
-          ...(data.diaryDay?.userDays?.[profile.id] || {}),
-        }));
-    return source.filter((pulse) => pulse.happiestThing || pulse.smallAchievement || pulse.dailyScore);
-  }, [data.diaryDay, profiles, selectedDay]);
+  const selectedSummary = data.dailySummary?.date === selectedDate ? data.dailySummary : null;
+  const selectedSummaryTitle = cleanStoryText(selectedDay?.summaryTitle) || (selectedSummary ? storyDisplayTitle(selectedSummary, selectedDate) : "");
+  const selectedSummaryText = cleanStoryText(selectedSummary?.narrative || selectedSummary?.nextStep || "");
+  const monthSignals = [
+    { key: "cards", icon: "cards", label: "猫猫的事", value: Number(selectedDay?.eventCount || 0) + Number(selectedDay?.todoCount || 0) || selectedCards.length },
+    { key: "captures", icon: "camera", label: "随手记", value: Number(selectedDay?.captureCount || 0) || data.captures?.length || 0 },
+  ];
 
   return (
     <section className="month-page">
@@ -1488,79 +1902,33 @@ function MonthPage({ data, profiles, currentUser, selectedDate, chooseDate, setP
         <IconButton icon="rows" label="回首页" onClick={() => setPage("dashboard")} />
       </div>
       <div className="month-layout">
-        <MonthPicker data={data} selectedDate={selectedDate} chooseDate={chooseDate} open={true} setOpen={() => {}} setPage={setPage} />
+        <MonthPicker data={data} selectedDate={selectedDate} chooseDate={chooseDate} open={true} setOpen={() => {}} />
         <aside className="month-inspector">
-          <div className="month-legend" aria-label="月历标识">
-            <span><i className="card-dot" />猫猫的事</span>
-            <span><i className="memory-dot" />长期记忆</span>
-            <span><i className="story-dot" />日总结</span>
-          </div>
-          <div className="month-stats">
-            <span><b>{monthStats.activeDays}</b><em>有内容</em></span>
-            <span><b>{monthStats.cards}</b><em>猫猫的事</em></span>
-            <span><b>{monthStats.memories}</b><em>记忆</em></span>
-            <span><b>{monthStats.stories}</b><em>日总结</em></span>
-          </div>
-          <div className="month-people">
-            {peopleStats.map(({ profile, percent }) => (
-              <span key={profile.id} style={{ "--person": profile.color }}>
-                <CatAvatar profile={profile} />
-                <b>{percent}%</b>
-              </span>
-            ))}
-          </div>
           <div className="selected-day-head">
             <div>
               <strong>{selectedDate === today() ? "今天" : shortDate(selectedDate)}</strong>
               <span>{selectedDate}</span>
-              {selectedSummaryTitle ? <button type="button" onClick={() => setPage("daily-summary")}>{selectedSummaryTitle}</button> : null}
             </div>
-            {selectedDay ? (
-              <div className="selected-day-signals">
-                <em><Icon name="calendar" />{Number(selectedDay.eventCount || 0) + Number(selectedDay.todoCount || 0)}</em>
-                <em><Icon name="sparkle" />{selectedMemories.length}</em>
-                <em><Icon name="refresh" />{selectedDay.summaryGenerated ? 1 : 0}</em>
-              </div>
-            ) : null}
           </div>
-          {selectedPulseRows.length ? (
-            <div className="month-pulse-panel">
-              {selectedPulseRows.map((pulse) => {
-                const profile = profiles.find((item) => item.id === pulse.userId) || pulse;
-                return (
-                  <article key={pulse.userId} style={{ "--person": profile.color || pulse.color }}>
-                    <CatAvatar profile={profile} />
-                    <div>
-                      <strong>{profile.displayName || "成员"}</strong>
-                      {pulse.happiestThing ? <span><b>最开心</b>{pulse.happiestThing}</span> : null}
-                      {pulse.smallAchievement ? <span><b>核心贡献</b>{pulse.smallAchievement}</span> : null}
-                    </div>
-                  </article>
-                );
-              })}
-            </div>
+          {selectedSummaryTitle ? (
+            <button className="month-story-link" type="button" onClick={() => setPage("daily-summary")}>
+              <Icon name="sparkle" />
+              <span>
+                <strong>{selectedSummaryTitle}</strong>
+                {selectedSummaryText ? <em>{shortText(selectedSummaryText, 72)}</em> : null}
+              </span>
+              <Icon name="chevronRight" />
+            </button>
           ) : null}
-          <div className="month-day-cards">
-            {selectedCards.length ? selectedCards.slice(0, 5).map((card) => (
-                <LifeCard
-                  key={card.id}
-                  card={card}
-                  profiles={profiles}
-                  currentUser={currentUser}
-                  toggleCard={toggleCard}
-                  archiveCard={archiveCard}
-                  setEditingCard={setEditingCard}
-                  openDetail={openDetail}
-                />
-              )) : <EmptyState profiles={profiles} />}
-            {completedCards.length ? (
-              <div className="month-completed">
-                <Icon name="archive" />
-                <span>{completedCards.length}</span>
-              </div>
-            ) : null}
+          <div className="month-signal-stack" aria-label="当天摘要">
+            {monthSignals.map((signal) => (
+              <span key={signal.key}>
+                <Icon name={signal.icon} />
+                <b>{signal.label}</b>
+                <em>{signal.value}</em>
+              </span>
+            ))}
           </div>
-          <DynamicList title="记忆" rows={memoryRows} profiles={profiles} onOpen={(row) => openDetail(row.type, row.payload)} />
         </aside>
       </div>
     </section>
@@ -1568,8 +1936,14 @@ function MonthPage({ data, profiles, currentUser, selectedDate, chooseDate, setP
 }
 
 function LifeCardTimeline({ cards, profiles, currentUser, selectedDate, filter, setFilter, expanded, setExpanded, toggleCard, archiveCard, setEditingCard, openDetail, chooseDate }) {
-  const [scrubOffset, setScrubOffset] = useState(0);
-  const dragState = useRef({ active: false, kind: "", startY: 0, scrollTop: 0, moved: false, blockClick: false, pointerId: null, direction: 0 });
+  const [isScrollDragging, setIsScrollDragging] = useState(false);
+  const [isCardScrubbing, setIsCardScrubbing] = useState(false);
+  const [scrubTargetId, setScrubTargetId] = useState("");
+  const listRef = useRef(null);
+  const cardRefs = useRef(new Map());
+  const scrubFrame = useRef(0);
+  const scrubClearTimer = useRef(0);
+  const dragState = useRef({ active: false, kind: "", startY: 0, scrollTop: 0, moved: false, blockClick: false, pointerId: null, targetId: "", latestY: 0 });
   const lifeCards = useMemo(() => (cards || []).filter((card) => !isDefaultPromptCard(card)), [cards]);
   const profileIds = useMemo(() => new Set(profiles.map((profile) => profile.id)), [profiles]);
   const isSharedCard = (card) => card.ownerId === "shared" || (card.participants || []).length > 1;
@@ -1581,13 +1955,12 @@ function LifeCardTimeline({ cards, profiles, currentUser, selectedDate, filter, 
   };
   const filteredCards = useMemo(() => {
     const filtered = lifeCards.filter((card) => {
-      const completed = isCompletedCard(card);
-      const open = !completed;
-      if (filter === "done") return completed;
-      if (filter === "mine") return open && isCurrentUserCard(card);
-      if (filter === "shared") return open && isTwoPersonBoardCard(card);
-      if (filter === "all") return true;
-      return open;
+      const archived = isArchivedCard(card);
+      if (filter === "archived") return archived;
+      if (archived) return false;
+      if (filter === "mine") return isCurrentUserCard(card);
+      if (filter === "shared") return isTwoPersonBoardCard(card);
+      return true;
     });
     return sortCards(filtered);
   }, [lifeCards, currentUser?.id, filter, profileIds]);
@@ -1597,43 +1970,88 @@ function LifeCardTimeline({ cards, profiles, currentUser, selectedDate, filter, 
   const dates = [...grouped.keys()].sort((a, b) => a.localeCompare(b));
   const summary = useMemo(() => {
     const dayCards = lifeCards.filter((card) => card.date === selectedDate);
-    const openCards = dayCards.filter((card) => !isCompletedCard(card));
-    const doneCards = dayCards.filter(isCompletedCard);
+    const activeCards = dayCards.filter((card) => !isArchivedCard(card));
+    const openCards = activeCards.filter((card) => !isCompletedCard(card));
+    const doneCards = activeCards.filter(isCompletedCard);
+    const archivedCards = dayCards.filter(isArchivedCard);
     return {
       openCount: openCards.length,
       doneCount: doneCards.length,
+      archivedCount: archivedCards.length,
       mineCount: openCards.filter(isCurrentUserCard).length,
       boardCount: openCards.filter(isTwoPersonBoardCard).length,
     };
   }, [lifeCards, currentUser?.id, profileIds, selectedDate]);
   const filters = [
-    ["open", "circle", "未完成"],
+    ["all", "rows", "全部"],
     ["mine", "user", "自己"],
     ["shared", "users", "双人"],
-    ["done", "archive", "已完成"],
+    ["archived", "archive", "归档"],
   ];
+  useEffect(() => () => {
+    if (scrubFrame.current) window.cancelAnimationFrame(scrubFrame.current);
+    if (scrubClearTimer.current) window.clearTimeout(scrubClearTimer.current);
+  }, []);
+  const centerCardNearPointer = (clientY, force = false) => {
+    const list = listRef.current;
+    if (!list) return;
+    let closest = null;
+    let distance = Infinity;
+    cardRefs.current.forEach((node, id) => {
+      if (!node) return;
+      const rect = node.getBoundingClientRect();
+      const center = rect.top + rect.height / 2;
+      const nextDistance = Math.abs(center - clientY);
+      if (nextDistance < distance) {
+        distance = nextDistance;
+        closest = { id, rect };
+      }
+    });
+    if (!closest) return;
+    const drag = dragState.current;
+    if (!force && drag.targetId === closest.id) return;
+    drag.targetId = closest.id;
+    setScrubTargetId(closest.id);
+    const listRect = list.getBoundingClientRect();
+    const maxTop = Math.max(0, list.scrollHeight - list.clientHeight);
+    const nextTop = list.scrollTop + closest.rect.top - listRect.top - (list.clientHeight / 2) + (closest.rect.height / 2);
+    list.scrollTo({
+      top: Math.max(0, Math.min(maxTop, nextTop)),
+      behavior: force ? "auto" : "smooth",
+    });
+  };
+  const scheduleCardScrub = (clientY, force = false) => {
+    dragState.current.latestY = clientY;
+    if (scrubFrame.current) return;
+    scrubFrame.current = window.requestAnimationFrame(() => {
+      scrubFrame.current = 0;
+      centerCardNearPointer(dragState.current.latestY, force);
+    });
+  };
   const startDragScroll = (event) => {
     if (event.pointerType === "mouse" && event.button !== 0) return;
     if (event.target.closest("input, textarea, select, a, summary, label")) return;
     const rect = event.currentTarget.getBoundingClientRect();
     const x = event.clientX - rect.left;
-    const isAxisDrag = Math.abs(x - 132) <= 34 || Boolean(event.target.closest(".timeline-node"));
+    const isAxisDrag = Math.abs(x - 132) <= 42 || Boolean(event.target.closest(".timeline-node"));
     const canScroll = event.currentTarget.scrollHeight > event.currentTarget.clientHeight + 2;
+    if (scrubClearTimer.current) window.clearTimeout(scrubClearTimer.current);
     dragState.current = {
       active: true,
-      kind: isAxisDrag ? "date" : "scroll",
+      kind: isAxisDrag ? "card" : "scroll",
       startY: event.clientY,
       scrollTop: event.currentTarget.scrollTop,
       moved: false,
       blockClick: false,
       pointerId: event.pointerId,
-      direction: 0,
+      targetId: "",
+      latestY: event.clientY,
     };
     if (!isAxisDrag && !canScroll) {
       dragState.current.active = false;
       return;
     }
-    event.currentTarget.classList.add(isAxisDrag ? "is-scrubbing" : "is-dragging");
+    if (!isAxisDrag) setIsScrollDragging(true);
     event.currentTarget.setPointerCapture?.(event.pointerId);
   };
   const dragScroll = (event) => {
@@ -1644,9 +2062,11 @@ function LifeCardTimeline({ cards, profiles, currentUser, selectedDate, filter, 
       drag.moved = true;
       drag.blockClick = true;
     }
-    if (drag.kind === "date") {
-      setScrubOffset(Math.max(-140, Math.min(140, delta)));
-      drag.direction = Math.abs(delta) >= 34 ? (delta > 0 ? 1 : -1) : 0;
+    if (drag.kind === "card") {
+      if (drag.moved) {
+        setIsCardScrubbing(true);
+        scheduleCardScrub(event.clientY);
+      }
     } else {
       event.currentTarget.scrollTop = drag.scrollTop - delta;
     }
@@ -1655,14 +2075,23 @@ function LifeCardTimeline({ cards, profiles, currentUser, selectedDate, filter, 
   const endDragScroll = (event) => {
     const drag = dragState.current;
     if (!drag.active) return;
-    event.currentTarget.classList.remove("is-dragging");
-    event.currentTarget.classList.remove("is-scrubbing");
     event.currentTarget.releasePointerCapture?.(drag.pointerId);
-    setScrubOffset(0);
-    if (drag.kind === "date" && drag.direction) {
-      chooseDate?.(addDays(selectedDate, drag.direction));
+    setIsScrollDragging(false);
+    if (scrubFrame.current) {
+      window.cancelAnimationFrame(scrubFrame.current);
+      scrubFrame.current = 0;
     }
-    dragState.current = { ...drag, active: false, kind: "", pointerId: null, direction: 0 };
+    if (drag.kind === "card" && drag.moved) {
+      centerCardNearPointer(drag.latestY || event.clientY, false);
+      scrubClearTimer.current = window.setTimeout(() => {
+        setIsCardScrubbing(false);
+        setScrubTargetId("");
+      }, 220);
+    } else {
+      setIsCardScrubbing(false);
+      setScrubTargetId("");
+    }
+    dragState.current = { ...drag, active: false, kind: "", pointerId: null, targetId: "" };
   };
   const stopDragClick = (event) => {
     if (!dragState.current.blockClick) return;
@@ -1679,6 +2108,7 @@ function LifeCardTimeline({ cards, profiles, currentUser, selectedDate, filter, 
           <span className="life-counts">
             <b>待做 {summary.openCount}</b>
             <i>完成 {summary.doneCount}</i>
+            {summary.archivedCount ? <i>归档 {summary.archivedCount}</i> : null}
           </span>
         </div>
         <div className="tool-groups">
@@ -1699,8 +2129,9 @@ function LifeCardTimeline({ cards, profiles, currentUser, selectedDate, filter, 
         </div>
       </div>
       <div
-        className="timeline-list"
-        style={{ "--day-progress": `${dayProgressPercent(selectedDate)}%`, "--scrub-offset": `${scrubOffset}px` }}
+        ref={listRef}
+        className={cx("timeline-list", isScrollDragging && "is-dragging", isCardScrubbing && "is-card-scrubbing")}
+        style={{ "--day-progress": `${dayProgressPercent(selectedDate)}%` }}
         onPointerDown={startDragScroll}
         onPointerMove={dragScroll}
         onPointerUp={endDragScroll}
@@ -1710,12 +2141,14 @@ function LifeCardTimeline({ cards, profiles, currentUser, selectedDate, filter, 
         {dates.length ? dates.map((date) => {
           const dayCards = grouped.get(date) || [];
           const isExpanded = expanded.has(date);
-          const visible = isExpanded ? dayCards : dayCards.filter((card, index) => index < 4 || card.priority === "high" || card.sourceType === "insight");
+          const isSelectedDay = date === selectedDate;
+          const visible = isExpanded || isSelectedDay ? dayCards : dayCards.filter((card, index) => index < 4 || card.priority === "high" || card.sourceType === "insight");
           const hiddenCount = dayCards.length - visible.length;
-          const openCount = dayCards.filter((card) => !isCompletedCard(card)).length;
+          const openCount = dayCards.filter((card) => !isCompletedCard(card) && !isArchivedCard(card)).length;
           const hasHigh = dayCards.some((card) => card.priority === "high" || Number(card.rankScore || 0) >= 60);
+          const hasScrubTarget = Boolean(scrubTargetId && dayCards.some((card) => card.id === scrubTargetId));
           return (
-            <section key={date} className={cx("timeline-day", date === selectedDate && "is-selected", date === today() && "is-today", hasHigh && "has-high")}>
+            <section key={date} className={cx("timeline-day", date === selectedDate && "is-selected", date === today() && "is-today", hasHigh && "has-high", hasScrubTarget && "has-scrub-target")}>
               <button className="timeline-node" type="button" onClick={() => chooseDate?.(date)} aria-label={date === today() ? `今天 ${date}` : date}>
                 <span>{openCount || dayCards.length}</span>
               </button>
@@ -1725,16 +2158,24 @@ function LifeCardTimeline({ cards, profiles, currentUser, selectedDate, filter, 
               </button>
               <div className="day-cards">
                 {visible.map((card) => (
-                  <LifeCard
+                  <div
                     key={card.id}
-                    card={card}
-                    profiles={profiles}
-                    currentUser={currentUser}
-                    toggleCard={toggleCard}
-                    archiveCard={archiveCard}
-                    setEditingCard={setEditingCard}
-                    openDetail={openDetail}
-                  />
+                    className={cx("timeline-card-slot", scrubTargetId === card.id && "is-scrub-target")}
+                    ref={(node) => {
+                      if (node) cardRefs.current.set(card.id, node);
+                      else cardRefs.current.delete(card.id);
+                    }}
+                  >
+                    <LifeCard
+                      card={card}
+                      profiles={profiles}
+                      currentUser={currentUser}
+                      toggleCard={toggleCard}
+                      archiveCard={archiveCard}
+                      setEditingCard={setEditingCard}
+                      openDetail={openDetail}
+                    />
+                  </div>
                 ))}
                 {hiddenCount > 0 ? (
                   <button
@@ -1782,14 +2223,17 @@ function LifeCard({ card, profiles, currentUser, toggleCard, archiveCard, setEdi
   const readOnly = card.readOnly || card.sourceType === "insight";
   const isDraft = Boolean(card.isDraft);
   const isDone = isCompletedCard(card);
+  const isArchived = isArchivedCard(card);
   const timeNote = primaryTimeLabel(card);
   const summaryText = summary && summary !== timeNote ? summary : "";
   const planParts = cardPlanParts(card);
   const isInsight = card.sourceType === "insight";
   const ownerColor = card.ownerId === "shared" ? "#ff6fa8" : profileColor(profiles, card.ownerId, avatarColor(currentUser));
   const secondColor = participants.length > 1 ? profileColor(profiles, participants[1], "#24b99a") : ownerColor;
-  const displayedStatus = isDone
-    ? (card.archivedAt && !card.completion?.allDone ? "已归档" : card.completion?.allDone ? "已完成" : "我已完成")
+  const displayedStatus = isArchived
+    ? "已归档"
+    : isDone
+      ? (card.completion?.allDone ? "已完成" : "我已完成")
     : status;
   const openCard = () => {
     if (!readOnly) {
@@ -1808,18 +2252,13 @@ function LifeCard({ card, profiles, currentUser, toggleCard, archiveCard, setEdi
   };
   return (
     <article
-      className={cx("life-card", `type-${itemType}`, isDone && "is-done", readOnly && "is-readonly", isInsight && "is-insight", isDraft && "is-draft")}
+      className={cx("life-card", `type-${itemType}`, isDone && "is-done", isArchived && "is-archived", readOnly && "is-readonly", isInsight && "is-insight", isDraft && "is-draft")}
       style={{ "--owner-one": ownerColor, "--owner-two": secondColor }}
       onDoubleClick={() => {
         if (!readOnly) setEditingCard(card);
       }}
     >
       <span className="card-accent" aria-hidden="true" />
-      {isDone ? (
-        <span className="completion-ribbon" aria-label="已完成">
-          <Icon name="check" />
-        </span>
-      ) : null}
       <div className="card-when" aria-label={timeNote || itemTypeLabels[itemType]}>
         <strong>{timeNote || itemTypeLabels[itemType]}</strong>
         {displayedStatus ? <span>{displayedStatus}</span> : null}
@@ -1852,17 +2291,34 @@ function LifeCard({ card, profiles, currentUser, toggleCard, archiveCard, setEdi
       </div>
       {!readOnly && !isDraft ? (
         <div className="card-actions">
-          <button
-            className={cx("complete-toggle", isDone && "is-done")}
-            type="button"
-            aria-label={isDone ? "恢复到待做" : "完成并归档"}
-            aria-pressed={isDone}
-            title={isDone ? "恢复到待做" : "完成并归档"}
-            onClick={completeCard}
-          >
-            <Icon name={isDone ? "undo" : "check"} />
-          </button>
-          {!isDone && ["schedule", "todo"].includes(card.sourceType) ? (
+          {isArchived ? (
+            <span className="archive-mark" aria-label="已归档" title="已归档">
+              <Icon name="archive" />
+            </span>
+          ) : isDone ? (
+            <button
+              className="done-mark"
+              type="button"
+              aria-label="取消完成"
+              aria-pressed="true"
+              title="取消完成"
+              onClick={completeCard}
+            >
+              <Icon name="check" />
+            </button>
+          ) : (
+            <button
+              className="complete-toggle"
+              type="button"
+              aria-label="完成"
+              aria-pressed="false"
+              title="完成"
+              onClick={completeCard}
+            >
+              <Icon name="check" />
+            </button>
+          )}
+          {!isArchived && ["schedule", "todo"].includes(card.sourceType) ? (
             <IconButton icon="archive" label="归档" onClick={(event) => {
               stopAction(event);
               archiveCard?.(card);
@@ -2097,29 +2553,201 @@ function DetailDrawer({ detail, profiles, onClose, onAction }) {
             ))}
           </div>
         ) : null}
+        {detail.sections?.length ? (
+          <div className="detail-card-groups">
+            {detail.sections.map((section) => (
+              <section className="dynamic-list detail-card-group" key={section.title}>
+                <div className="dynamic-list-head">
+                  <strong>{section.title}</strong>
+                  <span>{section.rows.length}</span>
+                </div>
+                <div className="dynamic-rows">
+                  {section.rows.map((row) => (
+                    <button
+                      className={cx("dynamic-row detail-card-row", row.active && "is-active")}
+                      type="button"
+                      key={row.id}
+                      onClick={() => onAction(row.action)}
+                    >
+                      <AvatarPair profiles={profiles} ids={row.ownerIds} />
+                      <span>
+                        <strong>{row.title}</strong>
+                        {row.subtitle ? <em>{row.subtitle}</em> : null}
+                      </span>
+                      <Icon name="chevronRight" />
+                    </button>
+                  ))}
+                </div>
+              </section>
+            ))}
+          </div>
+        ) : null}
       </aside>
     </div>
   );
 }
 
-function DailySummaryPage({ data, profiles, currentUser, request, setData, selectedDate, openDetail }) {
+function NightNoticeBanner({ notice, onOpen }) {
+  return (
+    <button className="night-notice" type="button" onClick={onOpen}>
+      <Icon name="moon" />
+      <span>{notice.text}</span>
+      <Icon name="chevronRight" />
+    </button>
+  );
+}
+
+function CatNoticePage({ profiles, currentUser, now, data, request, setData, setSelectedDate }) {
+  const [variant, setVariant] = useState(0);
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState("");
+  const [sending, setSending] = useState(false);
+  const [sendError, setSendError] = useState("");
+  const notice = useMemo(() => buildCatNotice(now, variant, data), [now, variant, data]);
+  const targetProfile = useMemo(() => profiles.find((profile) => profile.id !== currentUser?.id) || profiles[0] || null, [profiles, currentUser?.id]);
+  const catWords = useMemo(() => (data?.captures || [])
+    .filter((capture) => capture.rawKind === "cat-word" && cleanNoticeBit(capture.text, 120))
+    .sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt))), [data?.captures]);
+  const latestReceived = catWords.find((word) => word.createdBy && word.createdBy !== currentUser?.id);
+  const latestSent = catWords.find((word) => word.createdBy === currentUser?.id);
+  useEffect(() => setVariant(0), [notice.period, notice.date]);
+
+  function beginEdit(text = notice.text) {
+    setDraft(cleanStoryText(text) || notice.text);
+    setSendError("");
+    setEditing(true);
+  }
+
+  async function sendWord(event) {
+    event.preventDefault();
+    const text = draft.trim();
+    if (!text || sending) return;
+    setSending(true);
+    setSendError("");
+    try {
+      const result = await request("/api/couple/capture", {
+        method: "POST",
+        body: {
+          date: notice.date,
+          text,
+          mode: "save",
+          visibility: "shared",
+          rawKind: "cat-word",
+          rawFormat: "text/cat-word",
+          analysisIntent: "gift",
+        },
+      });
+      if (result?.state) {
+        setData(result.state);
+        setSelectedDate(result.state.selectedDate || notice.date);
+      }
+      setEditing(false);
+    } catch (error) {
+      setSendError(error.message);
+    } finally {
+      setSending(false);
+    }
+  }
+
+  return (
+    <section className="cat-note-page">
+      <div className="page-head">
+        <div>
+          <p className="kicker">{notice.isNightLocked ? "夜间" : notice.title}</p>
+          <h1>猫猫的话</h1>
+        </div>
+        <div className="cat-note-actions">
+          <IconButton icon="edit" label="自己编辑" onClick={() => beginEdit()} />
+          <IconButton icon="refresh" label={notice.isNightLocked ? "夜间固定" : "换一句"} onClick={() => setVariant((value) => value + 1)} disabled={notice.isNightLocked || editing} />
+        </div>
+      </div>
+      <section className={cx("cat-note-hero", `is-${notice.period}`, notice.kind && `kind-${notice.kind}`, notice.isLong && "is-long", notice.period === "deepNight" && "is-deep-night")}>
+        <AvatarPair profiles={profiles} className="cat-note-cats" />
+        <span><Icon name={notice.icon} />{notice.title}</span>
+        {editing ? (
+          <form className="cat-word-compose" onSubmit={sendWord}>
+            <textarea
+              value={draft}
+              onChange={(event) => setDraft(event.target.value)}
+              aria-label="猫猫的话"
+              maxLength={180}
+              autoFocus
+            />
+            <div className="cat-word-send-row">
+              {sendError ? <em>{sendError}</em> : <span>{targetProfile ? `给 ${targetProfile.displayName}` : "给对方"}</span>}
+              <div>
+                <IconButton icon="x" label="取消" onClick={() => setEditing(false)} disabled={sending} />
+                <IconButton icon="send" label="送给对方" type="submit" primary disabled={sending || !draft.trim()} />
+              </div>
+            </div>
+          </form>
+        ) : (
+          <h2>{notice.text}</h2>
+        )}
+        {!editing ? <p>{notice.detail}</p> : null}
+        <div className="cat-note-chips">
+          <em><Icon name="clock" />{notice.time}</em>
+          <em><Icon name="calendar" />{notice.date}</em>
+          <em><Icon name="cloud" />{notice.weather}</em>
+        </div>
+        {latestReceived || latestSent ? (
+          <div className="cat-word-tray">
+            {latestReceived ? (
+              <CatWordMini word={latestReceived} profiles={profiles} label="收到" />
+            ) : null}
+            {latestSent ? (
+              <CatWordMini word={latestSent} profiles={profiles} label="送出" onClick={() => beginEdit(latestSent.text)} />
+            ) : null}
+          </div>
+        ) : null}
+      </section>
+    </section>
+  );
+}
+
+function CatWordMini({ word, profiles, label, onClick }) {
+  const profile = profiles.find((item) => item.id === word.createdBy);
+  const body = cleanNoticeBit(word.text, 52);
+  const content = (
+    <>
+      <CatAvatar profile={profile} />
+      <span>
+        <b>{label}</b>
+        <em>{body}</em>
+      </span>
+    </>
+  );
+  if (onClick) {
+    return (
+      <button className="cat-word-mini" type="button" onClick={onClick}>
+        {content}
+      </button>
+    );
+  }
+  return <div className="cat-word-mini">{content}</div>;
+}
+
+function DailySummaryPage({ data, profiles, currentUser, request, setData, selectedDate, chooseDate, openDetail }) {
   const [pulse, setPulse] = useState(() => data.diaryDay?.userDays?.[currentUser?.id] || {});
+  const [refreshing, setRefreshing] = useState(false);
+  const [refreshError, setRefreshError] = useState("");
+  const [refreshMessage, setRefreshMessage] = useState("");
   const summary = data.dailySummary;
   const title = storyDisplayTitle(summary, selectedDate);
   const narrative = cleanStoryText(summary?.narrative);
   const nextStep = cleanStoryText(summary?.nextStep);
   const titleIsDate = title === selectedDate;
   const context = useMemo(() => ({ profiles, currentUser, selectedDate }), [profiles, currentUser, selectedDate]);
-  const selectedCards = useMemo(() => sortCards((data.scheduleItemCards || []).filter((card) => card.date === selectedDate)), [data.scheduleItemCards, selectedDate]);
+  const selectedCards = useMemo(() => sortCards((data.scheduleItemCards || []).filter((card) => card.date === selectedDate && !isDefaultPromptCard(card))), [data.scheduleItemCards, selectedDate]);
   const selectedMemories = useMemo(() => (data.memoryItems || []).filter((item) => item.suggestedDate === selectedDate || String(item.updatedAt || "").slice(0, 10) === selectedDate).slice(0, 8), [data.memoryItems, selectedDate]);
   const completedRows = useMemo(() => (summary?.completed?.length ? summary.completed : selectedCards.filter(isCompletedCard)).slice(0, 8).map((item) => {
     if (item.sourceType) return lifeCardRow(item, context);
     return summaryRow(item, "完成", context);
-  }), [summary?.completed, selectedCards, context]);
+  }).filter((row) => cleanStoryText(row.title)), [summary?.completed, selectedCards, context]);
   const missedRows = useMemo(() => (summary?.missed?.length ? summary.missed : selectedCards.filter((card) => !isCompletedCard(card))).slice(0, 8).map((item) => {
     if (item.sourceType) return lifeCardRow(item, context);
     return summaryRow(item, "待推进", context);
-  }), [summary?.missed, selectedCards, context]);
+  }).filter((row) => cleanStoryText(row.title)), [summary?.missed, selectedCards, context]);
   const momentRows = useMemo(() => {
     const captures = data.captures?.length
       ? data.captures
@@ -2133,19 +2761,91 @@ function DailySummaryPage({ data, profiles, currentUser, request, setData, selec
           rawKind: "raw",
           rawFormat: item.photoCount ? "markdown+photo" : "markdown",
         }));
-    return captures.slice(0, 8).map((capture) => captureRow(capture, context));
+    return captures
+      .filter((capture) => cleanStoryText(capture.text) || capture.assets?.length)
+      .slice(0, 8)
+      .map((capture) => captureRow(capture, context));
   }, [summary?.moments, data.captures, context, selectedDate]);
   const memoryRows = useMemo(() => {
     const hooks = summary?.memoryHooks?.length ? summary.memoryHooks : selectedMemories;
     return hooks.slice(0, 8).map((item) => item.group ? memoryRow(item, context) : summaryRow(item, "记忆", context));
   }, [summary?.memoryHooks, selectedMemories, context]);
+  const sourceStats = useMemo(() => [
+    { key: "done", icon: "check", label: "完成", value: summary?.stats ? `${summary.stats.done || 0}/${summary.stats.total || 0}` : `${selectedCards.filter(isCompletedCard).length}/${selectedCards.length}` },
+    { key: "captures", icon: "camera", label: "随手记", value: summary?.sourceCounts?.captures ?? data.captures?.length ?? 0 },
+    { key: "memory", icon: "bookmark", label: "记忆", value: summary?.memoryHooks?.length ?? selectedMemories.length },
+    { key: "photos", icon: "image", label: "照片", value: summary?.photos?.length ?? 0 },
+  ], [summary, selectedCards, data.captures?.length, selectedMemories.length]);
+  const analysis = summary?.analysis || {};
+  const keyMoment = analysis.keyMoment?.text || analysis.keyMoment?.title
+    ? analysis.keyMoment
+    : null;
+  const diary = analysis.diary?.text
+    ? analysis.diary
+    : { title: titleIsDate ? "日记" : title, text: narrative };
+  const coreContributionItems = analysis.coreContributions?.length
+    ? analysis.coreContributions
+    : (summary?.people || [])
+        .filter((person) => person.smallAchievement)
+        .map((person) => ({
+          title: person.displayName,
+          detail: person.smallAchievement,
+          userIds: [person.userId],
+          evidence: ["核心贡献"],
+        }));
+  const carryForwardItems = analysis.carryForward?.length
+    ? analysis.carryForward
+    : missedRows.slice(0, 3).map((row) => ({
+        title: row.title,
+        detail: nextStep,
+        userIds: row.ownerIds || [],
+        evidence: [row.subtitle].filter(Boolean),
+      }));
+  const memoryClueItems = analysis.memoryClues?.length
+    ? analysis.memoryClues
+    : memoryRows.slice(0, 3).map((row) => ({
+        title: row.title,
+        detail: row.subtitle,
+        userIds: row.ownerIds || [],
+        evidence: ["长期记忆"],
+      }));
   useEffect(() => {
     setPulse(data.diaryDay?.userDays?.[currentUser?.id] || {});
   }, [data.diaryDay, currentUser?.id]);
 
+  async function waitForSummaryJob(jobId) {
+    for (let attempt = 0; attempt < 220; attempt += 1) {
+      const result = await request(`/api/jobs/${encodeURIComponent(jobId)}`);
+      const job = result?.job;
+      if (job?.status === "completed") return job.result;
+      if (job?.status === "failed") throw new Error(job.error || "Agent 生成失败");
+      await new Promise((resolve) => window.setTimeout(resolve, attempt < 8 ? 700 : 1300));
+    }
+    throw new Error("Agent 生成超时");
+  }
+
   async function refresh() {
-    const result = await request("/api/couple/daily-summary/refresh", { method: "POST", body: { date: selectedDate } });
-    if (result) setData(result.state);
+    setRefreshing(true);
+    setRefreshError("");
+    setRefreshMessage("生成中");
+    try {
+      const result = await request("/api/couple/daily-summary/refresh", {
+        method: "POST",
+        body: { date: selectedDate, useAgent: true, requireAgent: true, async: true, timeoutMs: 180000 },
+      });
+      if (result?.jobId) {
+        const jobResult = await waitForSummaryJob(result.jobId);
+        if (jobResult?.state) setData(jobResult.state);
+      } else if (result?.state) {
+        setData(result.state);
+      }
+      setRefreshMessage("已生成");
+    } catch (error) {
+      setRefreshError(error.message || "Agent 未生成");
+    } finally {
+      setRefreshing(false);
+      window.setTimeout(() => setRefreshMessage(""), 1200);
+    }
   }
 
   async function savePulse(event) {
@@ -2162,15 +2862,25 @@ function DailySummaryPage({ data, profiles, currentUser, request, setData, selec
     if (result) setData(result.state);
   }
 
+  const generatedLabel = summary?.generatedAt ? compactDateTime(summary.generatedAt) : "";
+  const visibleDiary = cleanStoryText(diary.text || narrative);
+  const hasSourceRows = Boolean(completedRows.length || missedRows.length || memoryRows.length);
+  const sourceNote = summary?.mode === "agent" ? cleanStoryText(summary.qualityNote || nextStep) : "";
+
   return (
     <section className="story-page">
       <div className="page-head">
         <div className="story-heading">
-          <h1>{title}</h1>
-          {!titleIsDate ? <span>{selectedDate}</span> : null}
+          <p className="kicker">Daily Story</p>
+          <h1>{summary ? title : "日总结"}</h1>
+          <span>{selectedDate}</span>
         </div>
-        <IconButton icon="sparkle" label="重新生成日总结" onClick={refresh} />
+        <div className="story-head-actions">
+          {refreshError ? <span>{refreshError}</span> : refreshMessage ? <span>{refreshMessage}</span> : null}
+          <IconButton icon={refreshing ? "refresh" : "sparkle"} label="Agent 生成" onClick={refresh} disabled={refreshing} className={refreshing ? "is-spinning" : ""} />
+        </div>
       </div>
+      <DateRail selectedDate={selectedDate} chooseDate={chooseDate} />
       <form className="pulse-strip" onSubmit={savePulse}>
         <CatAvatar profile={currentUser} />
         <input type="number" min="1" max="10" value={pulse.dailyScore || ""} onChange={(event) => setPulse({ ...pulse, dailyScore: event.target.value })} aria-label="今日打分" placeholder="/10" />
@@ -2179,53 +2889,177 @@ function DailySummaryPage({ data, profiles, currentUser, request, setData, selec
         <IconButton icon="check" label="保存状态" type="submit" primary />
       </form>
       {summary ? (
-        <article className="story-panel">
+        <article className="story-panel story-panel-ai">
           <div className="story-visual">
             {summary.illustration?.type === "photo" && summary.illustration.url ? <img src={summary.illustration.url} alt={summary.illustration.alt || "当天照片"} /> : <AvatarPair profiles={data.profiles} className="story-cats" />}
+            <div className="story-visual-caption">
+              <span>{summaryModeLabel(summary.mode)}</span>
+              {generatedLabel ? <time>{generatedLabel}</time> : null}
+            </div>
           </div>
           <div className="story-copy">
             <div className="story-copy-head">
-              <span>Agent 分析</span>
-              <strong>{summary.mode === "agent" ? "Agent 回忆" : "本地回忆"}</strong>
+              <span><Icon name="sparkle" />AI 分析</span>
+              <strong>{summary.qualityLabel || summaryModeLabel(summary.mode)}</strong>
             </div>
-            {narrative ? <p>{narrative}</p> : null}
-            <div className="story-meta">
-              <span>完成 {summary.stats?.done || 0}/{summary.stats?.total || 0}</span>
-              {summary.locations?.length ? <span>地点 {summary.locations.slice(0, 2).join("、")}</span> : null}
-              {summary.photos?.length ? <span>照片 {summary.photos.length}</span> : null}
-              {summary.memoryHooks?.length ? <span>记忆 {summary.memoryHooks.length}</span> : null}
+            {visibleDiary ? (
+              <section className="diary-sheet is-main">
+                <span>日记</span>
+                <h2>{diary.title || "日记"}</h2>
+                <p>{visibleDiary}</p>
+              </section>
+            ) : null}
+            <div className="ai-analysis-grid">
+              <AnalysisSpot icon="star" label="最开心" entry={keyMoment} profiles={profiles} />
+              <AnalysisList icon="check" label="核心贡献" entries={coreContributionItems} profiles={profiles} />
+              <AnalysisList icon="calendar" label="明天" entries={carryForwardItems} profiles={profiles} muted />
+              <AnalysisList icon="bookmark" label="长期记忆" entries={memoryClueItems} profiles={profiles} accent />
             </div>
-            <div className="story-grid">
-              <StoryList title="完成" rows={completedRows.slice(0, 4)} profiles={profiles} onOpen={(row) => openDetail(row.type, row.payload)} />
-              <StoryList title="待推进" rows={missedRows.slice(0, 4)} profiles={profiles} onOpen={(row) => openDetail(row.type, row.payload)} muted />
-              <StoryList title="记忆" rows={memoryRows.slice(0, 4)} profiles={profiles} onOpen={(row) => openDetail(row.type, row.payload)} accent />
-            </div>
-            {nextStep ? <p className="next-step">{nextStep}</p> : null}
+            <DailySummarySourceStrip stats={sourceStats} locations={summary.locations} note={sourceNote} />
           </div>
         </article>
       ) : (
-        <section className="story-panel story-panel-fallback">
+        <section className="story-empty-panel">
           <div className="story-visual">
             <AvatarPair profiles={data.profiles} className="story-cats" />
           </div>
-          <div className="story-copy">
-            <div className="story-copy-head">
-              <span>Agent 分析</span>
-              <strong>待生成</strong>
-            </div>
-            <div className="story-meta">
-              <span>完成 {selectedCards.filter(isCompletedCard).length}/{selectedCards.length}</span>
-              <span>随手记 {data.captures?.length || 0}</span>
-              <span>记忆 {selectedMemories.length}</span>
-            </div>
-            <div className="story-grid">
-              <StoryList title="猫猫的事" rows={missedRows.slice(0, 4)} profiles={profiles} onOpen={(row) => openDetail(row.type, row.payload)} />
-              <StoryList title="记忆" rows={memoryRows.slice(0, 4)} profiles={profiles} onOpen={(row) => openDetail(row.type, row.payload)} accent />
-            </div>
+          <div>
+            <span>Agent</span>
+            <h2>{fallbackDailyTitles[stableIndex(selectedDate, fallbackDailyTitles.length)]}</h2>
+            <button type="button" onClick={refresh} disabled={refreshing}>
+              <Icon name={refreshing ? "refresh" : "sparkle"} />
+              {refreshing ? "生成中" : "生成"}
+            </button>
           </div>
         </section>
       )}
-      <DynamicList title="今天的随手记" rows={momentRows} profiles={profiles} className="raw-shelf story-capture-full" onOpen={(row) => openDetail(row.type, row.payload)} />
+      {hasSourceRows ? (
+        <div className="story-source-grid">
+          <StoryList title="完成" rows={completedRows.slice(0, 4)} profiles={profiles} onOpen={(row) => openDetail(row.type, row.payload)} />
+          <StoryList title="明天" rows={missedRows.slice(0, 4)} profiles={profiles} onOpen={(row) => openDetail(row.type, row.payload)} muted />
+          <StoryList title="记忆" rows={memoryRows.slice(0, 4)} profiles={profiles} onOpen={(row) => openDetail(row.type, row.payload)} accent />
+        </div>
+      ) : null}
+      <CollapsibleSourceList title="随手记" rows={momentRows} profiles={profiles} onOpen={(row) => openDetail(row.type, row.payload)} />
+    </section>
+  );
+}
+
+function CollapsibleSourceList({ title, rows, profiles, onOpen }) {
+  if (!rows?.length) return null;
+  return (
+    <details className="story-evidence">
+      <summary>
+        <span>
+          <Icon name="camera" />
+          <strong>{title}</strong>
+        </span>
+        <em>{rows.length}</em>
+        <Icon name="chevronDown" />
+      </summary>
+      <div className="story-evidence-rows">
+        {rows.map((row) => (
+          <button className="dynamic-row" type="button" key={row.id || row.title} onClick={() => onOpen?.(row)}>
+            <AvatarPair profiles={profiles} ids={row.ownerIds} />
+            <span>
+              <strong>{row.title}</strong>
+              {row.subtitle ? <em>{row.subtitle}</em> : null}
+            </span>
+            <Icon name="chevronRight" />
+          </button>
+        ))}
+      </div>
+    </details>
+  );
+}
+
+function DailySummarySourceStrip({ stats, locations, note }) {
+  return (
+    <div className="story-source-strip">
+      {(stats || []).map((item) => (
+        <span key={item.key}>
+          <Icon name={item.icon} />
+          <b>{item.label}</b>
+          <em>{item.value}</em>
+        </span>
+      ))}
+      {locations?.length ? (
+        <span className="is-wide">
+          <Icon name="calendar" />
+          <b>地点</b>
+          <em>{locations.slice(0, 2).join("、")}</em>
+        </span>
+      ) : null}
+      {cleanStoryText(note) ? (
+        <span className="is-note">
+          <Icon name="bookmark" />
+          <em>{shortText(note, 86)}</em>
+        </span>
+      ) : null}
+    </div>
+  );
+}
+
+function analysisUserIds(entry) {
+  return Array.isArray(entry?.userIds) ? entry.userIds : Array.isArray(entry?.user_ids) ? entry.user_ids : [];
+}
+
+function analysisTitle(entry, fallback = "") {
+  return cleanStoryText(entry?.title || "") || cleanStoryText(fallback) || cleanCardText(fallback);
+}
+
+function analysisDetail(entry) {
+  return cleanStoryText(entry?.text || entry?.detail || "");
+}
+
+function AnalysisEvidence({ entry }) {
+  const evidence = Array.isArray(entry?.evidence) ? entry.evidence.filter(Boolean).slice(0, 3) : [];
+  if (!evidence.length) return null;
+  return (
+    <div className="analysis-evidence">
+      {evidence.map((item) => <span key={item}>{item}</span>)}
+    </div>
+  );
+}
+
+function AnalysisSpot({ icon, label, entry, profiles }) {
+  const detail = analysisDetail(entry);
+  const title = cleanStoryText(entry?.title || "") || (detail ? cleanStoryText(label) : "");
+  if (!title && !detail) return null;
+  return (
+    <section className="analysis-card analysis-spot">
+      <div className="analysis-card-head">
+        <Icon name={icon} />
+        <strong>{label}</strong>
+        <AvatarPair profiles={profiles} ids={analysisUserIds(entry)} />
+      </div>
+      {title ? <h2>{title}</h2> : null}
+      {detail ? <p>{detail}</p> : null}
+      <AnalysisEvidence entry={entry} />
+    </section>
+  );
+}
+
+function AnalysisList({ icon, label, entries, profiles, muted, accent }) {
+  const rows = (entries || []).filter((entry) => analysisTitle(entry) || analysisDetail(entry)).slice(0, 4);
+  if (!rows.length) return null;
+  return (
+    <section className={cx("analysis-card", muted && "is-muted", accent && "is-accent")}>
+      <div className="analysis-card-head">
+        <Icon name={icon} />
+        <strong>{label}</strong>
+      </div>
+      <div className="analysis-items">
+        {rows.map((entry, index) => (
+          <article key={`${label}-${analysisTitle(entry, index)}-${index}`}>
+            <AvatarPair profiles={profiles} ids={analysisUserIds(entry)} />
+            <span>
+              <b>{analysisTitle(entry, label)}</b>
+              {analysisDetail(entry) ? <em>{analysisDetail(entry)}</em> : null}
+            </span>
+          </article>
+        ))}
+      </div>
     </section>
   );
 }

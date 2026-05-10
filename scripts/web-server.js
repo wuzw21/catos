@@ -20,8 +20,10 @@ const {
   addCapture: addCoupleCapture,
   addDiaryAsset: addCoupleDiaryAsset,
   analyzeCapture: analyzeCoupleCapture,
+  analyzeCaptureWithAgent: analyzeCoupleCaptureWithAgent,
   archiveScheduleItem: archiveCoupleScheduleItem,
   archiveTodoItem: archiveCoupleTodoItem,
+  businessDate: getCoupleBusinessDate,
   createLifeCardsFromConfirmation: createCoupleLifeCardsFromConfirmation,
   deleteCheckinItem: deleteCoupleCheckinItem,
   deleteDeadlineItem: deleteCoupleDeadlineItem,
@@ -169,9 +171,9 @@ function createJob(runner) {
     error: null,
   });
 
-  setTimeout(() => {
+  setTimeout(async () => {
     try {
-      const result = runner();
+      const result = await Promise.resolve(runner());
       backgroundJobs.set(jobId, {
         ...backgroundJobs.get(jobId),
         status: "completed",
@@ -340,7 +342,7 @@ function addLocalDays(dateText, offset) {
 
 function getDailySummaryCronTargetDate() {
   const targetMode = String(process.env.PEOS_COUPLE_DAILY_SUMMARY_CRON_TARGET || "yesterday").toLowerCase();
-  const today = formatLocalDate();
+  const today = getCoupleBusinessDate();
   return targetMode === "today" ? today : addLocalDays(today, -1);
 }
 
@@ -933,6 +935,21 @@ async function handleApi(req, res, url) {
     try {
       const bodyText = await readBody(req);
       const body = bodyText ? JSON.parse(bodyText) : {};
+      if (body.analysisMode === "agent") {
+        const jobId = createJob(async () => {
+          const confirmation = await analyzeCoupleCaptureWithAgent(session.userId, body);
+          return {
+            confirmation,
+            state: getCoupleState(session.userId, { date: body.date || confirmation.date }),
+          };
+        });
+        sendJson(res, 202, {
+          ok: true,
+          jobId,
+          status: "running",
+        });
+        return true;
+      }
       const confirmation = analyzeCoupleCapture(session.userId, body);
       sendJson(res, 200, {
         ok: true,
@@ -976,14 +993,35 @@ async function handleApi(req, res, url) {
     try {
       const bodyText = await readBody(req);
       const body = bodyText ? JSON.parse(bodyText) : {};
-      const { result } = refreshCoupleDailySummary(session.userId, {
+      const refreshPayload = {
         date: body.date,
-        useAgent: body.useAgent === true,
-      });
+        includePrivate: body.includePrivate === true,
+        useAgent: body.useAgent !== false,
+        requireAgent: body.requireAgent === true,
+        model: body.model,
+        timeoutMs: body.timeoutMs,
+      };
+      const runRefresh = () => {
+        const { result } = refreshCoupleDailySummary(session.userId, refreshPayload);
+        return {
+          dailySummary: result,
+          state: getCoupleState(session.userId, { date: body.date || result.date }),
+        };
+      };
+      if (body.async === true) {
+        const jobId = createJob(runRefresh);
+        sendJson(res, 202, {
+          ok: true,
+          jobId,
+          status: "running",
+        });
+        return true;
+      }
+
+      const result = runRefresh();
       sendJson(res, 200, {
         ok: true,
-        dailySummary: result,
-        state: getCoupleState(session.userId, { date: body.date || result.date }),
+        ...result,
       });
     } catch (error) {
       sendJson(res, 400, { ok: false, error: error.message });
