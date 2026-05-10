@@ -45,18 +45,6 @@ const segmentLabels = {
   evening: "晚上",
   allDay: "全天",
 };
-const itemTypeIcons = {
-  thing: "cards",
-  work: "focus",
-  date: "star",
-  purchase: "bookmark",
-  reminder: "clock",
-  checkin: "check",
-  habit: "refresh",
-  schedule: "calendar",
-  todo: "rows",
-  deadline: "clock",
-};
 const weekLabels = ["一", "二", "三", "四", "五", "六", "日"];
 const dayRolloverHour = 3;
 const deepNightNoticeText = "夜已深了，猫猫要早点休息哦！";
@@ -342,10 +330,6 @@ function shortDate(value) {
 
 function cx(...parts) {
   return parts.filter(Boolean).join(" ");
-}
-
-function itemTypeIcon(type) {
-  return itemTypeIcons[type] || "cards";
 }
 
 async function readFileAsDataUrl(file) {
@@ -1693,7 +1677,6 @@ export function App() {
             setEditingCard={setEditingCard}
             openDetail={openDetail}
             composingRef={composingRef}
-            navigate={navigate}
           />
         )}
         {page === "month" && (
@@ -1752,7 +1735,7 @@ function MobileTabBar({ page, navigate }) {
       {items.map((item) => (
         <button
           key={item.id}
-          className={cx(page === item.id && "is-active", item.id === "cat-note" && "is-cat-jump")}
+          className={cx(page === item.id && "is-active")}
           type="button"
           onClick={() => navigate(item.id)}
           aria-label={item.label}
@@ -1821,7 +1804,7 @@ function TopNav({ page, navigate, profiles, currentUser, logout }) {
         {items.map((item) => (
           <button
             key={item.id}
-            className={cx(page === item.id && "is-active", item.id === "cat-note" && "is-cat-jump")}
+            className={cx(page === item.id && "is-active")}
             type="button"
             onClick={() => navigate(item.id)}
             aria-label={item.id === "cat-note" ? "打开猫猫的话" : item.label}
@@ -1869,7 +1852,6 @@ function Dashboard(props) {
     setEditingCard,
     openDetail,
     composingRef,
-    navigate,
   } = props;
 
   return (
@@ -1908,85 +1890,6 @@ function Dashboard(props) {
         openDetail={openDetail}
         chooseDate={chooseDate}
       />
-      <TodayOverview
-        data={data}
-        profiles={profiles}
-        currentUser={currentUser}
-        selectedDate={selectedDate}
-        navigate={navigate}
-        openDetail={openDetail}
-      />
-    </section>
-  );
-}
-
-function TodayOverview({ data, profiles, currentUser, selectedDate, navigate, openDetail }) {
-  const context = useMemo(() => ({ profiles, currentUser, selectedDate }), [profiles, currentUser, selectedDate]);
-  const summary = data.dailySummary?.date === selectedDate ? data.dailySummary : null;
-  const cards = useMemo(() => sortCards((data.scheduleItemCards || [])
-    .filter((card) => card.date === selectedDate && !isDefaultPromptCard(card) && !isArchivedCard(card)))
-    .slice(0, 3), [data.scheduleItemCards, selectedDate]);
-  const captures = useMemo(() => (data.captures || [])
-    .filter((capture) => cleanStoryText(capture.text) || capture.assets?.length)
-    .slice(0, 3), [data.captures]);
-  const memoryCount = (data.memoryItems || []).filter((item) => item.suggestedDate === selectedDate || String(item.updatedAt || "").slice(0, 10) === selectedDate).length;
-  const analysis = summary?.analysis || {};
-  const title = summary ? storyDisplayTitle(summary, selectedDate) : "";
-  const diary = cleanStoryText(analysis.diary?.text || summary?.narrative || "");
-  const keyMoment = cleanStoryText(analysis.keyMoment?.title || analysis.keyMoment?.text || "");
-  const tomorrow = cleanStoryText(analysis.dailyReview?.tomorrow?.title || analysis.dailyReview?.tomorrow?.text || summary?.nextStep || "");
-  const body = shortText(diary || keyMoment || tomorrow, 92);
-  const hasOverview = Boolean(summary || cards.length || captures.length || memoryCount);
-  const stats = [
-    { key: "cards", icon: "cards", value: cards.length },
-    { key: "captures", icon: "camera", value: captures.length },
-    { key: "memory", icon: "bookmark", value: memoryCount },
-  ].filter((item) => item.value);
-
-  if (!hasOverview) return null;
-
-  return (
-    <section className="today-glance">
-      <button className={cx("today-story", !summary && "is-quiet")} type="button" onClick={() => navigate("daily-summary")}>
-        <span className="today-story-mark">
-          <Icon name={summary ? "sparkle" : "calendar"} />
-        </span>
-        <span className="today-story-copy">
-          <strong>{title || (selectedDate === today() ? "今天" : shortDate(selectedDate))}</strong>
-          {body ? <em>{body}</em> : null}
-        </span>
-        {stats.length ? (
-          <span className="today-story-stats" aria-hidden="true">
-            {stats.map((item) => (
-              <i key={item.key}>
-                <Icon name={item.icon} />
-                <b>{item.value}</b>
-              </i>
-            ))}
-          </span>
-        ) : null}
-      </button>
-      {cards.length || captures.length ? (
-        <div className="today-pins">
-          {cards.slice(0, 2).map((card) => (
-            <button key={card.id} type="button" onClick={() => openDetail("lifeCard", card)}>
-              <Icon name={itemTypeIcon(card.itemType || card.sourceType)} />
-              <span>{displayCardTitle(card.title || card.sourceCaptureSummary || "猫猫的事")}</span>
-              <em>{primaryTimeLabel(card)}</em>
-            </button>
-          ))}
-          {captures.slice(0, Math.max(0, 2 - Math.min(cards.length, 2))).map((capture) => {
-            const row = captureRow(capture, context);
-            return (
-              <button key={row.id} type="button" onClick={() => openDetail("capture", capture)}>
-                <Icon name="camera" />
-                <span>{row.title}</span>
-                {row.subtitle ? <em>{row.subtitle}</em> : null}
-              </button>
-            );
-          })}
-        </div>
-      ) : null}
     </section>
   );
 }
