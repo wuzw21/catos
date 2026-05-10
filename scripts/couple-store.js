@@ -694,12 +694,33 @@ function inferDueAt(text, date, segment) {
   return `${normalizeDate(date)}T${clock || "23:59"}`;
 }
 
-function normalizeLifeCardSteps(steps, participants = []) {
+function cleanStoredLifeCardStepTitle(title, parentTitle = "") {
+  const parent = sanitizeText(parentTitle, 120).replace(/\s+/g, " ").trim();
+  let value = sanitizeText(title, 120)
+    .replace(/^(?:第?[一二两三四五六七八九十\d]+步|分(?:[一二两三四五六七八九十\d]+)?步|步骤\s*[一二两三四五六七八九十\d]*|step\s*\d*)\s*[:：.、-]?\s*/i, "")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  while (parent && value.startsWith(parent)) {
+    value = value.slice(parent.length).trim();
+  }
+
+  return value
+    .replace(/^(?:[:：,，.。;；、\-\s]+)+/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function normalizeLifeCardSteps(steps, participants = [], parentTitle = "") {
+  const seen = new Set();
   return (Array.isArray(steps) ? steps : [])
     .map((step, index) => {
       const source = typeof step === "string" ? { title: step } : (step || {});
-      const title = sanitizeText(source.title, 120);
+      const title = cleanStoredLifeCardStepTitle(source.title, parentTitle);
       if (!title) return null;
+      const key = normalizedTitleKey(title);
+      if (key && seen.has(key)) return null;
+      if (key) seen.add(key);
       const ownerId = participants.includes(source.ownerId) ? source.ownerId : "";
       return {
         id: sanitizeText(source.id, 80) || `step-${index + 1}`,
@@ -852,10 +873,13 @@ function buildLifeCardPlanning(payload = {}, existing = {}) {
   );
   const plannedAt = normalizeDateTime(payload.plannedAt) || normalizeDateTime(existing.plannedAt) || inferPlannedAt(text, date, segment, durationMin);
   const dueAt = normalizeDateTime(payload.dueAt) || normalizeDateTime(existing.dueAt) || inferDueAt(text, date, segment);
-  const steps = normalizeLifeCardSteps(payload.steps, participants).length
-    ? normalizeLifeCardSteps(payload.steps, participants)
-    : (normalizeLifeCardSteps(existing.steps, participants).length
-        ? normalizeLifeCardSteps(existing.steps, participants)
+  const parentTitle = payload.title ?? existing.title ?? "";
+  const payloadSteps = normalizeLifeCardSteps(payload.steps, participants, parentTitle);
+  const existingSteps = normalizeLifeCardSteps(existing.steps, participants, parentTitle);
+  const steps = payloadSteps.length
+    ? payloadSteps
+    : (existingSteps.length
+        ? existingSteps
         : inferLifeCardSteps({ ...payload, title: payload.title ?? existing.title, detail: payload.detail ?? existing.detail, durationMin }, participants));
   const timeBlocks = normalizeLifeCardTimeBlocks(payload.timeBlocks, steps).length
     ? normalizeLifeCardTimeBlocks(payload.timeBlocks, steps)
@@ -868,7 +892,7 @@ function buildLifeCardPlanning(payload = {}, existing = {}) {
 
 function publicPlanningFields(item) {
   const participants = Array.isArray(item.participants) ? item.participants : [];
-  const steps = normalizeLifeCardSteps(item.steps, participants);
+  const steps = normalizeLifeCardSteps(item.steps, participants, item.title);
   return {
     plannedAt: normalizeDateTime(item.plannedAt),
     dueAt: normalizeDateTime(item.dueAt),
@@ -1308,7 +1332,7 @@ function applyStepAwareStatusToggle(item, targetUserId, userId, payload = {}) {
     ? item.statusByUser[targetUserId]
     : "todo";
   const requestedStatus = validStatuses.has(payload.status) ? payload.status : "";
-  const steps = normalizeLifeCardSteps(item.steps, item.participants);
+  const steps = normalizeLifeCardSteps(item.steps, item.participants, item.title);
 
   if (steps.length) {
     const shouldUndo = requestedStatus === "todo" || currentStatus === "done" || item.archivedAt;
@@ -1373,7 +1397,7 @@ function toggleLifeCardStep(userId, payload = {}) {
       item.participants.push(targetUserId);
     }
 
-    const steps = normalizeLifeCardSteps(item.steps, item.participants);
+    const steps = normalizeLifeCardSteps(item.steps, item.participants, item.title);
     const stepId = sanitizeText(payload.stepId, 80);
     const stepIndex = steps.findIndex((step) => step.id === stepId);
     if (stepIndex === -1) {
@@ -2670,7 +2694,7 @@ function normalizeAgentRelatedItem(store, userId, source, fallback) {
   const title = sanitizeText(raw.title || cleanCaptureTitle(text), 180);
   const detail = sanitizeText(raw.detail || "", 800);
   const priority = validPriorities.has(raw.priority) ? raw.priority : fallback.priority;
-  const rawSteps = normalizeLifeCardSteps(raw.steps, participants);
+  const rawSteps = normalizeLifeCardSteps(raw.steps, participants, title);
   const steps = rawSteps.length
     ? rawSteps
     : [{ title, ownerId, estimateMin: normalizeDurationMin(raw.durationMin, 0), status: "todo", sortOrder: 0 }];
@@ -2726,7 +2750,7 @@ function normalizeCaptureAgentConfirmation(store, userId, payload, capture, text
   const relatedTitleKeys = rawRelatedItems
     .map((item) => normalizedTitleKey(item?.title))
     .filter(Boolean);
-  const filteredSteps = normalizeLifeCardSteps(agentOutput?.steps, participants)
+  const filteredSteps = normalizeLifeCardSteps(agentOutput?.steps, participants, title)
     .filter((step) => {
       const key = normalizedTitleKey(step.title);
       return !relatedTitleKeys.some((relatedKey) => key.includes(relatedKey) || relatedKey.includes(key));
@@ -3569,6 +3593,7 @@ function buildMemoryItems(store, userId, selectedDate, relationshipInsights) {
 function publicScheduleItemCard(store, publicItem, sourceType, userId, options = {}) {
   const itemType = normalizeScheduleItemType(publicItem.itemType, options.itemType || "thing");
   const participants = Array.isArray(publicItem.participants) ? publicItem.participants : [];
+  const steps = normalizeLifeCardSteps(publicItem.steps, participants, publicItem.title);
   const doneUsers = participants.filter((id) => publicItem.statusByUser?.[id] === "done");
   const date = normalizeDate(options.date || publicItem.date);
   const card = {
@@ -3604,8 +3629,8 @@ function publicScheduleItemCard(store, publicItem, sourceType, userId, options =
     plannedAt: publicItem.plannedAt || "",
     dueAt: publicItem.dueAt || "",
     durationMin: normalizeDurationMin(publicItem.durationMin, 0),
-    steps: normalizeLifeCardSteps(publicItem.steps, participants),
-    timeBlocks: normalizeLifeCardTimeBlocks(publicItem.timeBlocks, normalizeLifeCardSteps(publicItem.steps, participants)),
+    steps,
+    timeBlocks: normalizeLifeCardTimeBlocks(publicItem.timeBlocks, steps),
     timeEntries: normalizeLifeCardTimeEntries(publicItem.timeEntries),
     archivedAt: publicItem.archivedAt || "",
     archivedBy: publicItem.archivedBy || "",
