@@ -44,6 +44,53 @@ try {
   });
   assert.equal(refactor.decision, "schedule");
   assert.deepEqual(titles(refactor.steps), ["定位影响", "改核心", "回归检查"]);
+
+  const capture = store.addCapture("you", {
+    date: "2026-05-10",
+    text: "她不喜欢太吵的店",
+    mode: "analysis",
+    visibility: "shared",
+  }).result;
+  const acceptedMemory = store.acceptCaptureRoute("you", {
+    captureId: capture.id,
+    sourceCaptureId: capture.id,
+    decision: "memory",
+    memoryKind: "preference",
+    title: "不喜欢太吵的店",
+    detail: "约会和吃饭时优先找安静一点的地方。",
+    date: "2026-05-10",
+  }).result;
+  assert.equal(acceptedMemory.decision, "memory");
+  assert(acceptedMemory.capture.acceptedRoutes[0].memoryItemId);
+
+  const linkedCapture = store.addCapture("you", {
+    date: "2026-05-10",
+    text: "下周一下午提醒我把作业改完，然后买护手霜",
+    mode: "analysis",
+    visibility: "shared",
+  }).result;
+  const linkedConfirmation = store.analyzeCapture("you", {
+    captureId: linkedCapture.id,
+    date: "2026-05-10",
+    analysisMode: "template",
+  });
+  const created = store.acceptCaptureRoute("you", linkedConfirmation).result;
+  assert.equal(created.cards.length, 2);
+
+  const state = store.getState("you", { date: "2026-05-11" });
+  const purchaseCard = state.scheduleItemCards.find((card) => card.title === "买护手霜");
+  assert(purchaseCard);
+  assert(purchaseCard.tags.includes("购买"));
+  assert(purchaseCard.memoryKinds.includes("purchase"));
+  assert(purchaseCard.relations.some((relation) => ["group", "child", "parent"].includes(relation.relationType)));
+
+  const remembered = store.rememberLifeCard("you", {
+    sourceType: purchaseCard.sourceType,
+    id: purchaseCard.sourceId,
+    date: purchaseCard.date,
+  }).result;
+  assert.equal(remembered.memory.kind, "purchase");
+  assert(remembered.card.memoryLinks.some((item) => item.id === remembered.memory.id));
 } finally {
   fs.rmSync(tempRoot, { recursive: true, force: true });
 }

@@ -51,6 +51,19 @@
     "durationMin": {
       "type": "number"
     },
+    "tags": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "memoryKinds": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": ["preference", "wish", "purchase", "promise", "care", "anniversary", "memory", "gratitude", "repair", "identity", "goal", "list"]
+      }
+    },
     "steps": {
       "type": "array",
       "items": {
@@ -116,6 +129,19 @@
           },
           "durationMin": {
             "type": "number"
+          },
+          "tags": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "memoryKinds": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": ["preference", "wish", "purchase", "promise", "care", "anniversary", "memory", "gratitude", "repair", "identity", "goal", "list"]
+            }
           },
           "steps": {
             "type": "array",

@@ -422,6 +422,76 @@ function sanitizeList(items, maxItems = 8, maxLength = 180) {
     .slice(0, maxItems);
 }
 
+function normalizeIdList(items, maxItems = 16) {
+  const raw = Array.isArray(items) ? items : String(items || "").split(/[,\s，、]+/);
+  return [...new Set(raw.map((item) => sanitizeText(item, 100)).filter(Boolean))].slice(0, maxItems);
+}
+
+function normalizeTagValue(input) {
+  return sanitizeText(input, 40)
+    .replace(/^#+/, "")
+    .replace(/\s+/g, "")
+    .toLowerCase()
+    .slice(0, 32);
+}
+
+function tagListInput(input) {
+  if (Array.isArray(input)) return input;
+  return String(input || "").split(/[#,，、\s]+/);
+}
+
+function inferLifeCardTags(payload = {}) {
+  const text = `${payload.title || ""} ${payload.detail || ""} ${payload.slot || ""}`.trim();
+  const itemType = normalizeScheduleItemType(payload.itemType, "");
+  const tags = [];
+  const typeLabel = scheduleItemTypeLabels[itemType];
+  if (typeLabel) tags.push(typeLabel);
+  if (payload.priority === "high" || /重要|必须|ddl|deadline|截止|答辩|考试|面试/i.test(text)) tags.push("重要");
+  if (/tfcc|康复|训练|健身|运动|手腕|疼|医院|复诊/i.test(text)) tags.push("健康");
+  if (/作业|论文|学习|复习|读书|课程|考试|答辩|资料|视频|教程/i.test(text)) tags.push("学习");
+  if (/工作|会议|项目|需求|客户|面试|汇报|周报/i.test(text)) tags.push("工作");
+  if (/日料|餐厅|吃|饭|咖啡|奶茶|甜品/i.test(text)) tags.push("吃喝");
+  if (/护手霜|礼物|买|下单|购物|购买/i.test(text)) tags.push("购买");
+  if (/纪念日|生日|周年|情人节|七夕/i.test(text)) tags.push("纪念");
+  if (/照片|相册|回忆|日记|故事/i.test(text)) tags.push("回忆");
+  if (/承诺|答应|说好|帮你|带你|陪你|整理|处理/i.test(text)) tags.push("承诺");
+  if (/开心|累|难过|生气|吵架|道歉|情绪/i.test(text)) tags.push("情绪");
+  if (/安静|太吵|喜欢|不喜欢|偏好|雷区|边界/i.test(text)) tags.push("偏好");
+  return tags.map(normalizeTagValue).filter(Boolean);
+}
+
+function normalizeLifeCardTags(input, payload = {}) {
+  const explicit = tagListInput(input).map(normalizeTagValue).filter(Boolean);
+  return [...new Set([...explicit, ...inferLifeCardTags(payload)])].slice(0, 12);
+}
+
+function memoryKindListInput(input) {
+  if (Array.isArray(input)) return input;
+  return String(input || "").split(/[,\s，、]+/);
+}
+
+function inferLifeCardMemoryKinds(payload = {}) {
+  const text = `${payload.title || ""} ${payload.detail || ""} ${payload.slot || ""}`.trim();
+  const itemType = normalizeScheduleItemType(payload.itemType, "thing");
+  const kinds = [];
+  if (itemType === "purchase") kinds.push("purchase");
+  if (preferencePattern.test(text)) kinds.push("preference");
+  if (wishPattern.test(text)) kinds.push(itemType === "purchase" ? "purchase" : "wish");
+  if (promisePattern.test(text)) kinds.push("promise");
+  if (gratitudePattern.test(text)) kinds.push("gratitude");
+  if (repairPattern.test(text)) kinds.push("repair");
+  if (anniversaryPattern.test(text)) kinds.push("anniversary");
+  if (/照片|相册|回忆|日记|故事/.test(text)) kinds.push("memory");
+  if (/照顾|很累|太累|鼓励|材料|证件|奶茶|晚饭|休息/.test(text)) kinds.push("care");
+  if (/目标|未来|长期|成为|以后想|以后要/.test(text)) kinds.push("goal");
+  return kinds.filter((kind) => validMemoryKinds.has(kind));
+}
+
+function normalizeLifeCardMemoryKinds(input, payload = {}) {
+  const explicit = memoryKindListInput(input).map((item) => normalizeMemoryKind(item)).filter(Boolean);
+  return [...new Set([...explicit, ...inferLifeCardMemoryKinds(payload)])].slice(0, 8);
+}
+
 function sanitizeTextMap(input, maxLength = 80) {
   return Object.fromEntries(
     Object.entries(input && typeof input === "object" ? input : {})
@@ -1484,11 +1554,82 @@ function toggleLifeCardTimer(userId, payload = {}) {
   });
 }
 
+function rememberLifeCard(userId, payload = {}) {
+  return mutateStore((store) => {
+    const sourceType = sanitizeText(payload.sourceType, 40);
+    const item = findLifeCardSourceItem(store, sourceType, payload.id);
+    if (!item) {
+      throw new Error("life card item not found");
+    }
+
+    const itemType = normalizeScheduleItemType(item.itemType, sourceType === "schedule" ? "date" : "thing");
+    const cardId = typedLifeCardId(sourceType, item.id);
+    const inferredKinds = normalizeLifeCardMemoryKinds(item.memoryKinds || item.memoryKind || payload.memoryKinds, { ...item, itemType });
+    const kind = normalizeMemoryKind(payload.kind || payload.memoryKind) || inferredKinds[0] || (itemType === "purchase" ? "purchase" : "memory");
+    store.longTermMemoryItems = Array.isArray(store.longTermMemoryItems) ? store.longTermMemoryItems : [];
+    const existingIndex = store.longTermMemoryItems.findIndex((memory) =>
+      memory.id === payload.memoryId ||
+      (normalizeMemoryKind(memory.kind) === kind && normalizeIdList(memory.sourceCardIds, 12).includes(cardId))
+    );
+    const current = existingIndex >= 0 ? store.longTermMemoryItems[existingIndex] : {};
+    const timestamp = nowIso();
+    const memory = normalizeStoredLongTermMemoryItem(store, {
+      ...current,
+      id: current.id || sanitizeText(payload.memoryId, 100) || insightId(kind, cardId, item.title || ""),
+      kind,
+      title: payload.title || current.title || item.title || relationshipInsightKindLabels[kind] || "长期记忆",
+      detail: payload.detail || current.detail || item.detail || item.slot || sourceCaptureSummary(store, item.sourceCaptureId),
+      ownerId: payload.ownerId || current.ownerId || item.ownerId || "shared",
+      targetUserId: payload.targetUserId || current.targetUserId || "",
+      source: "lifeCard",
+      sourceCaptureId: item.sourceCaptureId || current.sourceCaptureId || "",
+      sourceCardIds: [...normalizeIdList(current.sourceCardIds, 12), cardId],
+      relatedCardIds: [...normalizeIdList(current.relatedCardIds, 12), ...normalizeIdList(item.relationIds, 12)],
+      tags: normalizeLifeCardTags(payload.tags || current.tags || item.tags, { ...item, itemType }),
+      suggestedDate: payload.suggestedDate || current.suggestedDate || item.date || businessDate(),
+      itemType,
+      score: current.score || (item.priority === "high" ? 86 : 66),
+      createdBy: current.createdBy || userId,
+      updatedBy: userId,
+      createdAt: current.createdAt || timestamp,
+      updatedAt: timestamp,
+    });
+    if (!memory) {
+      throw new Error("memory title is required");
+    }
+
+    if (existingIndex >= 0) {
+      store.longTermMemoryItems[existingIndex] = memory;
+    } else {
+      store.longTermMemoryItems.unshift(memory);
+    }
+    store.longTermMemoryItems = store.longTermMemoryItems.slice(0, 300);
+    item.linkedMemoryIds = normalizeIdList([...(item.linkedMemoryIds || []), memory.id], 12);
+    item.memoryKinds = normalizeLifeCardMemoryKinds([...(item.memoryKinds || []), kind], item);
+    item.tags = normalizeLifeCardTags(item.tags, item);
+    item.updatedBy = userId;
+    item.updatedAt = timestamp;
+    recordOperation(store, userId, existingIndex >= 0 ? "update-memory-link" : "remember", sourceType, item.id, {
+      date: item.date || payload.date,
+      title: item.title,
+      sourceType,
+    });
+
+    return {
+      memory: publicMemoryItem(memory),
+      card: publicScheduleItemCard(store, publicSourceItem(store, item, sourceType, userId), sourceType, userId, {
+        selectedDate: payload.date || item.date,
+      }),
+    };
+  });
+}
+
 function createScheduleItem(store, payload, userId) {
   const profileIds = store.profiles.map((item) => item.id);
   const date = normalizeDate(payload.date);
   const ownerId = normalizeOwnerId(store, payload.ownerId, userId);
   const normalizedParticipants = normalizeParticipants(store, ownerId, payload.participants, userId);
+  const itemType = inferScheduleItemType(payload, "date");
   const timestamp = nowIso();
   const item = {
     id: makeId("event"),
@@ -1496,10 +1637,14 @@ function createScheduleItem(store, payload, userId) {
     segment: normalizeSegment(payload.segment),
     title: sanitizeText(payload.title, 160),
     detail: sanitizeText(payload.detail, 800),
-    itemType: inferScheduleItemType(payload, "date"),
+    itemType,
     sourceCaptureId: sanitizeText(payload.sourceCaptureId, 80),
     relatedGroupId: sanitizeText(payload.relatedGroupId, 80),
     parentItemId: sanitizeText(payload.parentItemId, 80),
+    relationIds: normalizeIdList(payload.relationIds, 16),
+    linkedMemoryIds: normalizeIdList(payload.linkedMemoryIds, 12),
+    tags: normalizeLifeCardTags(payload.tags, { ...payload, itemType }),
+    memoryKinds: normalizeLifeCardMemoryKinds(payload.memoryKinds || payload.memoryKind, { ...payload, itemType }),
     repeatRule: sanitizeText(payload.repeatRule, 120),
     priority: normalizePriority(payload.priority),
     ownerId,
@@ -1528,6 +1673,7 @@ function createTodoItem(store, payload, userId) {
   const bucket = normalizeTodoBucket(payload.bucket);
   const ownerId = normalizeOwnerId(store, payload.ownerId, userId);
   const participants = normalizeParticipants(store, ownerId, payload.participants, userId);
+  const itemType = inferScheduleItemType(payload, "thing");
   const timestamp = nowIso();
   const item = {
     id: makeId("todo"),
@@ -1535,10 +1681,14 @@ function createTodoItem(store, payload, userId) {
     bucket,
     title: sanitizeText(payload.title, 180),
     detail: sanitizeText(payload.detail, 800),
-    itemType: inferScheduleItemType(payload, "thing"),
+    itemType,
     sourceCaptureId: sanitizeText(payload.sourceCaptureId, 80),
     relatedGroupId: sanitizeText(payload.relatedGroupId, 80),
     parentItemId: sanitizeText(payload.parentItemId, 80),
+    relationIds: normalizeIdList(payload.relationIds, 16),
+    linkedMemoryIds: normalizeIdList(payload.linkedMemoryIds, 12),
+    tags: normalizeLifeCardTags(payload.tags, { ...payload, itemType }),
+    memoryKinds: normalizeLifeCardMemoryKinds(payload.memoryKinds || payload.memoryKind, { ...payload, itemType }),
     repeatRule: sanitizeText(payload.repeatRule, 120),
     priority: normalizePriority(payload.priority),
     ownerId,
@@ -1564,15 +1714,20 @@ function createTodoItem(store, payload, userId) {
 
 function createCheckinItem(store, payload, userId) {
   const participants = getProfileIds(store);
+  const itemType = inferScheduleItemType(payload, "checkin");
   const timestamp = nowIso();
   const item = {
     id: makeId("checkin"),
     title: sanitizeText(payload.title, 120),
     slot: sanitizeText(payload.slot, 80),
-    itemType: inferScheduleItemType(payload, "checkin"),
+    itemType,
     sourceCaptureId: sanitizeText(payload.sourceCaptureId, 80),
     relatedGroupId: sanitizeText(payload.relatedGroupId, 80),
     parentItemId: sanitizeText(payload.parentItemId, 80),
+    relationIds: normalizeIdList(payload.relationIds, 16),
+    linkedMemoryIds: normalizeIdList(payload.linkedMemoryIds, 12),
+    tags: normalizeLifeCardTags(payload.tags, { ...payload, itemType }),
+    memoryKinds: normalizeLifeCardMemoryKinds(payload.memoryKinds || payload.memoryKind, { ...payload, itemType }),
     repeatRule: sanitizeText(payload.repeatRule || "daily", 120),
     ownerId: "shared",
     participants,
@@ -1594,16 +1749,21 @@ function createCheckinItem(store, payload, userId) {
 function createDeadlineItem(store, payload, userId) {
   const ownerId = normalizeOwnerId(store, payload.ownerId, userId);
   const participants = normalizeParticipants(store, ownerId, payload.participants, userId);
+  const itemType = inferScheduleItemType(payload, "reminder");
   const timestamp = nowIso();
   const item = {
     id: makeId("deadline"),
     date: normalizeDate(payload.date),
     title: sanitizeText(payload.title, 180),
     detail: sanitizeText(payload.detail, 500),
-    itemType: inferScheduleItemType(payload, "reminder"),
+    itemType,
     sourceCaptureId: sanitizeText(payload.sourceCaptureId, 80),
     relatedGroupId: sanitizeText(payload.relatedGroupId, 80),
     parentItemId: sanitizeText(payload.parentItemId, 80),
+    relationIds: normalizeIdList(payload.relationIds, 16),
+    linkedMemoryIds: normalizeIdList(payload.linkedMemoryIds, 12),
+    tags: normalizeLifeCardTags(payload.tags, { ...payload, itemType }),
+    memoryKinds: normalizeLifeCardMemoryKinds(payload.memoryKinds || payload.memoryKind, { ...payload, itemType }),
     repeatRule: sanitizeText(payload.repeatRule, 120),
     priority: normalizePriority(payload.priority),
     ownerId,
@@ -1648,6 +1808,7 @@ function createDefaultStore() {
     operations: [],
     diaryDays: {},
     dailySummaries: {},
+    longTermMemoryItems: [],
     personalPages: {
       [profiles[0].id]: {
         userId: profiles[0].id,
@@ -1709,12 +1870,19 @@ function ensureStoreShape(store) {
   ["scheduleItems", "todoItems", "checkinItems", "deadlineItems"].forEach((key) => {
     shaped[key] = shaped[key].map((item) => ({
       ...item,
+      relationIds: normalizeIdList(item.relationIds, 16),
+      linkedMemoryIds: normalizeIdList(item.linkedMemoryIds, 12),
+      tags: normalizeLifeCardTags(item.tags, item),
+      memoryKinds: normalizeLifeCardMemoryKinds(item.memoryKinds || item.memoryKind, item),
       timeEntries: normalizeLifeCardTimeEntries(item.timeEntries),
     }));
   });
   shaped.operations = Array.isArray(shaped.operations) ? shaped.operations : [];
   shaped.diaryDays = shaped.diaryDays && typeof shaped.diaryDays === "object" ? shaped.diaryDays : {};
   shaped.dailySummaries = shaped.dailySummaries && typeof shaped.dailySummaries === "object" ? shaped.dailySummaries : {};
+  shaped.longTermMemoryItems = Array.isArray(shaped.longTermMemoryItems)
+    ? shaped.longTermMemoryItems.map((item) => normalizeStoredLongTermMemoryItem(shaped, item)).filter(Boolean)
+    : [];
   shaped.personalPages = shaped.personalPages && typeof shaped.personalPages === "object" ? shaped.personalPages : {};
   shaped.captures = Array.isArray(shaped.captures) ? shaped.captures : [];
   const profileIds = shaped.profiles.map((profile) => profile.id);
@@ -1954,6 +2122,8 @@ function publicCapture(capture) {
         date: sanitizeText(run?.date, 20),
         segment: normalizeSegment(run?.segment),
         confidence: Number.isFinite(Number(run?.confidence)) ? Number(run.confidence) : 0,
+        tags: normalizeLifeCardTags(run?.tags, run),
+        memoryKinds: normalizeLifeCardMemoryKinds(run?.memoryKinds || run?.memoryKind, run),
         createdAt: sanitizeText(run?.createdAt, 40),
       }))
       .filter((run) => run.id)
@@ -1971,6 +2141,9 @@ function publicCapture(capture) {
         ownerId: sanitizeText(route?.ownerId, 80),
         priority: normalizePriority(route?.priority),
         confidence: Number.isFinite(Number(route?.confidence)) ? Number(route.confidence) : 0,
+        tags: normalizeLifeCardTags(route?.tags, route),
+        memoryKinds: normalizeLifeCardMemoryKinds(route?.memoryKinds || route?.memoryKind, route),
+        memoryItemId: sanitizeText(route?.memoryItemId, 100),
         acceptedBy: sanitizeText(route?.acceptedBy, 80),
         acceptedAt: sanitizeText(route?.acceptedAt, 40),
         cardIds: Array.isArray(route?.cardIds) ? route.cardIds.map((id) => sanitizeText(id, 80)).filter(Boolean).slice(0, 8) : [],
@@ -2131,6 +2304,10 @@ function publicScheduleItem(item, profileIds) {
     sourceCaptureId: item.sourceCaptureId || "",
     relatedGroupId: item.relatedGroupId || "",
     parentItemId: item.parentItemId || "",
+    relationIds: normalizeIdList(item.relationIds, 16),
+    linkedMemoryIds: normalizeIdList(item.linkedMemoryIds, 12),
+    tags: normalizeLifeCardTags(item.tags, item),
+    memoryKinds: normalizeLifeCardMemoryKinds(item.memoryKinds || item.memoryKind, item),
     repeatRule: item.repeatRule || "",
     priority: normalizePriority(item.priority),
     ownerId: item.ownerId || "shared",
@@ -2166,6 +2343,10 @@ function publicTodoItem(item, profileIds) {
     sourceCaptureId: item.sourceCaptureId || "",
     relatedGroupId: item.relatedGroupId || "",
     parentItemId: item.parentItemId || "",
+    relationIds: normalizeIdList(item.relationIds, 16),
+    linkedMemoryIds: normalizeIdList(item.linkedMemoryIds, 12),
+    tags: normalizeLifeCardTags(item.tags, item),
+    memoryKinds: normalizeLifeCardMemoryKinds(item.memoryKinds || item.memoryKind, item),
     repeatRule: item.repeatRule || "",
     priority: normalizePriority(item.priority),
     bucket: normalizeTodoBucket(item.bucket),
@@ -2205,6 +2386,10 @@ function publicCheckinItem(item, profileIds, date) {
     sourceCaptureId: item.sourceCaptureId || "",
     relatedGroupId: item.relatedGroupId || "",
     parentItemId: item.parentItemId || "",
+    relationIds: normalizeIdList(item.relationIds, 16),
+    linkedMemoryIds: normalizeIdList(item.linkedMemoryIds, 12),
+    tags: normalizeLifeCardTags(item.tags, item),
+    memoryKinds: normalizeLifeCardMemoryKinds(item.memoryKinds || item.memoryKind, item),
     repeatRule: item.repeatRule || "daily",
     ownerId: "shared",
     participants: normalizedParticipants,
@@ -2247,6 +2432,10 @@ function publicDeadlineItem(item, profileIds) {
     sourceCaptureId: item.sourceCaptureId || "",
     relatedGroupId: item.relatedGroupId || "",
     parentItemId: item.parentItemId || "",
+    relationIds: normalizeIdList(item.relationIds, 16),
+    linkedMemoryIds: normalizeIdList(item.linkedMemoryIds, 12),
+    tags: normalizeLifeCardTags(item.tags, item),
+    memoryKinds: normalizeLifeCardMemoryKinds(item.memoryKinds || item.memoryKind, item),
     repeatRule: item.repeatRule || "",
     priority: normalizePriority(item.priority),
     ownerId: item.ownerId || "shared",
@@ -2476,6 +2665,8 @@ function analyzeCapture(userId, payload = {}) {
     detail,
     repeatRule: itemType === "habit" ? "daily" : "",
     priority,
+    tags: normalizeLifeCardTags(payload.tags, { title, detail, itemType, priority }),
+    memoryKinds: normalizeLifeCardMemoryKinds(payload.memoryKinds || payload.memoryKind, { title, detail, itemType, priority }),
     ...planning,
   };
   const relatedItems = decision === "schedule" && templateMatched ? analyzeRelatedScheduleItems(text, title, base) : [];
@@ -2523,6 +2714,8 @@ function publicCaptureAgentContextItem(item, sourceType) {
     repeatRule: sanitizeText(item.repeatRule, 80),
     plannedAt: normalizeDateTime(item.plannedAt),
     dueAt: normalizeDateTime(item.dueAt),
+    tags: normalizeLifeCardTags(item.tags, item),
+    memoryKinds: normalizeLifeCardMemoryKinds(item.memoryKinds || item.memoryKind, item),
   };
 }
 
@@ -2594,6 +2787,7 @@ function buildCaptureAgentStructuredPrompt(facts) {
     "- ownerId 默认当前用户；只有明确共同参与才用 shared。participants 必须从 profileIds 或 shared 对应成员中选择。",
     "- 相对日期必须按 selectedDate 解析，例如今天下午、周日、下周一。",
     "- 如果一句话包含多个动作，用 relatedItems 拆出子生活卡；标题必须短，不要重复日期词。",
+    "- 可以输出 tags 和 memoryKinds：tags 是短标签；memoryKinds 用于长期记忆沉淀，只能来自 allowedMemoryKinds。",
     "- 如果无法匹配明确动作，返回 decision=capture，title 可以概括 raw。",
     "",
     "输入上下文 JSON：",
@@ -2733,6 +2927,8 @@ function normalizeAgentRelatedItem(store, userId, source, fallback) {
     participants,
     repeatRule: sanitizeText(raw.repeatRule || (itemType === "habit" ? "daily" : ""), 120),
     priority,
+    tags: normalizeLifeCardTags(raw.tags, { title, detail, itemType, priority }),
+    memoryKinds: normalizeLifeCardMemoryKinds(raw.memoryKinds || raw.memoryKind, { title, detail, itemType, priority }),
     ...planning,
   };
 }
@@ -2815,6 +3011,8 @@ function normalizeCaptureAgentConfirmation(store, userId, payload, capture, text
     detail,
     repeatRule: sanitizeText(agentOutput?.repeatRule || (itemType === "habit" ? "daily" : ""), 120),
     priority,
+    tags: normalizeLifeCardTags(agentOutput?.tags, { title, detail, itemType, priority }),
+    memoryKinds: normalizeLifeCardMemoryKinds(agentOutput?.memoryKinds || agentOutput?.memoryKind, { title, detail, itemType, priority }),
     ...planning,
     analysisMode: "agent",
     templateMatched: false,
@@ -2846,6 +3044,8 @@ function recordCaptureAnalysis(userId, confirmation) {
       date: confirmation.date || capture.date,
       segment: confirmation.segment || "allDay",
       confidence: Number.isFinite(Number(confirmation.confidence)) ? Number(confirmation.confidence) : 0,
+      tags: normalizeLifeCardTags(confirmation.tags, confirmation),
+      memoryKinds: normalizeLifeCardMemoryKinds(confirmation.memoryKinds || confirmation.memoryKind, confirmation),
       createdBy: userId,
       createdAt: nowIso(),
     };
@@ -2998,6 +3198,8 @@ function publicRelationshipInsight(insight) {
     sourceCaptureId: sanitizeText(insight.sourceCaptureId, 80),
     sourceText: sanitizeText(insight.sourceText, 180),
     targetUserId: sanitizeText(insight.targetUserId, 80),
+    tags: normalizeLifeCardTags(insight.tags, insight),
+    memoryKinds: normalizeLifeCardMemoryKinds(insight.kind, insight),
     priority: normalizePriority(insight.priority),
     score: Number(insight.score) || 0,
     readOnly: true,
@@ -3440,6 +3642,12 @@ function publicInsightScheduleItemCard(store, insight, userId) {
     slot: "",
     sourceCaptureId: insight.sourceCaptureId || "",
     sourceCaptureSummary: insight.sourceText || sourceCaptureSummary(store, insight.sourceCaptureId),
+    tags: normalizeLifeCardTags(insight.tags, insight),
+    memoryKinds: normalizeLifeCardMemoryKinds(insight.kind, insight),
+    relationIds: [],
+    linkedMemoryIds: [],
+    relations: [],
+    memoryLinks: [],
     repeatRule: "",
     archivedAt: "",
     archivedBy: "",
@@ -3506,6 +3714,12 @@ function memoryGroupForKind(kind) {
 
 function publicMemoryItem(input) {
   const kind = input.kind || "memory";
+  const tags = normalizeLifeCardTags(input.tags, {
+    title: input.title,
+    detail: input.detail,
+    itemType: input.itemType,
+    priority: input.priority,
+  });
   return {
     id: input.id || insightId(kind, input.sourceCaptureId || input.title || kind, input.detail || ""),
     kind,
@@ -3517,6 +3731,9 @@ function publicMemoryItem(input) {
     targetUserId: sanitizeText(input.targetUserId, 80),
     source: input.source || "system",
     sourceCaptureId: sanitizeText(input.sourceCaptureId, 80),
+    sourceCardIds: normalizeIdList(input.sourceCardIds, 12),
+    relatedCardIds: normalizeIdList(input.relatedCardIds, 12),
+    tags,
     actionable: Boolean(input.actionable),
     suggestedDate: input.suggestedDate ? normalizeDate(input.suggestedDate) : "",
     itemType: normalizeScheduleItemType(input.itemType, "reminder"),
@@ -3525,8 +3742,163 @@ function publicMemoryItem(input) {
   };
 }
 
+function normalizeStoredLongTermMemoryItem(store, item = {}) {
+  const kind = normalizeMemoryKind(item.kind) || "memory";
+  const ownerId = normalizeOwnerId(store, item.ownerId || "shared", getProfileIds(store)[0] || "shared");
+  const timestamp = nowIso();
+  const normalized = {
+    id: sanitizeText(item.id, 100) || makeId("memory"),
+    kind,
+    title: sanitizeText(item.title || relationshipInsightKindLabels[kind] || "长期记忆", 140),
+    detail: sanitizeText(item.detail, 800),
+    ownerId,
+    targetUserId: sanitizeText(item.targetUserId, 80),
+    source: sanitizeText(item.source || "manual", 40),
+    sourceCaptureId: sanitizeText(item.sourceCaptureId, 80),
+    sourceCardIds: normalizeIdList(item.sourceCardIds, 12),
+    relatedCardIds: normalizeIdList(item.relatedCardIds, 12),
+    tags: normalizeLifeCardTags(item.tags, item),
+    suggestedDate: item.suggestedDate ? normalizeDate(item.suggestedDate) : "",
+    itemType: normalizeScheduleItemType(item.itemType, "reminder"),
+    score: Number(item.score) || 60,
+    createdBy: sanitizeText(item.createdBy, 80),
+    updatedBy: sanitizeText(item.updatedBy, 80),
+    createdAt: item.createdAt || timestamp,
+    updatedAt: item.updatedAt || item.createdAt || timestamp,
+    archivedAt: sanitizeText(item.archivedAt, 40),
+    archivedBy: sanitizeText(item.archivedBy, 80),
+  };
+  return normalized.title || normalized.detail ? normalized : null;
+}
+
+function typedLifeCardId(sourceType, sourceId) {
+  return `${sanitizeText(sourceType, 40)}-${sanitizeText(sourceId, 100)}`;
+}
+
+function collectRawLifeCardItems(store) {
+  return [
+    ...store.scheduleItems.map((item) => ({ sourceType: "schedule", item })),
+    ...store.todoItems.map((item) => ({ sourceType: "todo", item })),
+    ...store.checkinItems.map((item) => ({ sourceType: "checkin", item })),
+    ...store.deadlineItems.map((item) => ({ sourceType: "deadline", item })),
+  ];
+}
+
+function publicLifeCardRelationLink(item, sourceType, relationType) {
+  return {
+    id: typedLifeCardId(sourceType, item.id),
+    sourceType,
+    sourceId: item.id || "",
+    relationType,
+    title: sanitizeText(item.title || item.slot, 140),
+    date: normalizeDate(item.date || businessDate()),
+    itemType: normalizeScheduleItemType(item.itemType, sourceType === "schedule" ? "date" : sourceType === "checkin" ? "checkin" : "thing"),
+    tags: normalizeLifeCardTags(item.tags, item),
+  };
+}
+
+function relationIdsMatch(aIds, bSourceType, bId) {
+  const typedId = typedLifeCardId(bSourceType, bId);
+  return normalizeIdList(aIds, 16).some((id) => id === bId || id === typedId);
+}
+
+function buildLifeCardRelations(store, publicItem, sourceType) {
+  const currentId = publicItem.id || "";
+  if (!currentId) return [];
+  const currentTypedId = typedLifeCardId(sourceType, currentId);
+  const currentGroupId = publicItem.relatedGroupId || "";
+  const currentParentId = publicItem.parentItemId || "";
+  const currentCaptureId = publicItem.sourceCaptureId || "";
+  const links = [];
+
+  collectRawLifeCardItems(store).forEach(({ sourceType: otherType, item }) => {
+    if (!item?.id) return;
+    const otherTypedId = typedLifeCardId(otherType, item.id);
+    if (otherTypedId === currentTypedId) return;
+
+    let relationType = "";
+    if (currentParentId && (item.id === currentParentId || otherTypedId === currentParentId)) relationType = "parent";
+    else if (item.parentItemId && (item.parentItemId === currentId || item.parentItemId === currentTypedId)) relationType = "child";
+    else if (currentGroupId && item.relatedGroupId === currentGroupId) relationType = "group";
+    else if (currentCaptureId && item.sourceCaptureId === currentCaptureId) relationType = "source";
+    else if (relationIdsMatch(publicItem.relationIds, otherType, item.id) || relationIdsMatch(item.relationIds, sourceType, currentId)) relationType = "related";
+    if (!relationType) return;
+    links.push(publicLifeCardRelationLink(item, otherType, relationType));
+  });
+
+  return links.slice(0, 12);
+}
+
+function buildLifeCardMemoryLinks(store, publicItem, sourceType) {
+  const sourceCaptureId = publicItem.sourceCaptureId || "";
+  const cardIds = [publicItem.id, typedLifeCardId(sourceType, publicItem.id)].filter(Boolean);
+  const genericTags = new Set(Object.values(scheduleItemTypeLabels).map(normalizeTagValue));
+  const cardTags = new Set(normalizeLifeCardTags(publicItem.tags, publicItem).filter((tag) => !genericTags.has(tag)));
+  const linkedMemoryIds = new Set(normalizeIdList(publicItem.linkedMemoryIds, 12));
+  const links = [];
+
+  (store.longTermMemoryItems || []).forEach((item) => {
+    const idMatches = linkedMemoryIds.has(item.id);
+    const sourceMatches = sourceCaptureId && item.sourceCaptureId === sourceCaptureId;
+    const cardMatches = [...normalizeIdList(item.sourceCardIds, 12), ...normalizeIdList(item.relatedCardIds, 12)]
+      .some((id) => cardIds.includes(id));
+    const tagMatches = cardTags.size > 0 && normalizeLifeCardTags(item.tags, item)
+      .filter((tag) => !genericTags.has(tag))
+      .some((tag) => cardTags.has(tag));
+    if (!idMatches && !sourceMatches && !cardMatches && !tagMatches) return;
+    links.push(publicMemoryItem({
+      ...item,
+      source: item.source || "longTermMemory",
+    }));
+  });
+
+  if (sourceCaptureId) {
+    const capture = store.captures.find((item) => item.id === sourceCaptureId);
+    (capture?.acceptedRoutes || [])
+      .filter((route) => route?.decision === "memory")
+      .forEach((route) => {
+        const kind = normalizeMemoryKind(route.memoryKind) || "memory";
+        links.push(publicMemoryItem({
+          id: route.memoryItemId || `capture-memory-${route.id}`,
+          kind,
+          title: route.title,
+          detail: route.detail || capture.text,
+          ownerId: route.ownerId || "shared",
+          targetUserId: route.targetUserId || "",
+          source: "capture",
+          sourceCaptureId,
+          sourceCardIds: route.cardIds || [],
+          tags: route.tags,
+          actionable: false,
+          suggestedDate: route.date,
+          itemType: route.itemType,
+          score: 72,
+          updatedAt: route.acceptedAt,
+        }));
+      });
+  }
+
+  const seen = new Set();
+  return links.filter((item) => {
+    if (!item.id || seen.has(item.id)) return false;
+    seen.add(item.id);
+    return true;
+  }).slice(0, 8);
+}
+
 function buildMemoryItems(store, userId, selectedDate, relationshipInsights) {
   const items = [];
+
+  (store.longTermMemoryItems || [])
+    .filter((item) => !item.archivedAt)
+    .forEach((item) => {
+      items.push(publicMemoryItem({
+        ...item,
+        source: item.source || "longTermMemory",
+        actionable: false,
+        updatedAt: item.updatedAt || item.createdAt,
+      }));
+    });
 
   relationshipInsights.forEach((insight) => {
     const kind = insight.kind === "wish" && normalizeScheduleItemType(insight.itemType, "date") === "purchase"
@@ -3574,25 +3946,30 @@ function buildMemoryItems(store, userId, selectedDate, relationshipInsights) {
     });
   });
 
-  store.todoItems
-    .filter((item) => normalizeScheduleItemType(item.itemType, "thing") === "purchase")
-    .filter((item) => !isArchived(item))
-    .forEach((item) => {
+  collectRawLifeCardItems(store).forEach(({ sourceType, item }) => {
+    const itemType = normalizeScheduleItemType(item.itemType, sourceType === "schedule" ? "date" : "thing");
+    const memoryKinds = normalizeLifeCardMemoryKinds(item.memoryKinds || item.memoryKind, { ...item, itemType });
+    if (!memoryKinds.length) return;
+    memoryKinds.forEach((kind) => {
       items.push(publicMemoryItem({
-        id: `purchase-memory-${item.id}`,
-        kind: "purchase",
-        title: item.title,
+        id: `life-card-memory-${sourceType}-${item.id}-${kind}`,
+        kind,
+        title: item.title || relationshipInsightKindLabels[kind] || "长期记忆",
         detail: item.detail || sourceCaptureSummary(store, item.sourceCaptureId),
         ownerId: item.ownerId,
         source: "lifeCard",
         sourceCaptureId: item.sourceCaptureId,
-        actionable: true,
+        sourceCardIds: [typedLifeCardId(sourceType, item.id)],
+        relatedCardIds: normalizeIdList(item.relationIds, 12),
+        tags: item.tags,
+        actionable: !isArchived(item),
         suggestedDate: item.date || selectedDate,
-        itemType: "purchase",
+        itemType,
         score: item.priority === "high" ? 86 : 62,
         updatedAt: item.updatedAt || item.createdAt,
       }));
     });
+  });
 
   return dedupeInsights(items)
     .sort((a, b) => b.score - a.score || String(b.updatedAt).localeCompare(String(a.updatedAt)))
@@ -3605,6 +3982,8 @@ function publicScheduleItemCard(store, publicItem, sourceType, userId, options =
   const steps = normalizeLifeCardSteps(publicItem.steps, participants, publicItem.title);
   const doneUsers = participants.filter((id) => publicItem.statusByUser?.[id] === "done");
   const date = normalizeDate(options.date || publicItem.date);
+  const tags = normalizeLifeCardTags(publicItem.tags, { ...publicItem, itemType });
+  const memoryKinds = normalizeLifeCardMemoryKinds(publicItem.memoryKinds || publicItem.memoryKind, { ...publicItem, itemType });
   const card = {
     id: `${sourceType}-${publicItem.id}`,
     sourceType,
@@ -3634,6 +4013,10 @@ function publicScheduleItemCard(store, publicItem, sourceType, userId, options =
     sourceCaptureSummary: sourceCaptureSummary(store, publicItem.sourceCaptureId),
     relatedGroupId: publicItem.relatedGroupId || "",
     parentItemId: publicItem.parentItemId || "",
+    relationIds: normalizeIdList(publicItem.relationIds, 16),
+    linkedMemoryIds: normalizeIdList(publicItem.linkedMemoryIds, 12),
+    tags,
+    memoryKinds,
     repeatRule: publicItem.repeatRule || "",
     plannedAt: publicItem.plannedAt || "",
     dueAt: publicItem.dueAt || "",
@@ -3653,6 +4036,8 @@ function publicScheduleItemCard(store, publicItem, sourceType, userId, options =
   card.nextStep = lifeCardNextStep(card);
   card.timing = lifeCardTiming(card, options.selectedDate || date);
   card.actionSummary = lifeCardActionSummary(card, options.selectedDate || date);
+  card.relations = buildLifeCardRelations(store, publicItem, sourceType);
+  card.memoryLinks = buildLifeCardMemoryLinks(store, publicItem, sourceType);
   return {
     ...card,
     ...rankScheduleItemCard(card, options.selectedDate || date),
@@ -3739,6 +4124,8 @@ function createLifeCardsFromConfirmation(userId, payload = {}) {
       const itemType = normalizeScheduleItemType(input.itemType, "thing");
       const sourceType = sourceTypeForItemType(itemType);
       const ownerId = sourceType === "checkin" ? "shared" : normalizeOwnerId(store, input.ownerId || payload.ownerId || userId, userId);
+      const tagInput = input.tags || (parentItemId ? [] : payload.tags);
+      const memoryKindInput = input.memoryKinds || input.memoryKind || (parentItemId ? [] : (payload.memoryKinds || payload.memoryKind));
       const body = {
         date: normalizeDate(input.date || selectedDate),
         segment: normalizeSegment(input.segment || payload.segment || "allDay"),
@@ -3749,6 +4136,10 @@ function createLifeCardsFromConfirmation(userId, payload = {}) {
         sourceCaptureId,
         relatedGroupId,
         parentItemId: sanitizeText(parentItemId, 80),
+        relationIds: normalizeIdList(input.relationIds || payload.relationIds, 16),
+        linkedMemoryIds: normalizeIdList(input.linkedMemoryIds || payload.linkedMemoryIds, 12),
+        tags: normalizeLifeCardTags(tagInput, input),
+        memoryKinds: normalizeLifeCardMemoryKinds(memoryKindInput, input),
         repeatRule: sanitizeText(input.repeatRule || (itemType === "habit" ? "daily" : ""), 120),
         ownerId,
         participants: normalizeParticipants(store, ownerId, input.participants, userId),
@@ -3819,6 +4210,53 @@ function createLifeCardsFromConfirmation(userId, payload = {}) {
   });
 }
 
+function upsertLongTermMemoryFromRoute(store, userId, capture, route) {
+  if (!capture || route?.decision !== "memory") return null;
+  store.longTermMemoryItems = Array.isArray(store.longTermMemoryItems) ? store.longTermMemoryItems : [];
+  const kind = normalizeMemoryKind(route.memoryKind) || "memory";
+  const sourceCaptureId = capture.id || route.sourceCaptureId || "";
+  const id = route.memoryItemId || insightId(kind, sourceCaptureId || route.title, route.detail || capture.text || "");
+  const existingIndex = store.longTermMemoryItems.findIndex((item) =>
+    item.id === id || (sourceCaptureId && item.sourceCaptureId === sourceCaptureId && normalizeMemoryKind(item.kind) === kind)
+  );
+  const current = existingIndex >= 0 ? store.longTermMemoryItems[existingIndex] : {};
+  const timestamp = nowIso();
+  const next = normalizeStoredLongTermMemoryItem(store, {
+    ...current,
+    id: current.id || id,
+    kind,
+    title: route.title || current.title || relationshipInsightKindLabels[kind] || "长期记忆",
+    detail: route.detail || current.detail || capture.text || "",
+    ownerId: route.ownerId || current.ownerId || "shared",
+    targetUserId: route.targetUserId || current.targetUserId || inferCaptureTargetUserId(store, capture),
+    source: "capture",
+    sourceCaptureId,
+    sourceCardIds: route.cardIds || current.sourceCardIds || [],
+    relatedCardIds: current.relatedCardIds || [],
+    tags: normalizeLifeCardTags(route.tags || current.tags, { ...route, detail: `${route.detail || ""} ${capture.text || ""}` }),
+    suggestedDate: route.date || current.suggestedDate || capture.date,
+    itemType: route.itemType || current.itemType || "reminder",
+    score: current.score || (route.priority === "high" ? 86 : 70),
+    createdBy: current.createdBy || userId,
+    updatedBy: userId,
+    createdAt: current.createdAt || timestamp,
+    updatedAt: timestamp,
+  });
+  if (!next) return null;
+  if (existingIndex >= 0) {
+    store.longTermMemoryItems[existingIndex] = next;
+  } else {
+    store.longTermMemoryItems.unshift(next);
+  }
+  store.longTermMemoryItems = store.longTermMemoryItems.slice(0, 300);
+  recordOperation(store, userId, existingIndex >= 0 ? "update" : "create", "long-term-memory", next.id, {
+    date: next.suggestedDate || capture.date,
+    title: next.title,
+    sourceType: "long-term-memory",
+  });
+  return next;
+}
+
 function recordAcceptedCaptureRoute(userId, payload = {}, cardIds = []) {
   return mutateStore((store) => {
     const captureId = sanitizeText(payload.sourceCaptureId || payload.captureId, 80);
@@ -3839,10 +4277,14 @@ function recordAcceptedCaptureRoute(userId, payload = {}, cardIds = []) {
       ownerId: sanitizeText(payload.ownerId || userId, 80),
       priority: normalizePriority(payload.priority),
       confidence: Number.isFinite(Number(payload.confidence)) ? Number(payload.confidence) : 0,
+      tags: normalizeLifeCardTags(payload.tags, payload),
+      memoryKinds: normalizeLifeCardMemoryKinds(payload.memoryKinds || payload.memoryKind, payload),
       acceptedBy: userId,
       acceptedAt: timestamp,
       cardIds: cardIds.map((id) => sanitizeText(id, 80)).filter(Boolean).slice(0, 8),
     };
+    const memoryItem = upsertLongTermMemoryFromRoute(store, userId, capture, route);
+    if (memoryItem) route.memoryItemId = memoryItem.id;
 
     capture.acceptedRoutes = [route, ...(Array.isArray(capture.acceptedRoutes) ? capture.acceptedRoutes : [])].slice(0, 12);
     capture.analysisIntent = decision;
@@ -4729,6 +5171,10 @@ function upsertScheduleItem(userId, payload) {
     existing.sourceCaptureId = sanitizeText(payload.sourceCaptureId ?? existing.sourceCaptureId, 80);
     existing.relatedGroupId = sanitizeText(payload.relatedGroupId ?? existing.relatedGroupId, 80);
     existing.parentItemId = sanitizeText(payload.parentItemId ?? existing.parentItemId, 80);
+    existing.relationIds = normalizeIdList(payload.relationIds ?? existing.relationIds, 16);
+    existing.linkedMemoryIds = normalizeIdList(payload.linkedMemoryIds ?? existing.linkedMemoryIds, 12);
+    existing.tags = normalizeLifeCardTags(payload.tags ?? existing.tags, { ...existing, ...payload });
+    existing.memoryKinds = normalizeLifeCardMemoryKinds(payload.memoryKinds ?? payload.memoryKind ?? existing.memoryKinds, { ...existing, ...payload });
     existing.repeatRule = sanitizeText(payload.repeatRule ?? existing.repeatRule, 120);
     existing.priority = normalizePriority(payload.priority || existing.priority);
     existing.ownerId = nextOwnerId;
@@ -4844,6 +5290,10 @@ function upsertTodoItem(userId, payload) {
     existing.sourceCaptureId = sanitizeText(payload.sourceCaptureId ?? existing.sourceCaptureId, 80);
     existing.relatedGroupId = sanitizeText(payload.relatedGroupId ?? existing.relatedGroupId, 80);
     existing.parentItemId = sanitizeText(payload.parentItemId ?? existing.parentItemId, 80);
+    existing.relationIds = normalizeIdList(payload.relationIds ?? existing.relationIds, 16);
+    existing.linkedMemoryIds = normalizeIdList(payload.linkedMemoryIds ?? existing.linkedMemoryIds, 12);
+    existing.tags = normalizeLifeCardTags(payload.tags ?? existing.tags, { ...existing, ...payload });
+    existing.memoryKinds = normalizeLifeCardMemoryKinds(payload.memoryKinds ?? payload.memoryKind ?? existing.memoryKinds, { ...existing, ...payload });
     existing.repeatRule = sanitizeText(payload.repeatRule ?? existing.repeatRule, 120);
     existing.priority = normalizePriority(payload.priority || existing.priority);
     existing.ownerId = ownerId;
@@ -4954,6 +5404,10 @@ function upsertCheckinItem(userId, payload) {
     existing.sourceCaptureId = sanitizeText(payload.sourceCaptureId ?? existing.sourceCaptureId, 80);
     existing.relatedGroupId = sanitizeText(payload.relatedGroupId ?? existing.relatedGroupId, 80);
     existing.parentItemId = sanitizeText(payload.parentItemId ?? existing.parentItemId, 80);
+    existing.relationIds = normalizeIdList(payload.relationIds ?? existing.relationIds, 16);
+    existing.linkedMemoryIds = normalizeIdList(payload.linkedMemoryIds ?? existing.linkedMemoryIds, 12);
+    existing.tags = normalizeLifeCardTags(payload.tags ?? existing.tags, { ...existing, ...payload });
+    existing.memoryKinds = normalizeLifeCardMemoryKinds(payload.memoryKinds ?? payload.memoryKind ?? existing.memoryKinds, { ...existing, ...payload });
     existing.repeatRule = sanitizeText(payload.repeatRule ?? existing.repeatRule ?? "daily", 120);
     existing.ownerId = "shared";
     existing.participants = profileIds;
@@ -5046,6 +5500,10 @@ function upsertDeadlineItem(userId, payload) {
     existing.sourceCaptureId = sanitizeText(payload.sourceCaptureId ?? existing.sourceCaptureId, 80);
     existing.relatedGroupId = sanitizeText(payload.relatedGroupId ?? existing.relatedGroupId, 80);
     existing.parentItemId = sanitizeText(payload.parentItemId ?? existing.parentItemId, 80);
+    existing.relationIds = normalizeIdList(payload.relationIds ?? existing.relationIds, 16);
+    existing.linkedMemoryIds = normalizeIdList(payload.linkedMemoryIds ?? existing.linkedMemoryIds, 12);
+    existing.tags = normalizeLifeCardTags(payload.tags ?? existing.tags, { ...existing, ...payload });
+    existing.memoryKinds = normalizeLifeCardMemoryKinds(payload.memoryKinds ?? payload.memoryKind ?? existing.memoryKinds, { ...existing, ...payload });
     existing.repeatRule = sanitizeText(payload.repeatRule ?? existing.repeatRule, 120);
     existing.priority = normalizePriority(payload.priority || existing.priority);
     existing.ownerId = ownerId;
@@ -5334,6 +5792,7 @@ module.exports = {
   readAuthConfig,
   readPublicBootstrap,
   readRevision,
+  rememberLifeCard,
   refreshDailySummary,
   segmentDefinitions,
   toggleCheckinItem,
