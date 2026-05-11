@@ -3367,7 +3367,8 @@ function LifeCardTimeline({ cards, profiles, currentUser, selectedDate, filter, 
     if (!axisTarget && event.target.closest("input, textarea, select, a, summary, label, button")) return;
     const rect = event.currentTarget.getBoundingClientRect();
     const x = event.clientX - rect.left;
-    const isAxisDrag = Math.abs(x - 132) <= 42 || axisTarget;
+    const axisX = Number.parseFloat(window.getComputedStyle(event.currentTarget).getPropertyValue("--timeline-axis-x")) || 132;
+    const isAxisDrag = Math.abs(x - axisX) <= 42 || axisTarget;
     const canScroll = event.currentTarget.scrollHeight > event.currentTarget.clientHeight + 2;
     if (scrubClearTimer.current) window.clearTimeout(scrubClearTimer.current);
     dragState.current = {

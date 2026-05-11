@@ -2550,6 +2550,7 @@ button.cat-word-mini:hover {
 }
 
 .timeline-list {
+  --timeline-axis-x: 132px;
   position: relative;
   gap: 18px;
   max-height: clamp(430px, 62svh, 760px);
@@ -2714,7 +2715,7 @@ button.cat-word-mini:hover {
   position: absolute;
   top: 6px;
   bottom: 6px;
-  left: 132px;
+  left: var(--timeline-axis-x);
   width: 2px;
   border-radius: 999px;
   background: rgba(219, 67, 129, 0.12);
@@ -2724,7 +2725,7 @@ button.cat-word-mini:hover {
   content: "";
   position: absolute;
   top: 6px;
-  left: 132px;
+  left: var(--timeline-axis-x);
   width: 2px;
   height: var(--day-progress, 0%);
   border-radius: 999px;
@@ -2740,7 +2741,7 @@ button.cat-word-mini:hover {
 .timeline-axis-handle {
   position: absolute;
   top: clamp(5px, var(--day-progress, 0%), calc(100% - 8px));
-  left: 129px;
+  left: calc(var(--timeline-axis-x) - 3px);
   z-index: 4;
   width: 6px;
   height: 6px;
@@ -2771,7 +2772,7 @@ button.cat-word-mini:hover {
   position: absolute;
   top: 12px;
   bottom: 12px;
-  left: 112px;
+  left: calc(var(--timeline-axis-x) - 20px);
   z-index: 2;
   display: grid;
   width: 42px;
@@ -7438,8 +7439,14 @@ button.detail-step:hover {
   }
 
   .timeline-day {
-    grid-template-columns: 1fr;
-    gap: 8px;
+    grid-template-columns: 58px minmax(0, 1fr);
+    gap: 18px;
+    min-height: 96px;
+  }
+
+  .timeline-list {
+    --timeline-axis-x: 66px;
+    padding-right: 0;
   }
 
   .timeline-time-group {
@@ -7453,26 +7460,28 @@ button.detail-step:hover {
     padding-top: 0;
   }
 
-  .timeline-list::before,
-  .timeline-list::after,
-  .timeline-axis-handle,
   .timeline-node {
     display: none;
   }
 
   .day-label {
     position: static;
-    display: flex;
-    justify-self: start;
-    align-items: baseline;
-    gap: 8px;
+    display: grid;
+    justify-self: stretch;
+    justify-items: end;
+    align-items: start;
+    gap: 5px;
     min-width: 0;
-    padding: 0;
-    text-align: left;
+    padding: 7px 0;
+    text-align: right;
+  }
+
+  .day-label span {
+    font-size: 0.66rem;
   }
 
   .timeline-day.is-today .day-label {
-    justify-self: start;
+    justify-self: stretch;
     min-width: 0;
   }
 
@@ -8789,6 +8798,23 @@ button.detail-step:hover {
 
   .topbar {
     padding: 6px;
+  }
+
+  .timeline-list {
+    --timeline-axis-x: 58px;
+  }
+
+  .timeline-day {
+    grid-template-columns: 50px minmax(0, 1fr);
+    gap: 14px;
+  }
+
+  .day-label strong {
+    font-size: 0.9rem;
+  }
+
+  .day-label span {
+    font-size: 0.6rem;
   }
 
   .brand-mark {
