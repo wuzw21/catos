@@ -45,6 +45,16 @@ try {
   assert.equal(refactor.decision, "schedule");
   assert.deepEqual(titles(refactor.steps), ["定位影响", "改核心", "回归检查"]);
 
+  const anniversary = store.analyzeCapture("you", {
+    date: "2026-05-11",
+    text: "纪念日：2026.1.9是在一起的日子",
+    analysisMode: "template",
+  });
+  assert.equal(anniversary.decision, "memory");
+  assert.equal(anniversary.memoryKind, "anniversary");
+  assert.equal(anniversary.date, "2026-01-09");
+  assert.equal(anniversary.title, "在一起的日子");
+
   const capture = store.addCapture("you", {
     date: "2026-05-10",
     text: "她不喜欢太吵的店",
@@ -62,6 +72,24 @@ try {
   }).result;
   assert.equal(acceptedMemory.decision, "memory");
   assert(acceptedMemory.capture.acceptedRoutes[0].memoryItemId);
+
+  const anniversaryCapture = store.addCapture("you", {
+    date: "2026-05-11",
+    text: "纪念日：2026.1.9是在一起的日子",
+    mode: "analysis",
+    visibility: "shared",
+  }).result;
+  const anniversaryConfirmation = store.analyzeCapture("you", {
+    captureId: anniversaryCapture.id,
+    date: "2026-05-11",
+    analysisMode: "template",
+  });
+  const acceptedAnniversary = store.acceptCaptureRoute("you", anniversaryConfirmation).result;
+  assert.equal(acceptedAnniversary.decision, "memory");
+  assert.equal(acceptedAnniversary.capture.acceptedRoutes[0].memoryKind, "anniversary");
+  const anniversaryState = store.getState("you", { date: "2027-01-01" });
+  assert(anniversaryState.memoryItems.some((item) => item.kind === "anniversary" && item.title === "在一起的日子"));
+  assert(anniversaryState.scheduleItemCards.some((card) => card.insightKind === "anniversary"));
 
   const linkedCapture = store.addCapture("you", {
     date: "2026-05-10",

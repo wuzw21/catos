@@ -77,6 +77,7 @@ const captureAgentPrompt = [
   "必须解析相对日期：今天、明天、今晚、今天下午、周日、下周一、具体月日。",
   "如果一句话包含多个动作，要输出 relatedItems，并用 relatedGroupId 表示一改全动的关系。",
   "如果输入同时包含偏好/心愿和具体行动，优先输出 schedule，并把偏好/心愿压进 detail/reason，后端会从 raw 和分析轨迹沉淀记忆。",
+  "如果输入是在定义纪念日、周年、生日等重要日期，而不是安排庆祝动作，返回 memory，memoryKind=anniversary。",
   "如果只是偏好、边界、愿望、承诺或照顾线索，不要强行生成 Schedule Item，返回 memory。",
   "如果只是当天素材、照片说明、情绪片段或回忆，不要强行生成 Schedule Item，返回 dailyStory。",
   "输出轻确认，不直接写入最终生活卡，除非用户确认。",
@@ -108,6 +109,8 @@ const preferencePattern = /喜欢|不喜欢|讨厌|雷区|边界|偏好|好闻|�
 const gratitudePattern = /谢谢|感谢|辛苦|帮我|帮了|照顾|做了|准备了/;
 const repairPattern = /吵架|争执|生气|委屈|难过|不开心|冷战|道歉|修复/;
 const actionSchedulePattern = /(?:^|[，,。；;\s])(?:查|查询|搜索|搜|找|看|学习|学|练习|训练|康复|复习|研究|了解|准备|处理|整理|写|做|改|修|预约|联系|发|问|读)[^。！？\n]{0,80}|视频|资料|教程|攻略/i;
+const fullDatePattern = /(?:^|[^\d])(\d{4})\s*(?:年|[./-])\s*(\d{1,2})\s*(?:月|[./-])\s*(\d{1,2})\s*日?(?!\d)/;
+const fullDateReplacePattern = /\d{4}\s*(?:年|[./-])\s*\d{1,2}\s*(?:月|[./-])\s*\d{1,2}\s*日?/g;
 const dayRolloverHour = 3;
 const solarTermNames = [
   "小寒", "大寒", "立春", "雨水", "惊蛰", "春分", "清明", "谷雨",
@@ -2968,6 +2971,18 @@ function publicDeadlineItem(item, profileIds) {
   };
 }
 
+function extractExplicitDate(text) {
+  const raw = String(text || "");
+  const fullDate = raw.match(fullDatePattern);
+  if (fullDate) {
+    const candidate = `${fullDate[1]}-${pad(fullDate[2])}-${pad(fullDate[3])}`;
+    return parseDate(candidate) ? candidate : "";
+  }
+
+  const dashed = raw.match(/(\d{4}-\d{2}-\d{2})/);
+  return dashed ? normalizeDate(dashed[1], "") : "";
+}
+
 function sourceCaptureSummary(store, sourceCaptureId) {
   if (!sourceCaptureId) return "";
   const capture = store.captures.find((item) => item.id === sourceCaptureId);
@@ -2982,8 +2997,8 @@ function resolveCaptureDate(text, fallbackDate) {
   if (/明天|明晚|明早/.test(raw)) return addDays(fallback, 1);
   if (/今天|今日|今晚|今早|今天下午|今天上午|今天晚上/.test(raw)) return fallback;
 
-  const explicitDate = raw.match(/(\d{4}-\d{2}-\d{2})/);
-  if (explicitDate) return normalizeDate(explicitDate[1], fallback);
+  const explicitDate = extractExplicitDate(raw);
+  if (explicitDate) return explicitDate;
 
   const monthDay = raw.match(/(\d{1,2})\s*(?:月|[./-])\s*(\d{1,2})\s*日?/);
   if (monthDay) {
@@ -3028,6 +3043,7 @@ function resolveCaptureSegment(text, fallbackSegment = "allDay") {
 function cleanCaptureTitle(text) {
   return sanitizeText(text, 160)
     .replace(/^(?:todo|待办|安排|生活卡)\s*[:：]\s*/i, "")
+    .replace(fullDateReplacePattern, "")
     .replace(/\d{4}-\d{2}-\d{2}/g, "")
     .replace(/\d{1,2}\s*(?:月|[./-])\s*\d{1,2}\s*日?/g, "")
     .replace(/今天|今日|今晚|今早|明天|明晚|明早|后天/g, "")
@@ -3049,6 +3065,81 @@ function isCompletedCaptureStatement(text) {
   return donePattern.test(raw) && !futurePattern.test(raw.replace(/(?:写完了|做完了|完成了|弄完了|搞定了|交了|交完了|提交了|处理完了|整理完了|买好了|订好了)/g, ""));
 }
 
+function isAnniversaryMemoryCapture(text) {
+  const raw = String(text || "").trim();
+  if (!raw || !anniversaryPattern.test(raw)) return false;
+  const describesDate = /(?:纪念日|周年|生日)\s*[:：]/.test(raw) ||
+    /(?:纪念日|周年|生日).{0,30}(?:是|日期|日子|在)/.test(raw) ||
+    /(?:在一起|认识|第一次|领证|结婚).{0,30}(?:日子|纪念日|周年|日期)/.test(raw);
+  if (!describesDate) return false;
+
+  const hasAction = /提醒|记得|别忘|安排|准备|庆祝|买|订|预约|送|约|吃|看|去|见|带|写|做/.test(raw);
+  const hasMemoryCue = /是|日期|日子|在一起|认识|第一次|领证|结婚|生日/.test(raw);
+  return !hasAction || hasMemoryCue;
+}
+
+function cleanAnniversaryTitle(text) {
+  const cleaned = sanitizeText(text, 180)
+    .replace(/^(?:纪念日|周年|生日)\s*[:：]\s*/i, "")
+    .replace(fullDateReplacePattern, "")
+    .replace(/\d{4}-\d{2}-\d{2}/g, "")
+    .replace(/\d{1,2}\s*(?:月|[./-])\s*\d{1,2}\s*日?/g, "")
+    .replace(/^[\s=＝:：\-—]+/, "")
+    .replace(/^是+/, "")
+    .replace(/[，,。；;]+$/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  return shortText(cleaned || "纪念日", 48);
+}
+
+function buildAnniversaryMemoryConfirmation(store, userId, payload, capture, text, selectedDate, ownerId, analysisMode) {
+  if (!isAnniversaryMemoryCapture(text)) return null;
+  const explicitDate = extractExplicitDate(text);
+  const monthDay = extractMonthDay(text);
+  const baseDate = parseDate(selectedDate) || new Date();
+  const inferredDate = monthDay
+    ? `${baseDate.getFullYear()}-${pad(monthDay.month)}-${pad(monthDay.day)}`
+    : "";
+  const date = explicitDate || (parseDate(inferredDate) ? inferredDate : selectedDate);
+  const title = cleanAnniversaryTitle(text);
+  const detail = sanitizeText(text, 800);
+  const participants = getProfileIds(store);
+
+  return {
+    captureId: capture?.id || sanitizeText(payload.captureId, 80),
+    sourceCaptureId: capture?.id || sanitizeText(payload.captureId, 80),
+    text,
+    decision: "memory",
+    itemType: "reminder",
+    memoryKind: "anniversary",
+    date,
+    segment: "allDay",
+    ownerId: "shared",
+    participants,
+    title,
+    detail,
+    repeatRule: "yearly",
+    priority: "normal",
+    tags: normalizeLifeCardTags(["纪念"], { title, detail, itemType: "reminder" }),
+    memoryKinds: ["anniversary"],
+    plannedAt: "",
+    dueAt: "",
+    durationMin: 0,
+    steps: [],
+    timeBlocks: [],
+    analysisMode,
+    templateMatched: true,
+    isDefaultDraft: false,
+    analyzer: analysisMode === "agent" ? "agent-route-prompt" : "template-rules",
+    routeDestinations: captureRouteDestinations,
+    agentPrompt: analysisMode === "agent" ? captureAgentPrompt : "",
+    confirmationText: "保存为纪念日长期记忆",
+    reason: "这句话是在定义一个重要日期，不是今天要完成的生活卡。",
+    confidence: 0.96,
+    relatedItems: [],
+  };
+}
+
 function splitCaptureClauses(text) {
   return sanitizeText(text, 1200)
     .split(/(?:[，,。；;、\n]+|然后|顺便|还有|以及)/)
@@ -3062,6 +3153,9 @@ function inferCaptureDecision(text) {
   if (isCompletedCaptureStatement(raw)) {
     return "capture";
   }
+  if (isAnniversaryMemoryCapture(raw)) {
+    return "memory";
+  }
   if (/偏好|边界|喜欢|不喜欢|讨厌|雷区|好闻|安静|太吵|重要的是|长期|目标|以后要|未来想|记住|答应|承诺|说好|帮你|我来|下次带你|谢谢|感谢|吵架|争执|生气|委屈|想吃|想买|想去|好想/.test(raw)) {
     return "memory";
   }
@@ -3074,6 +3168,7 @@ function inferCaptureDecision(text) {
 function isTemplateScheduleMatch(text) {
   const raw = String(text || "");
   if (!raw.trim() || isCompletedCaptureStatement(raw)) return false;
+  if (isAnniversaryMemoryCapture(raw)) return false;
   return /todo|待办|安排|生活卡|今天|明天|后天|周[一二三四五六日天]|下周|上午|中午|下午|晚上|今晚|\d{4}-\d{2}-\d{2}|\d{1,2}\s*(?:月|[./-])\s*\d{1,2}|提醒|记得|别忘|买|约|打卡|习惯|答辩|考试|面试|ddl|deadline|截止|开会|会议|作业|任务|提交|整理|处理|预约|带/i.test(raw) || actionSchedulePattern.test(raw);
 }
 
@@ -3125,6 +3220,8 @@ function analyzeCapture(userId, payload = {}) {
   const selectedDate = normalizeDate(payload.date || capture?.date);
   const ownerId = normalizeOwnerId(store, payload.ownerId || userId, userId);
   const analysisMode = payload.analysisMode === "agent" ? "agent" : "template";
+  const anniversaryMemory = buildAnniversaryMemoryConfirmation(store, userId, payload, capture, text, selectedDate, ownerId, analysisMode);
+  if (anniversaryMemory) return anniversaryMemory;
   const templateMatched = analysisMode === "template" ? isTemplateScheduleMatch(text) : true;
   const decision = analysisMode === "template"
     ? "schedule"
@@ -3290,6 +3387,7 @@ function buildCaptureAgentStructuredPrompt(facts) {
     "决策要求：",
     "- decision=schedule：用户明确说了要发生、要提醒、要买、要做、要约、要打卡、要养成习惯的事。",
     "- 查资料、搜视频、学习、练习、训练、复习、准备、处理、整理这类短动作也属于 schedule，默认落到今天的 thing/work。",
+    "- 纪念日/周年/生日的日期定义属于 memory，memoryKind=anniversary；只有明确要买、约、提醒、庆祝动作时才生成 schedule。",
     "- decision=memory：偏好、心愿、承诺、照顾线索、纪念线索、感谢、修复、关系资料、长期目标。",
     "- decision=dailyStory：适合进入当天日总结素材，但不是未来行动或长期记忆。",
     "- decision=capture：只保留 raw，不需要任何生活卡或长期记忆。",
@@ -3581,6 +3679,11 @@ async function analyzeCaptureWithAgent(userId, payload = {}) {
 
   const selectedDate = normalizeDate(payload.date || capture?.date);
   const ownerId = normalizeOwnerId(store, payload.ownerId || userId, userId);
+  const anniversaryMemory = buildAnniversaryMemoryConfirmation(store, userId, payload, capture, text, selectedDate, ownerId, "agent");
+  if (anniversaryMemory) {
+    recordCaptureAnalysis(userId, anniversaryMemory);
+    return anniversaryMemory;
+  }
   const templateDraft = analyzeCapture(userId, {
     ...payload,
     text,
@@ -3675,6 +3778,12 @@ function nextUsefulEveningDate(store, selectedDate) {
 
 function extractMonthDay(text) {
   const normalized = String(text || "");
+  const fullDate = normalized.match(fullDatePattern);
+  if (fullDate) {
+    const month = Number(fullDate[2]);
+    const day = Number(fullDate[3]);
+    if (month >= 1 && month <= 12 && day >= 1 && day <= 31) return { month, day };
+  }
   const monthDay = normalized.match(/(\d{1,2})\s*(?:月|[./-])\s*(\d{1,2})\s*日?/);
   if (!monthDay) return null;
   const month = Number(monthDay[1]);
@@ -4014,6 +4123,24 @@ function buildAnniversaryInsights(store, selectedDate, captureInsights) {
     });
   });
 
+  const acceptedAnniversaryCaptureIds = new Set();
+  (store.longTermMemoryItems || [])
+    .filter((item) => !item.archivedAt && normalizeMemoryKind(item.kind) === "anniversary")
+    .forEach((item) => {
+      const sourceText = `${item.suggestedDate || ""} ${item.title || ""} ${item.detail || ""}`;
+      const monthDay = extractMonthDay(sourceText);
+      const date = monthDay ? nextAnnualDate(monthDay.month, monthDay.day, today) : normalizeDate(item.suggestedDate, "");
+      if (!date) return;
+      if (item.sourceCaptureId) acceptedAnniversaryCaptureIds.add(item.sourceCaptureId);
+      candidates.push({
+        id: `memory-${item.id}`,
+        date,
+        title: item.title || "纪念日",
+        detail: item.detail || "",
+        sourceCaptureId: item.sourceCaptureId || "",
+      });
+    });
+
   readMarkdownTableRows(contentPath("lists", "memorial-days.md")).forEach((cells, index) => {
     const [rawDate, title, detail] = cells;
     const monthDay = extractMonthDay(rawDate);
@@ -4028,6 +4155,7 @@ function buildAnniversaryInsights(store, selectedDate, captureInsights) {
   });
 
   const captureAnniversaries = store.captures
+    .filter((capture) => !acceptedAnniversaryCaptureIds.has(capture.id))
     .filter((capture) => anniversaryPattern.test(capture.text || ""))
     .map((capture) => {
       const monthDay = extractMonthDay(capture.text);
@@ -4099,9 +4227,11 @@ function buildOnThisDayInsights(store, userId, selectedDate) {
 function dedupeInsights(insights) {
   const seen = new Set();
   return insights.filter((insight) => {
-    const key = insight.sourceCaptureId
-      ? `${insight.kind}:${insight.sourceCaptureId}`
-      : `${insight.kind}:${insight.title}:${insight.date}`;
+    const key = insight.id
+      ? `${insight.kind}:${insight.id}`
+      : (insight.sourceCaptureId
+          ? `${insight.kind}:${insight.sourceCaptureId}`
+          : `${insight.kind}:${insight.title}:${insight.date}`);
     if (seen.has(key)) return false;
     seen.add(key);
     return true;
