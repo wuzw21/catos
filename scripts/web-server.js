@@ -42,6 +42,7 @@ const {
   toggleLifeCardTimer: toggleCoupleLifeCardTimer,
   toggleScheduleItem: toggleCoupleScheduleItem,
   toggleTodoItem: toggleCoupleTodoItem,
+  updateDayContext: updateCoupleDayContext,
   updateDiaryDay: updateCoupleDiaryDay,
   updatePersonalPage: updateCouplePersonalPage,
   updateProfile: updateCoupleProfile,
@@ -1203,6 +1204,28 @@ async function handleApi(req, res, url) {
       sendJson(res, 200, {
         ok: true,
         ...result,
+      });
+    } catch (error) {
+      sendJson(res, 400, { ok: false, error: error.message });
+    }
+    return true;
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/couple/day-context") {
+    const session = getCoupleSession(req);
+    if (!session) {
+      sendCoupleAuthRequired(res);
+      return true;
+    }
+
+    try {
+      const bodyText = await readBody(req);
+      const body = bodyText ? JSON.parse(bodyText) : {};
+      const { result } = updateCoupleDayContext(session.userId, body);
+      sendJson(res, 200, {
+        ok: true,
+        dayContext: result,
+        state: getCoupleState(session.userId, { date: body.date || result.date }),
       });
     } catch (error) {
       sendJson(res, 400, { ok: false, error: error.message });

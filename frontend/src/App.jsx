@@ -63,7 +63,7 @@ const defaultPromptTitleKeys = new Set([
   dailyCheckinTitle,
 ].map(normalizedPromptKey));
 const lowSignalStoryKeys = new Set(["做别的事"].map(normalizedPromptKey));
-const badStoryTextPattern = /值得记住的是|记录留下了\s*\d+\s*条现场线索|完成了\s*今天有没有开开心心|需要顺手带到明天的是\s*今天有没有开开心心|还没有明确完成项|没有明确贡献记录|随手记还比较少|先补上|自动日总结|每日状态对象|doneUsers|pendingUsers|createdBy|updatedBy|statusUpdatedBy|actorId|targetUserId|status_by_user|source_counts/;
+const badStoryTextPattern = /值得记住的是|今天最清楚留下来(?:的)?是|今天最值得记住的是|今天的页面很轻|记录留下了\s*\d+\s*条现场线索|完成了\s*今天有没有开开心心|需要顺手带到明天的是\s*今天有没有开开心心|还没有明确完成项|没有明确贡献记录|没有太多具体安排|没有谁完成了什么|没有具体安排|信息不足|数据不足|记录较少|记录里|记录显示|没有显示|随手记还比较少|先补上|自动日总结|每日状态对象|doneUsers|pendingUsers|createdBy|updatedBy|statusUpdatedBy|actorId|targetUserId|status_by_user|source_counts/;
 const fallbackDailyTitles = ["轻轻的一页", "小猫留光日", "慢慢亮起来", "把今天收好", "软软小片刻", "今天有小光"];
 const segmentLabels = {
   morning: "早上",
@@ -311,6 +311,13 @@ function addDays(value, offset) {
   return formatDate(date);
 }
 
+function daysBetween(startValue, endValue) {
+  const start = parseDate(startValue);
+  const end = parseDate(endValue);
+  if (!start || !end) return 0;
+  return Math.floor((end.getTime() - start.getTime()) / 86400000);
+}
+
 function addMonths(value, offset) {
   const date = parseDate(value) || new Date();
   const original = date.getDate();
@@ -457,9 +464,29 @@ function iconPath(name) {
       </>
     ),
     stop: <rect x="7" y="7" width="10" height="10" rx="2" />,
+    more: (
+      <>
+        <circle cx="6" cy="12" r="1.2" />
+        <circle cx="12" cy="12" r="1.2" />
+        <circle cx="18" cy="12" r="1.2" />
+      </>
+    ),
     cloud: (
       <>
         <path d="M7 18h10a4 4 0 0 0 .8-7.9A6 6 0 0 0 6.3 9 4.5 4.5 0 0 0 7 18Z" />
+      </>
+    ),
+    sun: (
+      <>
+        <circle cx="12" cy="12" r="4" />
+        <path d="M12 2.8v2.1" />
+        <path d="M12 19.1v2.1" />
+        <path d="m4.2 4.2 1.5 1.5" />
+        <path d="m18.3 18.3 1.5 1.5" />
+        <path d="M2.8 12h2.1" />
+        <path d="M19.1 12h2.1" />
+        <path d="m4.2 19.8 1.5-1.5" />
+        <path d="m18.3 5.7 1.5-1.5" />
       </>
     ),
     user: (
@@ -594,8 +621,8 @@ function AvatarPair({ profiles, ids, className = "" }) {
     : profiles.slice(0, 2);
   return (
     <span className={cx("avatar-pair", selected.length > 1 && "is-pair", className)} aria-hidden="true">
-      {selected.slice(0, 2).map((profile) => (
-        <CatAvatar key={profile.id} profile={profile} />
+      {selected.slice(0, 2).map((profile, index) => (
+        <CatAvatar key={profile.id} profile={profile} className={index === 0 ? "is-front" : "is-back"} />
       ))}
     </span>
   );
@@ -676,6 +703,18 @@ function compactDuration(seconds) {
   return rest ? `${hours}时${rest}分` : `${hours}时`;
 }
 
+function stepOwnerMeta(step, profiles, participants = []) {
+  const ownerId = step?.ownerId || "";
+  const owner = profiles.find((profile) => profile.id === ownerId);
+  const shared = !ownerId || participants.length > 1 && !owner;
+  return {
+    color: owner?.color || (shared ? "#ff6fa8" : "#8d6d7a"),
+    label: owner?.displayName || "共同",
+    initials: owner?.initials || (owner?.displayName || "共").slice(0, 1),
+    shared,
+  };
+}
+
 function timerTotalSeconds(card, nowMs = Date.now()) {
   const entries = Array.isArray(card?.timeEntries) ? card.timeEntries : [];
   return entries.reduce((total, entry) => {
@@ -695,6 +734,37 @@ function cardPlanParts(card) {
   if (duration) parts.push(duration);
   if (card.dueAt) parts.push(`${formatDateTimeShort(card.dueAt)} 截止`);
   return parts.slice(0, 4);
+}
+
+function lifeCardAgeNotice(card, anchorDate = today()) {
+  if (!card || isArchivedCard(card) || isCompletedCard(card)) return null;
+  const dueDate = String(card.dueAt || "").slice(0, 10);
+  const plannedDate = String(card.plannedAt || "").slice(0, 10);
+  const cardDate = String(card.date || "").slice(0, 10);
+  const createdDate = String(card.createdAt || "").slice(0, 10);
+  const baseDate = dueDate || plannedDate || cardDate || createdDate;
+  if (!baseDate) return null;
+  const ageDays = daysBetween(baseDate, anchorDate);
+  if (ageDays < 7) return null;
+  if (dueDate && dueDate < anchorDate) {
+    return {
+      level: "strong",
+      label: "已过期",
+      text: ageDays >= 14 ? `过期 ${ageDays} 天了，建议今天处理或归档。` : `过期 ${ageDays} 天了。`,
+    };
+  }
+  if (ageDays >= 14) {
+    return {
+      level: "strong",
+      label: "拖久了",
+      text: `放了 ${ageDays} 天，建议拆一步、改日期或归档。`,
+    };
+  }
+  return {
+    level: "soft",
+    label: "搁置中",
+    text: `已经 ${ageDays} 天，记得看一眼。`,
+  };
 }
 
 function dayProgressPercent(date) {
@@ -1241,15 +1311,16 @@ function sortCards(cards) {
   const rank = (card) => {
     if (isArchivedCard(card)) return 5;
     if (isCompletedCard(card)) return 4;
+    if (lifeCardAgeNotice(card)?.level === "strong") return 0;
     if (card.priority === "high") return 0;
     if (card.sourceType === "insight") return 1;
     if (card.priority === "low") return 3;
     return 2;
   };
   return [...cards].sort((a, b) =>
+    rank(a) - rank(b) ||
     (Number(b.rankScore || 0) - Number(a.rankScore || 0)) ||
     String(a.date || "").localeCompare(String(b.date || "")) ||
-    rank(a) - rank(b) ||
     (segmentWeight[a.segment] ?? 5) - (segmentWeight[b.segment] ?? 5) ||
     String(a.createdAt || "").localeCompare(String(b.createdAt || ""))
   );
@@ -1288,6 +1359,7 @@ export function App() {
   const [confirmation, setConfirmation] = useState(null);
   const [agentJob, setAgentJob] = useState(null);
   const [filter, setFilter] = useState("all");
+  const [timelineScope, setTimelineScope] = useState("today");
   const [expanded, setExpanded] = useState(() => new Set());
   const [editingCard, setEditingCard] = useState(null);
   const [detailRequest, setDetailRequest] = useState(null);
@@ -1647,7 +1719,7 @@ export function App() {
         sourceType: card.sourceType,
         id: card.sourceId,
         stepId: step.id,
-        targetUserId: currentUser.id,
+        targetUserId: step.ownerId || currentUser.id,
         date: card.date,
       },
     });
@@ -1832,6 +1904,8 @@ export function App() {
             error={error}
             filter={filter}
             setFilter={setFilter}
+            timelineScope={timelineScope}
+            setTimelineScope={setTimelineScope}
             expanded={expanded}
             setExpanded={setExpanded}
             toggleCard={toggleCard}
@@ -1918,7 +1992,7 @@ function LoginScreen({ bootstrap, profiles, login, setLogin, password, setPasswo
     <main className="login-shell">
       <section className="login-art">
         <div className="login-cats">
-          <AvatarPair profiles={profiles} className="hero-pair" />
+          <AvatarPair profiles={profiles} className="avatar-pair-hero hero-pair" />
         </div>
         <p className="kicker">PEOS</p>
         <h1>{title}</h1>
@@ -1933,7 +2007,7 @@ function LoginScreen({ bootstrap, profiles, login, setLogin, password, setPasswo
               onClick={() => setLogin(profile.login)}
               style={{ "--person": profile.color }}
             >
-              <CatAvatar profile={profile} />
+              <CatAvatar profile={profile} className="is-brand" />
               <span>{profile.displayName}</span>
             </button>
           ))}
@@ -1961,7 +2035,7 @@ function TopNav({ page, navigate, profiles, currentUser, logout }) {
   return (
     <header className="topbar">
       <button className="brand-mark" type="button" onClick={() => navigate("dashboard")}>
-        <AvatarPair profiles={profiles} className="brand-cats" />
+        <AvatarPair profiles={profiles} className="avatar-pair-brand brand-cats" />
         <span>猫猫日记本</span>
       </button>
       <nav className="nav-tabs" aria-label="主导航">
@@ -1979,7 +2053,7 @@ function TopNav({ page, navigate, profiles, currentUser, logout }) {
         ))}
       </nav>
       <div className="session-chip">
-        <CatAvatar profile={currentUser} />
+        <CatAvatar profile={currentUser} className="is-mini" />
         <strong>{currentUser?.displayName || "成员"}</strong>
         <IconButton icon="logout" label="退出" onClick={logout} />
       </div>
@@ -2007,6 +2081,8 @@ function Dashboard(props) {
     error,
     filter,
     setFilter,
+    timelineScope,
+    setTimelineScope,
     expanded,
     setExpanded,
     toggleCard,
@@ -2020,7 +2096,11 @@ function Dashboard(props) {
 
   return (
     <section className="dashboard">
-      <DateRail selectedDate={selectedDate} chooseDate={chooseDate} />
+      <section className="home-paper">
+        <DateRail selectedDate={selectedDate} chooseDate={chooseDate} />
+        <StoryDayContext dayContext={data.dayContext} calendarContext={data.calendarContext} className="home-day-context" />
+        <HomeFocusNote focus={data.homeFocus} data={data} profiles={profiles} onOpen={openDetail} />
+      </section>
       <Composer
         text={composerText}
         setText={setComposerText}
@@ -2044,6 +2124,8 @@ function Dashboard(props) {
         selectedDate={selectedDate}
         filter={filter}
         setFilter={setFilter}
+        timelineScope={timelineScope}
+        setTimelineScope={setTimelineScope}
         expanded={expanded}
         setExpanded={setExpanded}
         toggleCard={toggleCard}
@@ -2056,6 +2138,61 @@ function Dashboard(props) {
       />
     </section>
   );
+}
+
+function HomeFocusNote({ focus, data, profiles, onOpen }) {
+  const text = cleanStoryText(focus?.text || "");
+  const title = cleanStoryText(focus?.title || "");
+  if (!text && !title) return null;
+  const actor = profiles.find((profile) => profile.id === focus?.actorId);
+  const lifeCard = (data?.scheduleItemCards || []).find((card) => card.id === focus?.sourceId || card.sourceId === focus?.sourceId);
+  const memoryItem = (data?.memoryItems || []).find((item) => item.id === focus?.sourceId);
+  const capture = (data?.captures || []).find((item) => item.id === focus?.sourceId);
+  const canOpen = Boolean(
+    (focus?.sourceType === "daily-summary" && data?.dailySummary) ||
+    ((focus?.sourceType === "cat-word" || focus?.sourceType === "capture") && capture) ||
+    (focus?.sourceType === "memoryItem" && memoryItem) ||
+    (focus?.sourceType === "lifeCard" && lifeCard)
+  );
+  const open = () => {
+    if (!canOpen) return;
+    if (focus.sourceType === "daily-summary") {
+      onOpen?.("daySummary", data.dailySummary);
+      return;
+    }
+    if (focus.sourceType === "cat-word" || focus.sourceType === "capture") {
+      onOpen?.("capture", capture);
+      return;
+    }
+    if (focus.sourceType === "memoryItem") {
+      onOpen?.("memoryItem", memoryItem);
+      return;
+    }
+    if (focus.sourceType === "lifeCard") {
+      onOpen?.("lifeCard", lifeCard);
+      return;
+    }
+  };
+  const content = (
+    <>
+      <span className="home-focus-icon">
+        <Icon name={focus?.icon || "sparkle"} />
+      </span>
+      <span className="home-focus-copy">
+        <strong>{title || focus?.meta || "今天"}</strong>
+        <em>{text || title}</em>
+      </span>
+      {actor ? <CatAvatar profile={actor} className="is-mini" /> : focus?.meta ? <i>{focus.meta}</i> : null}
+    </>
+  );
+  if (canOpen) {
+    return (
+      <button className={cx("home-focus-note", focus?.tone && `is-${focus.tone}`)} type="button" onClick={open}>
+        {content}
+      </button>
+    );
+  }
+  return <div className={cx("home-focus-note", focus?.tone && `is-${focus.tone}`)}>{content}</div>;
 }
 
 function DateRail({ selectedDate, chooseDate }) {
@@ -2124,6 +2261,9 @@ function Composer({ text, setText, saveRawCapture, profiles, currentUser, busy, 
   const visibleDecision = ["schedule", "capture"].includes(draft?.decision) ? draft.decision : "";
   const decisionMeta = captureDecisionMeta(draft?.decision);
   const confirmationType = decisionMeta.label;
+  const routeWhen = draft?.decision === "schedule"
+    ? [draft.date === today() ? "今天" : shortDate(draft.date), segmentLabels[draft.segment || "allDay"], itemTypeLabels[draft.itemType || "thing"]].filter(Boolean).join(" · ")
+    : decisionMeta.hint;
   const memoryHint = draft?.decision === "memory"
     ? memoryKindText(draft.memoryKinds || draft.memoryKind, "长期记忆")
     : "";
@@ -2208,19 +2348,17 @@ function Composer({ text, setText, saveRawCapture, profiles, currentUser, busy, 
           <AvatarPair profiles={profiles} ids={confirmationPeople} />
           <div className="confirm-copy">
             <strong>
-              {draft.analysisMode === "agent" ? "Agent" : "猫猫的事"}
+              {draft.analysisMode === "agent" ? "Agent" : "默认"}
               {" · "}
-              {confirmationType}
+              保存到 {confirmationType}
               {draft.relatedItems?.length ? ` · +${draft.relatedItems.length}` : ""}
             </strong>
             {draft.title ? <span>{draft.title}</span> : null}
-            {draft.decision === "memory" || draft.decision === "dailyStory" ? (
-              <span className={cx("confirm-destination", `is-${draft.decision}`)}>
-                <Icon name={decisionMeta.icon} />
-                <b>{decisionMeta.hint}</b>
-                {memoryHint ? <em>{memoryHint}</em> : null}
-              </span>
-            ) : null}
+            <span className={cx("confirm-destination", `is-${draft.decision || "capture"}`)}>
+              <Icon name={decisionMeta.icon} />
+              <b>{draft.decision === "schedule" ? routeWhen : decisionMeta.hint}</b>
+              {memoryHint ? <em>{memoryHint}</em> : null}
+            </span>
             {draft.reason || draft.confirmationText ? <em>{shortText(draft.reason || draft.confirmationText, 68)}</em> : null}
             <div className="route-tools">
               <div className="route-switch" aria-label="Agent 去向">
@@ -2239,7 +2377,12 @@ function Composer({ text, setText, saveRawCapture, profiles, currentUser, busy, 
                 ))}
               </div>
               {visibleDecision === "schedule" ? (
-                <div className="route-tune">
+                <details className="route-adjust">
+                  <summary>
+                    <Icon name="edit" />
+                    <span>调整</span>
+                  </summary>
+                  <div className="route-tune">
                   <select value={draft.itemType || "thing"} onChange={(event) => updateDraft({ itemType: event.target.value })} aria-label="类型">
                     {itemTypeOptions.map(([id, label]) => <option key={id} value={id}>{label}</option>)}
                   </select>
@@ -2247,7 +2390,8 @@ function Composer({ text, setText, saveRawCapture, profiles, currentUser, busy, 
                   <select value={draft.segment || "allDay"} onChange={(event) => updateDraft({ segment: event.target.value })} aria-label="时段">
                     {Object.entries(segmentLabels).map(([id, label]) => <option key={id} value={id}>{label}</option>)}
                   </select>
-                </div>
+                  </div>
+                </details>
               ) : null}
             </div>
             {draft.relatedItems?.length ? (
@@ -2498,7 +2642,7 @@ function MonthPage({ data, selectedDate, chooseDate, setPage }) {
   );
 }
 
-function LifeCardTimeline({ cards, profiles, currentUser, selectedDate, filter, setFilter, expanded, setExpanded, toggleCard, archiveCard, toggleStep, toggleTimer, setEditingCard, openDetail, chooseDate }) {
+function LifeCardTimeline({ cards, profiles, currentUser, selectedDate, filter, setFilter, timelineScope = "today", setTimelineScope, expanded, setExpanded, toggleCard, archiveCard, toggleStep, toggleTimer, setEditingCard, openDetail, chooseDate }) {
   const [isScrollDragging, setIsScrollDragging] = useState(false);
   const [isCardScrubbing, setIsCardScrubbing] = useState(false);
   const [scrubTargetId, setScrubTargetId] = useState("");
@@ -2516,8 +2660,11 @@ function LifeCardTimeline({ cards, profiles, currentUser, selectedDate, filter, 
     .filter((card) => card.sourceType !== "insight")
     .filter((card) => {
       const cardDate = String(card.date || todayKey);
-      return cardDate === selectedDate || cardDate >= todayKey;
-    }), [cards, selectedDate, todayKey]);
+      if (timelineScope === "today") {
+        return cardDate === selectedDate || (!isArchivedCard(card) && !isCompletedCard(card) && cardDate < selectedDate);
+      }
+      return cardDate >= selectedDate || (!isArchivedCard(card) && !isCompletedCard(card));
+    }), [cards, selectedDate, todayKey, timelineScope]);
   const profileIds = useMemo(() => new Set(profiles.map((profile) => profile.id)), [profiles]);
   const isSharedCard = (card) => card.ownerId === "shared" || (card.participants || []).length > 1;
   const isCurrentUserCard = (card) => card.ownerId === currentUser?.id || card.participants?.includes(currentUser?.id);
@@ -2544,24 +2691,29 @@ function LifeCardTimeline({ cards, profiles, currentUser, selectedDate, filter, 
   const focusedCardId = scrubTargetId || axisFocusId;
   const isFocusMode = Boolean(focusedCardId);
   const summary = useMemo(() => {
-    const dayCards = lifeCards.filter((card) => card.date === selectedDate);
-    const activeCards = dayCards.filter((card) => !isArchivedCard(card));
+    const activeCards = lifeCards.filter((card) => !isArchivedCard(card));
     const openCards = activeCards.filter((card) => !isCompletedCard(card));
     const doneCards = activeCards.filter(isCompletedCard);
-    const archivedCards = dayCards.filter(isArchivedCard);
+    const archivedCards = lifeCards.filter(isArchivedCard);
+    const staleCards = openCards.filter((card) => lifeCardAgeNotice(card)?.level === "strong");
     return {
       openCount: openCards.length,
       doneCount: doneCards.length,
       archivedCount: archivedCards.length,
       mineCount: openCards.filter(isCurrentUserCard).length,
       boardCount: openCards.filter(isTwoPersonBoardCard).length,
+      staleCount: staleCards.length,
     };
-  }, [lifeCards, currentUser?.id, profileIds, selectedDate]);
+  }, [lifeCards, currentUser?.id, profileIds]);
   const filters = [
     ["all", "rows", "全部"],
     ["mine", "user", "自己"],
     ["shared", "users", "双人"],
     ["archived", "archive", "归档"],
+  ];
+  const scopes = [
+    ["today", "focus", "今天"],
+    ["future", "calendar", "未来"],
   ];
   useEffect(() => () => {
     if (scrubFrame.current) window.cancelAnimationFrame(scrubFrame.current);
@@ -2734,10 +2886,26 @@ function LifeCardTimeline({ cards, profiles, currentUser, selectedDate, filter, 
           <span className="life-counts">
             <b>待做 {summary.openCount}</b>
             <i>完成 {summary.doneCount}</i>
+            {summary.staleCount ? <i className="is-warm">久放 {summary.staleCount}</i> : null}
             {summary.archivedCount ? <i>归档 {summary.archivedCount}</i> : null}
           </span>
         </div>
         <div className="tool-groups">
+          <div className="range-segment" aria-label="时间范围">
+            {scopes.map(([id, icon, label]) => (
+              <button
+                key={id}
+                className={cx(timelineScope === id && "is-active")}
+                type="button"
+                onClick={() => setTimelineScope?.(id)}
+                aria-label={label}
+                title={label}
+              >
+                <Icon name={icon} />
+                <span>{label}</span>
+              </button>
+            ))}
+          </div>
           <button
             className={cx("density-chip", selectedCompact && "is-compact")}
             type="button"
@@ -2875,13 +3043,15 @@ function LifeCard({ card, profiles, currentUser, toggleCard, archiveCard, toggle
   const isDraft = Boolean(card.isDraft);
   const isDone = isCompletedCard(card);
   const isArchived = isArchivedCard(card);
-  const isCheckin = card.sourceType === "checkin";
+  const isLegacyCheckin = card.sourceType === "checkin";
   const timeNote = primaryTimeLabel(card);
-  const summaryText = !isCheckin && summary && summary !== timeNote ? summary : "";
-  const planParts = isCheckin ? [] : (Array.isArray(card.actionSummary) && card.actionSummary.length ? card.actionSummary : cardPlanParts(card)).slice(0, 4);
+  const ageNotice = lifeCardAgeNotice(card);
+  const summaryText = !isLegacyCheckin && summary && summary !== timeNote ? summary : "";
+  const basePlanParts = Array.isArray(card.actionSummary) && card.actionSummary.length ? card.actionSummary : cardPlanParts(card);
+  const planParts = isLegacyCheckin ? [] : [ageNotice?.label, ...basePlanParts].filter(Boolean).slice(0, 4);
   const audit = lifeCardAudit(card, profiles);
   const profileById = new Map((profiles || []).map((profile) => [profile.id, profile]));
-  const checkinSteps = isCheckin
+  const checkinSteps = isLegacyCheckin
     ? participants.map((id) => ({
         id: `checkin-${id}`,
         title: profileById.get(id)?.displayName || ownerLabel(id, currentUser),
@@ -2889,9 +3059,9 @@ function LifeCard({ card, profiles, currentUser, toggleCard, archiveCard, toggle
         status: card.statusByUser?.[id] === "done" ? "done" : "todo",
       }))
     : [];
-  const allSteps = (isCheckin ? checkinSteps : (Array.isArray(card.steps) ? card.steps : [])).filter((step) => step.title);
+  const allSteps = (isLegacyCheckin ? checkinSteps : (Array.isArray(card.steps) ? card.steps : [])).filter((step) => step.title);
   const miniSteps = allSteps.slice(0, 3);
-  const pendingStep = !isCheckin ? allSteps.find((step) => step.status !== "done") : null;
+  const pendingStep = !isLegacyCheckin ? allSteps.find((step) => step.status !== "done") : null;
   const progressTotal = Number(card.stepProgress?.total);
   const progressDone = Number(card.stepProgress?.done);
   const stepTotal = Number.isFinite(progressTotal) && progressTotal > 0 ? progressTotal : allSteps.length;
@@ -2917,6 +3087,12 @@ function LifeCard({ card, profiles, currentUser, toggleCard, archiveCard, toggle
     : isDone
       ? (card.completion?.allDone ? "已完成" : "我已完成")
     : progressStatus;
+  const contextBits = [
+    timeNote,
+    ownerLabel(card.ownerId, currentUser),
+    displayedStatus,
+    card.priority === "high" ? "重要" : "",
+  ].filter(Boolean);
   const openCard = () => {
     if (isDraft) {
       setEditingCard(card);
@@ -2934,7 +3110,7 @@ function LifeCard({ card, profiles, currentUser, toggleCard, archiveCard, toggle
   };
   const toggleStepAction = (event, step) => {
     stopAction(event);
-    if (isCheckin) {
+    if (isLegacyCheckin) {
       if (step.ownerId === currentUser?.id) toggleCard?.(card, step.ownerId);
       return;
     }
@@ -2942,7 +3118,7 @@ function LifeCard({ card, profiles, currentUser, toggleCard, archiveCard, toggle
   };
   return (
     <article
-      className={cx("life-card", `type-${itemType}`, isCheckin && "is-checkin", isDone && "is-done", isArchived && "is-archived", readOnly && "is-readonly", isInsight && "is-insight", isDraft && "is-draft")}
+      className={cx("life-card", `type-${itemType}`, isLegacyCheckin && "is-checkin", isDone && "is-done", isArchived && "is-archived", ageNotice && "is-aged", ageNotice?.level === "strong" && "is-aged-strong", readOnly && "is-readonly", isInsight && "is-insight", isDraft && "is-draft")}
       style={{ "--owner-one": ownerColor, "--owner-two": secondColor }}
       onDoubleClick={() => {
         if (!readOnly) setEditingCard(card);
@@ -2957,16 +3133,13 @@ function LifeCard({ card, profiles, currentUser, toggleCard, archiveCard, toggle
           <div className="card-copy">
             <div className="card-meta">
               <span className="type-pill">{itemTypeLabels[itemType]}</span>
-              {timeNote ? <span className="time-pill">{timeNote}</span> : null}
-              <span>{ownerLabel(card.ownerId, currentUser)}</span>
+              {contextBits.length ? <span className="context-pill">{contextBits.join(" · ")}</span> : null}
               {totalTimeLabel ? (
                 <span className={cx("time-total-pill", timerActive && "is-running")}>
                   <Icon name="clock" />
                   {totalTimeLabel}
                 </span>
               ) : null}
-              {displayedStatus ? <span className="status-pill">{displayedStatus}</span> : null}
-              {card.priority === "high" ? <span>重要</span> : null}
             </div>
             <strong>{title}</strong>
             {(audit.created || audit.editor) ? (
@@ -2982,24 +3155,27 @@ function LifeCard({ card, profiles, currentUser, toggleCard, archiveCard, toggle
           <div className="card-step-list" aria-label="步骤">
             {miniSteps.map((step) => {
               const done = step.status === "done";
+              const owner = stepOwnerMeta(step, profiles, participants);
               return (
                 <button
                   key={step.id || step.title}
                   className={cx("card-step", done && "is-done")}
+                  style={{ "--step-owner": owner.color }}
                   type="button"
-                  aria-label={isCheckin ? (done ? `取消 ${step.title}` : `${step.title} 确认`) : (done ? `取消 ${step.title}` : `完成 ${step.title}`)}
+                  aria-label={isLegacyCheckin ? (done ? `取消 ${step.title}` : `${step.title} 确认`) : (done ? `取消 ${step.title}` : `完成 ${step.title}`)}
                   title={step.title}
                   onClick={(event) => toggleStepAction(event, step)}
-                  disabled={readOnly || (isCheckin && step.ownerId !== currentUser?.id)}
+                  disabled={readOnly || (isLegacyCheckin && step.ownerId !== currentUser?.id)}
                 >
                   <Icon name={done ? "check" : "circle"} />
+                  <em title={owner.label}>{owner.initials}</em>
                   <span>{step.title}</span>
                 </button>
               );
             })}
           </div>
         ) : null}
-        {!isCheckin && stepTotal ? (
+        {!isLegacyCheckin && stepTotal ? (
           <button
             className={cx("compact-step-summary", !pendingStep && "is-done")}
             type="button"
@@ -3033,10 +3209,17 @@ function LifeCard({ card, profiles, currentUser, toggleCard, archiveCard, toggle
             <span>{summaryText}</span>
           </p>
         ) : null}
+        {ageNotice ? (
+          <p className={cx("card-detail card-note age-note", ageNotice.level === "strong" && "is-strong")}>
+            <Icon name="clock" />
+            <b>{ageNotice.label}</b>
+            <span>{ageNotice.text}</span>
+          </p>
+        ) : null}
       </div>
-      {!readOnly && !isDraft && !isCheckin ? (
+      {!readOnly && !isDraft ? (
         <div className="card-actions">
-          {!isArchived ? (
+          {!isArchived && !isLegacyCheckin ? (
             <button
               className={cx("action-chip timer-toggle", timerActive && "is-active")}
               type="button"
@@ -3077,33 +3260,33 @@ function LifeCard({ card, profiles, currentUser, toggleCard, archiveCard, toggle
               <span>完成</span>
             </button>
           ) : null}
-          {["schedule", "todo"].includes(card.sourceType) ? (
+          {isArchived && ["schedule", "todo"].includes(card.sourceType) ? (
             <button
               className="action-chip archive-toggle"
               type="button"
-              aria-label={isArchived ? "恢复归档" : "归档"}
-              title={isArchived ? "恢复归档" : "归档"}
+              aria-label="恢复归档"
+              title="恢复归档"
               onClick={(event) => {
                 stopAction(event);
                 archiveCard?.(card);
               }}
             >
-              <Icon name={isArchived ? "undo" : "archive"} />
-              <span>{isArchived ? "恢复" : "归档"}</span>
+              <Icon name="undo" />
+              <span>恢复</span>
             </button>
           ) : null}
           <button
-            className="action-chip edit-toggle"
+            className="action-chip detail-toggle"
             type="button"
-            aria-label="编辑"
-            title="编辑"
+            aria-label="详情"
+            title="详情"
             onClick={(event) => {
               stopAction(event);
-              setEditingCard(card);
+              openCard();
             }}
           >
-            <Icon name="edit" />
-            <span>编辑</span>
+            <Icon name="more" />
+            <span>详情</span>
           </button>
         </div>
       ) : isDraft ? (
@@ -3139,6 +3322,7 @@ function makeEditorStep(step = {}, index = 0) {
 }
 
 function CardEditor({ card, profiles, onClose, onSave, onDelete }) {
+  const isDailyCheckin = card.title === "一起打卡！" || card.repeatRule === "daily@03:00";
   const [form, setForm] = useState({
     title: card.title || "",
     detail: card.detail || card.slot || "",
@@ -3178,7 +3362,7 @@ function CardEditor({ card, profiles, onClose, onSave, onDelete }) {
   });
   const addStep = () => setForm((current) => ({
     ...current,
-    steps: [...current.steps, makeEditorStep({ title: "", estimateMin: "" }, current.steps.length)],
+    steps: [...current.steps, makeEditorStep({ title: "", estimateMin: "", ownerId: "" }, current.steps.length)],
   }));
   const removeStep = (id) => setForm((current) => ({
     ...current,
@@ -3188,6 +3372,10 @@ function CardEditor({ card, profiles, onClose, onSave, onDelete }) {
     event.preventDefault();
     onSave({
       ...form,
+      title: isDailyCheckin ? "一起打卡！" : form.title,
+      itemType: isDailyCheckin ? "checkin" : form.itemType,
+      ownerId: isDailyCheckin ? "shared" : form.ownerId,
+      repeatRule: isDailyCheckin ? "daily@03:00" : form.repeatRule,
       durationMin: Number(form.durationMin) || 0,
       steps: form.steps
         .map((step, index) => ({
@@ -3204,6 +3392,10 @@ function CardEditor({ card, profiles, onClose, onSave, onDelete }) {
   const participants = form.ownerId === "shared" ? profiles.map((profile) => profile.id) : [form.ownerId];
   const ownerChoices = [
     { id: "shared", label: "共同" },
+    ...profiles.map((profile) => ({ id: profile.id, label: profile.displayName })),
+  ];
+  const stepOwnerChoices = [
+    { id: "", label: "共同" },
     ...profiles.map((profile) => ({ id: profile.id, label: profile.displayName })),
   ];
   const showDelete = !card.isDraft;
@@ -3228,6 +3420,7 @@ function CardEditor({ card, profiles, onClose, onSave, onDelete }) {
             autoFocus
             aria-label="标题"
             placeholder="标题"
+            readOnly={isDailyCheckin}
           />
         </label>
         <label className="quiet-field edit-detail-field">
@@ -3237,43 +3430,45 @@ function CardEditor({ card, profiles, onClose, onSave, onDelete }) {
         <div className="edit-grid">
           <label className="quiet-field">
             <span>日期</span>
-            <input type="date" value={form.date} onChange={(event) => update("date", event.target.value)} />
+            <input type="date" value={form.date} onChange={(event) => update("date", event.target.value)} disabled={isDailyCheckin} />
           </label>
           <label className="quiet-field">
             <span>类型</span>
-            <select value={form.itemType} onChange={(event) => update("itemType", event.target.value)}>
+            <select value={form.itemType} onChange={(event) => update("itemType", event.target.value)} disabled={isDailyCheckin}>
               {itemTypeOptions.map(([id, label]) => <option key={id} value={id}>{label}</option>)}
             </select>
           </label>
           <label className="quiet-field">
             <span>归属</span>
-            <select value={form.ownerId} onChange={(event) => update("ownerId", event.target.value)} disabled={card.sourceType === "checkin"}>
+            <select value={form.ownerId} onChange={(event) => update("ownerId", event.target.value)} disabled={card.sourceType === "checkin" || isDailyCheckin}>
               {ownerChoices.map((choice) => <option key={choice.id} value={choice.id}>{choice.label}</option>)}
             </select>
           </label>
         </div>
-        <details className="planning-fold">
+        <details className="planning-fold" open={isDailyCheckin}>
           <summary>
             <Icon name="calendar" />
-            <span>计划</span>
+            <span>{isDailyCheckin ? "打卡项" : "计划"}</span>
           </summary>
-          <div className="edit-grid">
-            <label className="quiet-field">
-              <span>开始</span>
-              <input type="datetime-local" value={form.plannedAt} onChange={(event) => update("plannedAt", event.target.value)} />
-            </label>
-            <label className="quiet-field">
-              <span>截止</span>
-              <input type="datetime-local" value={form.dueAt} onChange={(event) => update("dueAt", event.target.value)} />
-            </label>
-            <label className="quiet-field">
-              <span>预计</span>
-              <input type="number" min="0" step="5" value={form.durationMin} onChange={(event) => update("durationMin", event.target.value)} />
-            </label>
-          </div>
+          {!isDailyCheckin ? (
+            <div className="edit-grid">
+              <label className="quiet-field">
+                <span>开始</span>
+                <input type="datetime-local" value={form.plannedAt} onChange={(event) => update("plannedAt", event.target.value)} />
+              </label>
+              <label className="quiet-field">
+                <span>截止</span>
+                <input type="datetime-local" value={form.dueAt} onChange={(event) => update("dueAt", event.target.value)} />
+              </label>
+              <label className="quiet-field">
+                <span>预计</span>
+                <input type="number" min="0" step="5" value={form.durationMin} onChange={(event) => update("durationMin", event.target.value)} />
+              </label>
+            </div>
+          ) : null}
           <section className="step-editor" aria-label="步骤">
             <div className="step-editor-head">
-              <span>步骤</span>
+              <span>{isDailyCheckin ? "打卡项" : "步骤"}</span>
               <button type="button" onClick={addStep}>
                 <Icon name="plus" />
                 <em>添加</em>
@@ -3284,6 +3479,7 @@ function CardEditor({ card, profiles, onClose, onSave, onDelete }) {
                 <div
                   key={step.id}
                   className={cx("step-editor-row", dragStepId === step.id && "is-dragging")}
+                  style={{ "--step-owner": stepOwnerMeta(step, profiles, participants).color }}
                   draggable
                   onDragStart={() => setDragStepId(step.id)}
                   onDragEnd={() => setDragStepId("")}
@@ -3313,6 +3509,16 @@ function CardEditor({ card, profiles, onClose, onSave, onDelete }) {
                       onChange={(event) => updateStep(step.id, { estimateMin: event.target.value })}
                       aria-label={`${step.title || `第 ${index + 1} 步`} 预计分钟`}
                     />
+                  </label>
+                  <label className="step-owner-field">
+                    <span>谁做</span>
+                    <select
+                      value={step.ownerId || ""}
+                      onChange={(event) => updateStep(step.id, { ownerId: event.target.value })}
+                      aria-label={`${step.title || `第 ${index + 1} 步`} 负责人`}
+                    >
+                      {stepOwnerChoices.map((choice) => <option key={choice.id || "shared"} value={choice.id}>{choice.label}</option>)}
+                    </select>
                   </label>
                   <div className="step-row-actions">
                     <IconButton icon="chevronUp" label="上移" onClick={() => moveStep(step.id, -1)} disabled={index === 0} />
@@ -3585,7 +3791,7 @@ function CatNoticePage({ profiles, currentUser, now, data, request, setData, set
         </div>
       </div>
       <section className={cx("cat-note-hero", `is-${notice.period}`, notice.kind && `kind-${notice.kind}`, notice.isLong && "is-long", notice.period === "deepNight" && "is-deep-night")}>
-        <AvatarPair profiles={profiles} className="cat-note-cats" />
+        <AvatarPair profiles={profiles} className="avatar-pair-hero cat-note-cats" />
         <span><Icon name={notice.icon} />{notice.title}</span>
         {editing ? (
           <form className="cat-word-compose" onSubmit={sendWord}>
@@ -3633,7 +3839,7 @@ function CatWordMini({ word, profiles, label, onClick }) {
   const body = cleanNoticeBit(word.text, 52);
   const content = (
     <>
-      <CatAvatar profile={profile} />
+      <CatAvatar profile={profile} className="is-brand" />
       <span>
         <b>{label}</b>
         <em>{body}</em>
@@ -3656,12 +3862,84 @@ function BreakableText({ text }) {
   ));
 }
 
+function buildDayContextChips(dayContext, fallbackCalendar) {
+  const context = dayContext || {};
+  const weather = context.weather || {};
+  const astronomy = context.astronomy || {};
+  const moon = astronomy.moon || {};
+  const calendar = context.calendar || fallbackCalendar || {};
+  const marks = Array.isArray(calendar.marks) ? calendar.marks : [];
+  const solarTerm = cleanStoryText(calendar.solarTerm) ||
+    cleanStoryText(marks.find((mark) => mark.type === "solarTerm")?.title || marks.find((mark) => mark.type === "solarTerm")?.label);
+  const festivals = Array.isArray(calendar.festivals)
+    ? calendar.festivals.map(cleanStoryText).filter(Boolean)
+    : marks
+        .filter((mark) => ["festival", "holiday"].includes(mark.type))
+        .map((mark) => cleanStoryText(mark.title || mark.label))
+        .filter(Boolean);
+  const moonLabel = cleanStoryText(astronomy.moonLabel || moon.label);
+  const illumination = Math.round(Number(astronomy.moonIllumination ?? moon.illumination) || 0);
+  const lunar = cleanStoryText(calendar.lunar);
+  const weatherLabel = cleanStoryText(weather.label);
+  const chips = [];
+
+  if (weatherLabel) {
+    chips.push({
+      key: "weather",
+      icon: weather.icon || (weather.isSunny ? "sun" : "cloud"),
+      text: weatherLabel,
+      tone: weather.isSunny ? "sunny" : weather.tone || "weather",
+    });
+  }
+  if (weather.isSunny) {
+    chips.push({ key: "sunny", icon: "sun", text: "晴", tone: "sunny" });
+  }
+  if (moonLabel) {
+    chips.push({
+      key: "moon",
+      icon: "moon",
+      text: illumination ? `${moonLabel} ${illumination}%` : moonLabel,
+      tone: "moon",
+    });
+  }
+  if (solarTerm) {
+    chips.push({ key: "solar", icon: "sparkle", text: solarTerm, tone: "solar" });
+  }
+  festivals.slice(0, 2).forEach((festival, index) => {
+    chips.push({ key: `festival-${index}`, icon: "star", text: festival, tone: "festival" });
+  });
+  if (lunar && chips.length < 5) {
+    chips.push({ key: "lunar", icon: "calendar", text: lunar, tone: "lunar" });
+  }
+  if (calendar.isRestDay && chips.length < 5) {
+    chips.push({ key: "rest", icon: "moon", text: "休", tone: "rest" });
+  }
+
+  return chips.slice(0, 6);
+}
+
+function StoryDayContext({ dayContext, calendarContext, className = "" }) {
+  const chips = buildDayContextChips(dayContext, calendarContext);
+  if (!chips.length) return null;
+  return (
+    <div className={cx("story-day-context", className)} aria-label="当天上下文">
+      {chips.map((chip) => (
+        <span className={cx(chip.tone && `is-${chip.tone}`)} key={chip.key} title={chip.text}>
+          <Icon name={chip.icon} />
+          <em>{chip.text}</em>
+        </span>
+      ))}
+    </div>
+  );
+}
+
 function DailySummaryPage({ data, profiles, currentUser, request, setData, selectedDate, chooseDate, openDetail }) {
   const [pulse, setPulse] = useState(() => data.diaryDay?.userDays?.[currentUser?.id] || {});
   const [refreshing, setRefreshing] = useState(false);
   const [refreshError, setRefreshError] = useState("");
   const [refreshMessage, setRefreshMessage] = useState("");
   const summary = data.dailySummary;
+  const dayContext = summary?.dayContext || data.dayContext || null;
   const title = storyDisplayTitle(summary, selectedDate);
   const narrative = cleanStoryText(summary?.narrative);
   const nextStep = cleanStoryText(summary?.nextStep);
@@ -3739,9 +4017,9 @@ function DailySummaryPage({ data, profiles, currentUser, request, setData, selec
     userIds: row.ownerIds || [],
     evidence: ["待推进"],
   }));
-  const reviewDid = reviewEntryOrFallback(dailyReview.did, coreContributionItems, "今天做了什么");
-  const reviewShortcoming = reviewEntryOrFallback(dailyReview.shortcoming, shortcomingFallbackItems, "有什么不足");
-  const reviewTomorrow = reviewEntryOrFallback(dailyReview.tomorrow, carryForwardItems, "明天可以怎么做");
+  const reviewDid = reviewEntryOrFallback(dailyReview.did, coreContributionItems, "小小推进");
+  const reviewShortcoming = reviewEntryOrFallback(dailyReview.shortcoming, shortcomingFallbackItems, "还差一点");
+  const reviewTomorrow = reviewEntryOrFallback(dailyReview.tomorrow, carryForwardItems, "明天带上");
   const visibleCardTotal = Math.max(selectedCards.length, completedRows.length + missedRows.length);
   const sourceStats = [
     { key: "done", icon: "check", label: "完成", value: visibleCardTotal ? `${completedRows.length}/${visibleCardTotal}` : "0" },
@@ -3804,6 +4082,7 @@ function DailySummaryPage({ data, profiles, currentUser, request, setData, selec
 
   const generatedLabel = summary?.generatedAt ? compactDateTime(summary.generatedAt) : "";
   const visibleDiary = cleanStoryText(diary.text || narrative);
+  const hasReviewLines = [keyMoment, reviewDid, reviewShortcoming, reviewTomorrow].some(hasAnalysisEntry) || memoryClueItems.length > 0;
 
   return (
     <section className="story-page">
@@ -3821,13 +4100,13 @@ function DailySummaryPage({ data, profiles, currentUser, request, setData, selec
         <article className="story-journal">
           <div className="story-journal-top">
             <div className="story-journal-art">
-              {summary.illustration?.type === "photo" && summary.illustration.url ? <img src={summary.illustration.url} alt={summary.illustration.alt || "当天照片"} /> : <AvatarPair profiles={data.profiles} className="story-cats" />}
+              {summary.illustration?.type === "photo" && summary.illustration.url ? <img src={summary.illustration.url} alt={summary.illustration.alt || "当天照片"} /> : <AvatarPair profiles={data.profiles} className="avatar-pair-story story-cats" />}
             </div>
             <div className="story-journal-meta">
               <span title={summaryModeLabel(summary.mode)}><Icon name="sparkle" /></span>
               {generatedLabel ? <time>{generatedLabel}</time> : null}
             </div>
-            <JournalStats stats={sourceStats} />
+            <StoryDayContext dayContext={dayContext} calendarContext={data.calendarContext} />
           </div>
           {visibleDiary ? (
             <section className="story-journal-diary">
@@ -3835,33 +4114,49 @@ function DailySummaryPage({ data, profiles, currentUser, request, setData, selec
               <p>{visibleDiary}</p>
             </section>
           ) : null}
-          <div className="story-journal-lines">
-            <JournalLine icon="star" label="最开心" entry={keyMoment} profiles={profiles} />
-            <JournalLine icon="check" label="今天做了什么" entry={reviewDid} profiles={profiles} />
-            <JournalLine icon="edit" label="有什么不足" entry={reviewShortcoming} profiles={profiles} />
-            <JournalLine icon="calendar" label="明天可以怎么做" entry={reviewTomorrow} profiles={profiles} />
-            <JournalList icon="bookmark" label="记忆" entries={memoryClueItems} profiles={profiles} />
-          </div>
+          {hasReviewLines ? (
+            <div className="story-journal-lines">
+              <JournalLine icon="star" label="最开心" entry={keyMoment} profiles={profiles} />
+              <JournalLine icon="check" label="今天做了什么" entry={reviewDid} profiles={profiles} />
+              <JournalLine icon="edit" label="有什么不足" entry={reviewShortcoming} profiles={profiles} />
+              <JournalLine icon="calendar" label="明天可以怎么做" entry={reviewTomorrow} profiles={profiles} />
+              <JournalList icon="bookmark" label="记忆" entries={memoryClueItems} profiles={profiles} />
+            </div>
+          ) : null}
         </article>
       ) : (
         <section className="story-journal story-journal-empty">
           <div className="story-journal-top">
             <div className="story-journal-art">
-              <AvatarPair profiles={data.profiles} className="story-cats" />
+              <AvatarPair profiles={data.profiles} className="avatar-pair-story story-cats" />
             </div>
             <div className="story-journal-meta">
               <span><Icon name="sparkle" /></span>
             </div>
             <IconButton icon={refreshing ? "refresh" : "sparkle"} label="生成日总结" onClick={refresh} disabled={refreshing} className={refreshing ? "is-spinning" : ""} />
+            <StoryDayContext dayContext={dayContext} calendarContext={data.calendarContext} />
           </div>
           <section className="story-journal-diary">
             <h2>等猫猫整理</h2>
           </section>
         </section>
       )}
+      {summary ? (
+        <details className="journal-source-fold">
+          <summary>
+            <span>
+              <Icon name="more" />
+              <strong>线索</strong>
+            </span>
+            <JournalStats stats={sourceStats} />
+            <Icon name="chevronDown" />
+          </summary>
+          <DailySummarySourceStrip stats={sourceStats} locations={summary?.locations || []} note={nextStep || summary?.qualityNote} dayContext={dayContext} calendarContext={data.calendarContext} />
+        </details>
+      ) : null}
       <details className="pulse-fold">
         <summary>
-          <CatAvatar profile={currentUser} />
+          <CatAvatar profile={currentUser} className="is-mini" />
           <span><Icon name="star" /><Icon name="check" /><Icon name="edit" /></span>
           <Icon name="chevronDown" />
         </summary>
@@ -3917,6 +4212,7 @@ function JournalStats({ stats }) {
         <span key={item.key} title={`${item.label} ${item.value}`} aria-label={`${item.label} ${item.value}`}>
           <Icon name={item.icon} />
           <b>{item.value}</b>
+          <em>{item.label}</em>
         </span>
       ))}
     </div>
@@ -3977,9 +4273,16 @@ function JournalList({ icon, label, entries, profiles }) {
   );
 }
 
-function DailySummarySourceStrip({ stats, locations, note }) {
+function DailySummarySourceStrip({ stats, locations, note, dayContext, calendarContext }) {
+  const contextChips = buildDayContextChips(dayContext, calendarContext).slice(0, 4);
   return (
     <div className="story-source-strip">
+      {contextChips.map((item) => (
+        <span key={`context-${item.key}`}>
+          <Icon name={item.icon} />
+          <b>{item.text}</b>
+        </span>
+      ))}
       {(stats || []).map((item) => (
         <span key={item.key}>
           <Icon name={item.icon} />
@@ -4183,7 +4486,7 @@ function MemoryPage({ data, profiles, currentUser, request, setData, selectedDat
       </section>
       <details className="memory-editor">
         <summary>
-          <CatAvatar profile={currentUser} />
+          <CatAvatar profile={currentUser} className="is-mini" />
           <strong>{currentUser?.displayName}</strong>
           <Icon name="edit" />
         </summary>
@@ -4214,9 +4517,9 @@ function MemoryItemCard({ item, profiles, currentUser, onOpen, featured = false 
   return (
     <button className={cx("memory-card", `memory-${item.group || "care"}`, `is-${surface.key}`, featured && "is-featured")} type="button" onClick={onOpen}>
       <div className="memory-card-head">
-        <span><Icon name={surface.icon} />{item.kindLabel}</span>
+        <span className="memory-kind"><Icon name={surface.icon} /><b>{item.kindLabel}</b></span>
         {item.actionable ? <Icon name="sparkle" /> : null}
-        <AvatarPair profiles={profiles} ids={ids} />
+        <AvatarPair profiles={profiles} ids={ids} className="avatar-pair-mini" />
       </div>
       <strong>{item.title}</strong>
       {item.detail ? <p>{item.detail}</p> : null}
@@ -4279,8 +4582,10 @@ function SettingsPage({ currentUser, profiles, request, setData, selectedDate })
       </div>
       <form className="settings-grid" onSubmit={save}>
         <div className="settings-preview">
-          <CatAvatar profile={preview} />
-          <strong>{form.displayName}</strong>
+          <span>
+            <CatAvatar profile={preview} className="is-hero" />
+            <strong>{form.displayName}</strong>
+          </span>
           <IconButton icon="check" label="保存设置" type="submit" primary />
         </div>
         <label className="quiet-field">
@@ -4324,7 +4629,7 @@ function SettingsPage({ currentUser, profiles, request, setData, selectedDate })
       <div className="member-list">
         {profiles.map((profile) => (
           <span key={profile.id} style={{ "--person": profile.color }}>
-            <CatAvatar profile={profile} />
+            <CatAvatar profile={profile} className="is-mini" />
             <b>{profile.displayName}</b>
           </span>
         ))}

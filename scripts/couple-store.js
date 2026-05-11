@@ -83,6 +83,12 @@ const captureAgentPrompt = [
 ].join("\n");
 const defaultLifeCardTitle = "今天有没有开开心心？";
 const dailyCheckinTitle = "一起确认明天的安排";
+const dailyCheckinCardTitle = "一起打卡！";
+const dailyCheckinCardTag = "daily-checkin-card";
+const dailyCheckinDefaultSteps = [
+  "确定明天安排",
+  "进行体育锻炼",
+];
 const defaultLifeCardTitleKey = defaultLifeCardTitle.replace(/[？?。!！\s]/g, "");
 const placeholderTitleKeys = new Set([
   defaultLifeCardTitle,
@@ -90,9 +96,10 @@ const placeholderTitleKeys = new Set([
   "互相确认今天的状态",
   "一起确认今天的安排",
   dailyCheckinTitle,
+  dailyCheckinCardTitle,
 ].map((value) => value.replace(/[？?。!！\s]/g, "")));
 const lowSignalSummaryTitleKeys = new Set(["做别的事", "日记", "今日", "今天", "日总结", "共同回忆"].map((value) => value.replace(/[？?。!！\s]/g, "")));
-const badGeneratedSummaryPattern = /值得记住的是|今天最清楚留下来(?:的)?是|今天最值得记住的是|记录留下了\s*\d+\s*条现场线索|完成了\s*今天有没有开开心心|需要顺手带到明天的是\s*今天有没有开开心心|还没有明确完成项|没有明确贡献记录|做了?别的事|随手记还比较少|先补上|自动日总结|每日状态对象|doneUsers|pendingUsers|createdBy|updatedBy|statusUpdatedBy|actorId|targetUserId|status_by_user|source_counts/;
+const badGeneratedSummaryPattern = /值得记住的是|今天最清楚留下来(?:的)?是|今天最值得记住的是|今天的页面很轻|记录留下了\s*\d+\s*条现场线索|完成了\s*今天有没有开开心心|需要顺手带到明天的是\s*今天有没有开开心心|还没有明确完成项|没有明确贡献记录|没有太多具体安排|没有谁完成了什么|没有具体安排|信息不足|数据不足|记录较少|记录里|记录显示|没有显示|做了?别的事|随手记还比较少|先补上|小偏好|自动日总结|每日状态对象|doneUsers|pendingUsers|createdBy|updatedBy|statusUpdatedBy|actorId|targetUserId|status_by_user|source_counts/;
 const importantEventPattern = /答辩|考试|面试|汇报|演讲|提交|材料|ddl|deadline|截止|证件|面谈|复试|重要(?!的一件事)/i;
 const anniversaryPattern = /纪念日|周年|生日|情人节|七夕|圣诞|跨年|节日|纪念/i;
 const promisePattern = /答应|承诺|说好|我(?:会|来|去|周末|今晚|明天|下次|之后|以后)?[^。！？\n]{0,18}(?:帮你|给你|带你|陪你|替你|负责|弄|整理|修|买|订|处理|搞定)/;
@@ -168,6 +175,54 @@ const officialWorkdays2026 = new Map([
   ["2026-09-20", "国庆调休"],
   ["2026-10-10", "国庆调休"],
 ]);
+const weatherCodeLabels = new Map([
+  [0, "晴"],
+  [1, "晴间多云"],
+  [2, "多云"],
+  [3, "阴"],
+  [45, "雾"],
+  [48, "雾"],
+  [51, "小雨"],
+  [53, "小雨"],
+  [55, "小雨"],
+  [56, "冻雨"],
+  [57, "冻雨"],
+  [61, "雨"],
+  [63, "雨"],
+  [65, "大雨"],
+  [66, "冻雨"],
+  [67, "冻雨"],
+  [71, "雪"],
+  [73, "雪"],
+  [75, "大雪"],
+  [77, "雪粒"],
+  [80, "阵雨"],
+  [81, "阵雨"],
+  [82, "强阵雨"],
+  [85, "阵雪"],
+  [86, "阵雪"],
+  [95, "雷雨"],
+  [96, "雷雨"],
+  [99, "雷雨"],
+]);
+const fallbackDailyWeather = [
+  { label: "小晴天", icon: "sun", tone: "sunny" },
+  { label: "软软云", icon: "cloud", tone: "cloudy" },
+  { label: "微风", icon: "cloud", tone: "breeze" },
+  { label: "安静雨", icon: "cloud", tone: "rain" },
+  { label: "月亮亮", icon: "moon", tone: "night" },
+  { label: "暖乎乎", icon: "sun", tone: "warm" },
+];
+const moonPhaseLabels = [
+  { label: "新月", icon: "moon", tone: "new" },
+  { label: "蛾眉月", icon: "moon", tone: "waxing-crescent" },
+  { label: "上弦月", icon: "moon", tone: "first-quarter" },
+  { label: "盈凸月", icon: "moon", tone: "waxing-gibbous" },
+  { label: "满月", icon: "moon", tone: "full" },
+  { label: "亏凸月", icon: "moon", tone: "waning-gibbous" },
+  { label: "下弦月", icon: "moon", tone: "last-quarter" },
+  { label: "残月", icon: "moon", tone: "waning-crescent" },
+];
 
 function pad(value) {
   return String(value).padStart(2, "0");
@@ -330,6 +385,216 @@ function calendarContextForDate(dateText) {
     isRestDay: !isWorkday && (isHoliday || isWeekend),
     isWorkday,
   };
+}
+
+function inferWeatherFromText(text) {
+  const value = sanitizeText(text, 500);
+  if (!value) return null;
+  const patterns = [
+    [/雷|闪电|打雷/, { label: "雷雨", icon: "cloud", tone: "storm" }],
+    [/暴雨|大雨|下大雨/, { label: "大雨", icon: "cloud", tone: "rain" }],
+    [/下雨|雨天|小雨|阵雨|淋雨/, { label: "下雨", icon: "cloud", tone: "rain" }],
+    [/下雪|雪天|小雪|大雪/, { label: "下雪", icon: "cloud", tone: "snow" }],
+    [/晴|太阳|晒|阳光/, { label: "晴天", icon: "sun", tone: "sunny" }],
+    [/阴天|阴了|阴沉/, { label: "阴天", icon: "cloud", tone: "cloudy" }],
+    [/多云|云很多|云朵/, { label: "多云", icon: "cloud", tone: "cloudy" }],
+    [/刮风|大风|风很大|微风/, { label: "有风", icon: "cloud", tone: "breeze" }],
+    [/雾|雾气|起雾/, { label: "有雾", icon: "cloud", tone: "fog" }],
+    [/热|闷热|好热|升温/, { label: "热乎乎", icon: "sun", tone: "warm" }],
+    [/冷|降温|好冷|冻/, { label: "冷嗖嗖", icon: "moon", tone: "cold" }],
+  ];
+  const matched = patterns.find(([pattern]) => pattern.test(value));
+  return matched ? { ...matched[1], source: "capture" } : null;
+}
+
+function fallbackWeatherForDate(date) {
+  const item = fallbackDailyWeather[stableIndex(date, fallbackDailyWeather.length)] || fallbackDailyWeather[0];
+  return {
+    ...item,
+    source: "daily-random",
+  };
+}
+
+function buildDailyWeather(date, captures = []) {
+  const fromCapture = (captures || [])
+    .map((capture) => inferWeatherFromText(`${capture.text || ""} ${capture.location || ""}`))
+    .find(Boolean);
+  if (fromCapture) return fromCapture;
+  return fallbackWeatherForDate(date);
+}
+
+function moonPhaseForDate(dateText) {
+  const parsed = parseDate(normalizeDate(dateText, ""));
+  if (!parsed) return { label: "月亮", icon: "moon", tone: "unknown", illumination: 0 };
+  const knownNewMoon = Date.UTC(2000, 0, 6, 18, 14);
+  const current = Date.UTC(parsed.getFullYear(), parsed.getMonth(), parsed.getDate(), 12, 0);
+  const lunation = 29.530588853;
+  const age = (((current - knownNewMoon) / 86400000) % lunation + lunation) % lunation;
+  const phaseIndex = Math.round((age / lunation) * 8) % 8;
+  const phase = moonPhaseLabels[phaseIndex] || moonPhaseLabels[0];
+  const illumination = Math.round(((1 - Math.cos((2 * Math.PI * age) / lunation)) / 2) * 100);
+  return {
+    ...phase,
+    age: Number(age.toFixed(1)),
+    illumination,
+  };
+}
+
+function buildAstronomyContext(date) {
+  const moon = moonPhaseForDate(date);
+  return {
+    moon,
+    moonLabel: moon.label,
+    moonIllumination: moon.illumination,
+  };
+}
+
+function normalizeBooleanFlag(value, fallback = false) {
+  if (value === true || value === "true" || value === "1" || value === 1) return true;
+  if (value === false || value === "false" || value === "0" || value === 0) return false;
+  return fallback;
+}
+
+function isManualContextPart(part) {
+  const source = sanitizeText(part?.source, 40);
+  return part?.configured === true || source === "manual" || source === "user" || source === "override";
+}
+
+function hasContextValue(object) {
+  return Boolean(object && typeof object === "object" && Object.values(object).some((value) =>
+    value !== undefined && value !== null && value !== ""
+  ));
+}
+
+function normalizeMoonContext(moon = {}, backupMoon = {}) {
+  const source = moon && typeof moon === "object" ? moon : {};
+  const backup = backupMoon && typeof backupMoon === "object" ? backupMoon : {};
+  const label = cleanGeneratedSummaryText(source.label || backup.label, 80) || "月亮";
+  const illumination = Math.max(0, Math.min(100, Math.round(Number(source.illumination ?? backup.illumination) || 0)));
+  return {
+    label,
+    icon: sanitizeText(source.icon || backup.icon || "moon", 40),
+    tone: sanitizeText(source.tone || backup.tone || "", 40),
+    age: Number.isFinite(Number(source.age ?? backup.age)) ? Number(Number(source.age ?? backup.age).toFixed(1)) : 0,
+    illumination,
+  };
+}
+
+function normalizeDayContext(input = {}, fallback = {}) {
+  const source = input && typeof input === "object" ? input : {};
+  const backup = fallback && typeof fallback === "object" ? fallback : {};
+  const sourceWeather = source.weather && typeof source.weather === "object"
+    ? source.weather
+    : {
+        label: source.weatherLabel,
+        icon: source.weatherIcon,
+        tone: source.weatherTone,
+        source: source.weatherSource,
+        isSunny: source.isSunny ?? source.sunny,
+      };
+  const weather = hasContextValue(sourceWeather)
+    ? sourceWeather
+    : backup.weather || {};
+  const sourceAstronomy = source.astronomy && typeof source.astronomy === "object"
+    ? source.astronomy
+    : {
+        moon: source.moon,
+        moonLabel: source.moonLabel || source.moonPhase,
+        moonIllumination: source.moonIllumination,
+        source: source.astronomySource,
+      };
+  const astronomy = hasContextValue(sourceAstronomy)
+    ? sourceAstronomy
+    : backup.astronomy || {};
+  const calendar = source.calendar && typeof source.calendar === "object" ? source.calendar : backup.calendar || {};
+  const backupMoon = backup.astronomy?.moon || {};
+  const moon = normalizeMoonContext(astronomy.moon, backupMoon);
+  const weatherLabel = cleanGeneratedSummaryText(weather.label, 80) || "小天气";
+  const weatherIsSunny = normalizeBooleanFlag(
+    weather.isSunny,
+    /晴|太阳|阳光|小晴天/.test(weatherLabel)
+  );
+  return {
+    date: sanitizeText(source.date || backup.date, 40),
+    weather: {
+      label: weatherLabel,
+      icon: sanitizeText(weather.icon || (weatherIsSunny ? "sun" : "cloud"), 40),
+      tone: sanitizeText(weather.tone || "", 40),
+      source: sanitizeText(weather.source || "daily-random", 40),
+      isSunny: weatherIsSunny,
+      configured: weather.configured === true || isManualContextPart(weather),
+      updatedBy: sanitizeText(weather.updatedBy, 80),
+      updatedAt: sanitizeText(weather.updatedAt, 40),
+    },
+    astronomy: {
+      moonLabel: cleanGeneratedSummaryText(astronomy.moonLabel || moon.label, 80) || "月亮",
+      moonIllumination: Math.max(0, Math.min(100, Math.round(Number(astronomy.moonIllumination ?? moon.illumination) || 0))),
+      moon,
+      source: sanitizeText(astronomy.source || "calculated", 40),
+      configured: astronomy.configured === true || isManualContextPart(astronomy),
+      updatedBy: sanitizeText(astronomy.updatedBy, 80),
+      updatedAt: sanitizeText(astronomy.updatedAt, 40),
+    },
+    calendar: {
+      weekday: sanitizeText(calendar.weekday, 40),
+      lunar: sanitizeText(calendar.lunar, 80),
+      solarTerm: sanitizeText(calendar.solarTerm, 80),
+      festivals: sanitizeList(calendar.festivals, 6, 80),
+      marks: Array.isArray(calendar.marks) ? calendar.marks : [],
+      isRestDay: calendar.isRestDay === true,
+      isWorkday: calendar.isWorkday === true,
+      source: sanitizeText(calendar.source || "calculated", 40),
+      configured: calendar.configured === true || isManualContextPart(calendar),
+    },
+    note: cleanGeneratedSummaryText(source.note || backup.note, 180),
+    updatedBy: sanitizeText(source.updatedBy || backup.updatedBy, 80),
+    updatedAt: sanitizeText(source.updatedAt || backup.updatedAt, 40),
+  };
+}
+
+function mergeSavedDayContext(savedContext, generatedContext) {
+  const generated = normalizeDayContext(generatedContext);
+  if (!savedContext || typeof savedContext !== "object") return generated;
+  const saved = normalizeDayContext(savedContext, generated);
+  return normalizeDayContext({
+    ...generated,
+    weather: isManualContextPart(saved.weather) ? { ...generated.weather, ...saved.weather } : generated.weather,
+    astronomy: isManualContextPart(saved.astronomy) ? { ...generated.astronomy, ...saved.astronomy } : generated.astronomy,
+    calendar: isManualContextPart(saved.calendar)
+      ? { ...generated.calendar, ...saved.calendar, marks: generated.calendar.marks }
+      : generated.calendar,
+    note: saved.note || generated.note,
+    updatedBy: saved.updatedBy || generated.updatedBy,
+    updatedAt: saved.updatedAt || generated.updatedAt,
+  }, generated);
+}
+
+function buildDayContext(store, date, options = {}) {
+  const captures = Array.isArray(options.captures)
+    ? options.captures
+    : (store?.captures || [])
+        .filter((item) => item.date === date)
+        .map(publicCapture);
+  const calendar = calendarContextForDate(date);
+  const weather = buildDailyWeather(date, captures);
+  const astronomy = buildAstronomyContext(date);
+  const solarTerm = (calendar.marks || []).find((mark) => mark.type === "solarTerm")?.title || "";
+  const festivals = (calendar.marks || [])
+    .filter((mark) => mark.type === "festival" || mark.type === "holiday")
+    .map((mark) => mark.title || mark.label)
+    .filter(Boolean);
+  const generated = normalizeDayContext({
+    date,
+    weather,
+    astronomy,
+    calendar: {
+      ...calendar,
+      solarTerm,
+      festivals,
+    },
+  });
+  const saved = store?.dayContexts?.[date];
+  return mergeSavedDayContext(saved, generated);
 }
 
 function normalizeSegment(segment) {
@@ -1357,9 +1622,31 @@ function resolveStatusTargetUserId(store, userId, targetUserId) {
   return userId;
 }
 
+function lifeCardStatusByUserFromSteps(item, steps = normalizeLifeCardSteps(item.steps, item.participants, item.title)) {
+  const participants = Array.isArray(item.participants) ? item.participants : [];
+  if (!steps.length) {
+    return Object.fromEntries(
+      participants.map((id) => [id, validStatuses.has(item.statusByUser?.[id]) ? item.statusByUser[id] : "todo"])
+    );
+  }
+
+  return Object.fromEntries(
+    participants.map((id) => {
+      const hasPendingStep = steps.some((step) =>
+        (!step.ownerId || step.ownerId === id) &&
+        step.status !== "done"
+      );
+      return [id, hasPendingStep ? "todo" : "done"];
+    })
+  );
+}
+
 function syncArchiveWithCompletion(item, userId) {
   const participants = Array.isArray(item.participants) ? item.participants : [];
-  const allDone = participants.length > 0 && participants.every((id) => item.statusByUser?.[id] === "done");
+  const steps = normalizeLifeCardSteps(item.steps, participants, item.title);
+  const allDone = steps.length
+    ? steps.every((step) => step.status === "done")
+    : participants.length > 0 && participants.every((id) => item.statusByUser?.[id] === "done");
   if (allDone) {
     const timestamp = nowIso();
     item.archivedAt = item.archivedAt || timestamp;
@@ -1405,21 +1692,25 @@ function applyStepAwareStatusToggle(item, targetUserId, userId, payload = {}) {
   const steps = normalizeLifeCardSteps(item.steps, item.participants, item.title);
 
   if (steps.length) {
+    const isAccountableStep = (step) => !step.ownerId || step.ownerId === targetUserId;
     const shouldUndo = requestedStatus === "todo" || currentStatus === "done" || item.archivedAt;
     if (shouldUndo) {
-      const lastDoneIndex = steps.map((step) => step.status).lastIndexOf("done");
+      const lastDoneIndex = steps
+        .map((step, index) => ({ step, index }))
+        .filter(({ step }) => isAccountableStep(step) && step.status === "done")
+        .map(({ index }) => index)
+        .pop();
       if (lastDoneIndex >= 0) steps[lastDoneIndex] = { ...steps[lastDoneIndex], status: "todo" };
       item.steps = steps;
-      item.statusByUser = { ...(item.statusByUser || {}), [targetUserId]: "todo" };
+      item.statusByUser = lifeCardStatusByUserFromSteps(item, steps);
       syncArchiveWithCompletion(item, userId);
       return;
     }
 
-    const nextTodoIndex = steps.findIndex((step) => step.status !== "done");
+    const nextTodoIndex = steps.findIndex((step) => isAccountableStep(step) && step.status !== "done");
     if (nextTodoIndex >= 0) steps[nextTodoIndex] = { ...steps[nextTodoIndex], status: "done" };
     item.steps = steps;
-    const allStepsDone = steps.every((step) => step.status === "done");
-    item.statusByUser = { ...(item.statusByUser || {}), [targetUserId]: allStepsDone ? "done" : "todo" };
+    item.statusByUser = lifeCardStatusByUserFromSteps(item, steps);
     syncArchiveWithCompletion(item, userId);
     return;
   }
@@ -1462,7 +1753,8 @@ function toggleLifeCardStep(userId, payload = {}) {
       throw new Error("life card item not found");
     }
 
-    const targetUserId = resolveStatusTargetUserId(store, userId, payload.targetUserId);
+    const profileIds = getProfileIds(store);
+    const targetUserId = profileIds.includes(payload.targetUserId) ? payload.targetUserId : userId;
     if (!item.participants.includes(targetUserId)) {
       item.participants.push(targetUserId);
     }
@@ -1483,10 +1775,7 @@ function toggleLifeCardStep(userId, payload = {}) {
       status: nextStatus,
     };
     item.steps = steps;
-    item.statusByUser = {
-      ...(item.statusByUser || {}),
-      [targetUserId]: steps.every((step) => step.status === "done") ? "done" : "todo",
-    };
+    item.statusByUser = lifeCardStatusByUserFromSteps(item, steps);
     syncArchiveWithCompletion(item, userId);
 
     const timestamp = nowIso();
@@ -1712,6 +2001,112 @@ function createTodoItem(store, payload, userId) {
   return item;
 }
 
+function makeDailyCheckinStep(title, index, existing = null) {
+  const source = existing && typeof existing === "object" ? existing : {};
+  return {
+    id: sanitizeText(source.id, 80) || `daily-checkin-step-${index + 1}`,
+    title: sanitizeText(title || source.title, 120),
+    ownerId: sanitizeText(source.ownerId || "", 80),
+    estimateMin: normalizeDurationMin(source.estimateMin, 0),
+    status: validStatuses.has(source.status) ? source.status : "todo",
+    sortOrder: Number.isFinite(Number(source.sortOrder)) ? Number(source.sortOrder) : index,
+  };
+}
+
+function ensureDailyCheckinCard(store, date = businessDate(), userId = "system") {
+  const normalizedDate = normalizeDate(date);
+  const profileIds = getProfileIds(store);
+  const timestamp = nowIso();
+  const existing = store.todoItems.find((item) =>
+    item.date === normalizedDate &&
+    normalizeLifeCardTags(item.tags, item).includes(dailyCheckinCardTag)
+  );
+  const existingSteps = normalizeLifeCardSteps(existing?.steps, profileIds, dailyCheckinCardTitle);
+  const usedKeys = new Set();
+  const steps = [
+    ...dailyCheckinDefaultSteps.map((title, index) => {
+      const key = normalizedTitleKey(title);
+      usedKeys.add(key);
+      return makeDailyCheckinStep(title, index, existingSteps.find((step) => normalizedTitleKey(step.title) === key));
+    }),
+    ...existingSteps
+      .filter((step) => {
+        const key = normalizedTitleKey(step.title);
+        if (!key || usedKeys.has(key)) return false;
+        usedKeys.add(key);
+        return true;
+      })
+      .map((step, index) => makeDailyCheckinStep(step.title, dailyCheckinDefaultSteps.length + index, step)),
+  ];
+
+  if (existing) {
+    let changed = false;
+    const assignIfChanged = (key, value) => {
+      if (JSON.stringify(existing[key]) === JSON.stringify(value)) return;
+      existing[key] = value;
+      changed = true;
+    };
+    assignIfChanged("title", dailyCheckinCardTitle);
+    assignIfChanged("date", normalizedDate);
+    assignIfChanged("bucket", "today");
+    assignIfChanged("detail", sanitizeText(existing.detail || "每天 03:00 刷新。", 800));
+    assignIfChanged("itemType", "checkin");
+    assignIfChanged("ownerId", "shared");
+    assignIfChanged("participants", profileIds);
+    assignIfChanged("tags", normalizeLifeCardTags([...(existing.tags || []), dailyCheckinCardTag], { ...existing, itemType: "checkin", title: dailyCheckinCardTitle }));
+    assignIfChanged("repeatRule", "daily@03:00");
+    assignIfChanged("priority", normalizePriority(existing.priority || "normal"));
+    assignIfChanged("statusByUser", Object.fromEntries(
+      profileIds.map((id) => [id, validStatuses.has(existing.statusByUser?.[id]) ? existing.statusByUser[id] : "todo"])
+    ));
+    assignIfChanged("steps", steps);
+    if (!existing.updatedAt) existing.updatedAt = timestamp;
+    if (!existing.updatedBy) existing.updatedBy = userId;
+    if (changed) {
+      existing.updatedAt = timestamp;
+      existing.updatedBy = userId;
+    }
+    return { item: existing, changed };
+  }
+
+  const created = {
+    id: makeId("todo"),
+    date: normalizedDate,
+    bucket: "today",
+    title: dailyCheckinCardTitle,
+    detail: "每天 03:00 刷新。",
+    itemType: "checkin",
+    sourceCaptureId: "",
+    relatedGroupId: "",
+    parentItemId: "",
+    relationIds: [],
+    linkedMemoryIds: [],
+    tags: normalizeLifeCardTags([dailyCheckinCardTag], { title: dailyCheckinCardTitle, itemType: "checkin" }),
+    memoryKinds: [],
+    repeatRule: "daily@03:00",
+    priority: "normal",
+    ownerId: "shared",
+    participants: profileIds,
+    statusByUser: Object.fromEntries(profileIds.map((id) => [id, "todo"])),
+    statusUpdatedBy: {},
+    statusUpdatedAt: {},
+    plannedAt: "",
+    dueAt: "",
+    durationMin: 0,
+    steps,
+    timeBlocks: [],
+    timeEntries: [],
+    createdBy: userId,
+    updatedBy: userId,
+    createdAt: timestamp,
+    updatedAt: timestamp,
+    archivedAt: "",
+    archivedBy: "",
+  };
+  store.todoItems.push(created);
+  return { item: created, changed: true };
+}
+
 function createCheckinItem(store, payload, userId) {
   const participants = getProfileIds(store);
   const itemType = inferScheduleItemType(payload, "checkin");
@@ -1808,6 +2203,7 @@ function createDefaultStore() {
     operations: [],
     diaryDays: {},
     dailySummaries: {},
+    dayContexts: {},
     longTermMemoryItems: [],
     personalPages: {
       [profiles[0].id]: {
@@ -1880,6 +2276,12 @@ function ensureStoreShape(store) {
   shaped.operations = Array.isArray(shaped.operations) ? shaped.operations : [];
   shaped.diaryDays = shaped.diaryDays && typeof shaped.diaryDays === "object" ? shaped.diaryDays : {};
   shaped.dailySummaries = shaped.dailySummaries && typeof shaped.dailySummaries === "object" ? shaped.dailySummaries : {};
+  shaped.dayContexts = shaped.dayContexts && typeof shaped.dayContexts === "object" ? shaped.dayContexts : {};
+  shaped.dayContexts = Object.fromEntries(
+    Object.entries(shaped.dayContexts)
+      .map(([date, context]) => [normalizeDate(date, ""), normalizeDayContext(context, { date })])
+      .filter(([date]) => date)
+  );
   shaped.longTermMemoryItems = Array.isArray(shaped.longTermMemoryItems)
     ? shaped.longTermMemoryItems.map((item) => normalizeStoredLongTermMemoryItem(shaped, item)).filter(Boolean)
     : [];
@@ -1930,6 +2332,14 @@ function ensureStoreShape(store) {
   return shaped;
 }
 
+function hasDailyCheckinCard(store, date = businessDate()) {
+  const normalizedDate = normalizeDate(date);
+  return (store?.todoItems || []).some((item) =>
+    item.date === normalizedDate &&
+    normalizeLifeCardTags(item.tags, item).includes(dailyCheckinCardTag)
+  );
+}
+
 function readStore() {
   if (!fs.existsSync(storePath)) {
     const store = createDefaultStore();
@@ -1939,6 +2349,14 @@ function readStore() {
 
   const raw = fs.readFileSync(storePath, "utf8");
   return ensureStoreShape(JSON.parse(raw));
+}
+
+function ensureDailyCheckinCardPersisted(date = businessDate(), userId = "system") {
+  const store = readStore();
+  const { changed } = ensureDailyCheckinCard(store, date, userId);
+  if (!changed) return false;
+  writeStore(store);
+  return true;
 }
 
 function writeStore(store) {
@@ -2281,6 +2699,8 @@ function publicDailySummary(summary) {
     moments: Array.isArray(summary.moments) ? summary.moments : [],
     memoryHooks: Array.isArray(summary.memoryHooks) ? summary.memoryHooks.map(publicRelationshipInsight) : [],
     locations: sanitizeList(summary.locations, 8, 80),
+    weather: summary.weather && typeof summary.weather === "object" ? normalizeDayContext({ date: summary.date, weather: summary.weather }).weather : null,
+    dayContext: summary.dayContext && typeof summary.dayContext === "object" ? normalizeDayContext(summary.dayContext, { date: summary.date }) : null,
     photos: Array.isArray(summary.photos) ? summary.photos.map(publicDiaryAsset).filter(Boolean) : [],
     stats: summary.stats || { done: 0, total: 0, percent: 0 },
     sourceCounts: summary.sourceCounts || {},
@@ -3981,6 +4401,9 @@ function publicScheduleItemCard(store, publicItem, sourceType, userId, options =
   const participants = Array.isArray(publicItem.participants) ? publicItem.participants : [];
   const steps = normalizeLifeCardSteps(publicItem.steps, participants, publicItem.title);
   const doneUsers = participants.filter((id) => publicItem.statusByUser?.[id] === "done");
+  const stepsDone = steps.length ? steps.filter((step) => step.status === "done").length : 0;
+  const stepsAllDone = Boolean(steps.length && stepsDone === steps.length);
+  const currentUserHasTodoStep = steps.some((step) => (!step.ownerId || step.ownerId === userId) && step.status !== "done");
   const date = normalizeDate(options.date || publicItem.date);
   const tags = normalizeLifeCardTags(publicItem.tags, { ...publicItem, itemType });
   const memoryKinds = normalizeLifeCardMemoryKinds(publicItem.memoryKinds || publicItem.memoryKind, { ...publicItem, itemType });
@@ -4001,10 +4424,10 @@ function publicScheduleItemCard(store, publicItem, sourceType, userId, options =
     statusUpdatedBy: publicItem.statusUpdatedBy || {},
     statusUpdatedAt: publicItem.statusUpdatedAt || {},
     completion: {
-      done: doneUsers.length,
-      total: participants.length,
-      allDone: Boolean(participants.length && doneUsers.length === participants.length),
-      currentUserDone: publicItem.statusByUser?.[userId] === "done",
+      done: steps.length ? stepsDone : doneUsers.length,
+      total: steps.length || participants.length,
+      allDone: steps.length ? stepsAllDone : Boolean(participants.length && doneUsers.length === participants.length),
+      currentUserDone: steps.length ? !currentUserHasTodoStep : publicItem.statusByUser?.[userId] === "done",
     },
     priority: publicItem.priority || "",
     bucket: publicItem.bucket || "",
@@ -4062,20 +4485,35 @@ function buildScheduleItemCards(store, userId, selectedDate, relationshipInsight
     const date = normalizeDate(item.date);
     return date >= dateWindowStart && date <= dateWindowEnd;
   };
+  const itemParticipants = (item) => {
+    const participants = (Array.isArray(item.participants) ? item.participants : [])
+      .filter((id) => profileIds.includes(id));
+    return participants.length ? participants : profileIds;
+  };
+  const includeUnfinishedItem = (item) => {
+    if (item.archivedAt) return false;
+    const participants = itemParticipants(item);
+    if (!participants.length) return true;
+    return participants.some((id) => item.statusByUser?.[id] !== "done");
+  };
+  const includeVisibleItem = (item) => includeDatedItem(item) || includeUnfinishedItem(item);
+  const isLegacyCheckinPlaceholder = (item) =>
+    /^(?:互相确认今天的状态|一起确认今天的安排|一起确认明天的安排)$/.test(sanitizeText(item?.title, 160));
 
   const scheduleCards = store.scheduleItems
-    .filter(includeDatedItem)
+    .filter(includeVisibleItem)
     .map((item) => publicScheduleItemCard(store, publicScheduleItem(item, profileIds), "schedule", userId, {
       itemType: "date",
       selectedDate: today,
     }));
   const todoCards = store.todoItems
-    .filter((item) => normalizeTodoBucket(item.bucket) === "future" || includeDatedItem(item))
+    .filter((item) => normalizeTodoBucket(item.bucket) === "future" || includeVisibleItem(item))
     .map((item) => publicScheduleItemCard(store, publicTodoItem(item, profileIds), "todo", userId, {
       itemType: "thing",
       selectedDate: today,
     }));
   const checkinCards = getCheckinItemsForSummary(store, today)
+    .filter((item) => !isLegacyCheckinPlaceholder(item))
     .map((item) => publicScheduleItemCard(store, publicCheckinItem(item, profileIds, today), "checkin", userId, {
       date: today,
       itemType: "checkin",
@@ -4083,7 +4521,7 @@ function buildScheduleItemCards(store, userId, selectedDate, relationshipInsight
       selectedDate: today,
     }));
   const deadlineCards = store.deadlineItems
-    .filter(includeDatedItem)
+    .filter(includeVisibleItem)
     .map((item) => publicScheduleItemCard(store, publicDeadlineItem(item, profileIds), "deadline", userId, {
       itemType: "reminder",
       selectedDate: today,
@@ -4111,6 +4549,258 @@ function buildScheduleItemCards(store, userId, selectedDate, relationshipInsight
       if (typeSort !== 0) return typeSort;
       return String(a.createdAt).localeCompare(String(b.createdAt));
     });
+}
+
+function isCompletedPublicLifeCard(card) {
+  return Boolean(card?.archivedAt || card?.completion?.allDone || card?.completion?.currentUserDone);
+}
+
+function homeFocusText(value, maxLength = 88) {
+  const cleaned = cleanGeneratedSummaryText(value, maxLength + 40)
+    .replace(/^["“”'「」《》]+|["“”'「」《》]+$/g, "")
+    .trim();
+  if (!cleaned || isDefaultLifeCardTitle(cleaned) || isLowSignalSummaryTitle(cleaned)) return "";
+  return shortText(cleaned, maxLength);
+}
+
+function homeFocusLabel(value, maxLength = 30) {
+  const cleaned = sanitizeText(value, maxLength + 40)
+    .replace(/^["“”'「」《》]+|["“”'「」《》]+$/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!cleaned || badGeneratedSummaryPattern.test(cleaned) || isDefaultLifeCardTitle(cleaned)) return "";
+  return shortText(cleaned, maxLength);
+}
+
+function scheduleFocusCopy(card, date) {
+  const raw = homeFocusText(card.title || card.sourceCaptureSummary || card.detail, 96);
+  if (!raw) return null;
+  let text = raw.replace(/\s+/g, " ").trim();
+  let time = "";
+  const timeMatch = text.match(/^(\d{1,2})(?:\s+|[:：点])(\d{2})?\s*(.*)$/);
+  if (timeMatch) {
+    const hour = Number(timeMatch[1]);
+    const minute = timeMatch[2] !== undefined && timeMatch[2] !== "" ? Number(timeMatch[2]) : null;
+    if (hour >= 0 && hour <= 23 && (minute === null || (minute >= 0 && minute <= 59))) {
+      time = minute === null ? `${hour}点` : `${pad(hour)}:${pad(minute)}`;
+      text = homeFocusText(timeMatch[3] || raw, 80) || raw;
+    }
+  }
+  const itemType = normalizeScheduleItemType(card.itemType, "thing");
+  const cardDate = normalizeDate(card.date, date);
+  const label = cardDate === date
+    ? itemType === "date" ? "小约会" : itemType === "purchase" ? "小愿望" : itemType === "work" ? "推进一点" : "今天的小事"
+    : "接下来";
+  const withTime = [time, text].filter(Boolean).join(" ");
+  if (/吃|饭|午餐|晚餐|早餐|日料|餐厅|咖啡|奶茶/.test(text)) {
+    return {
+      title: itemType === "date" ? "好好约会" : "好好吃饭",
+      text: `${withTime || text}，猫猫要先把自己照顾好。`,
+      meta: time || card.itemTypeLabel,
+    };
+  }
+  if (itemType === "date") {
+    return {
+      title: "小约会",
+      text: `${withTime || text}，这件事可以慢慢期待。`,
+      meta: time || (cardDate === date ? "" : cardDate),
+    };
+  }
+  if (itemType === "purchase") {
+    return {
+      title: "小愿望",
+      text: `「${text}」先放进口袋，等一个顺手的时刻。`,
+      meta: time || (cardDate === date ? "" : cardDate),
+    };
+  }
+  if (itemType === "work") {
+    return {
+      title: "推进一点",
+      text: withTime || `给「${text}」留一小段专心。`,
+      meta: time || (cardDate === date ? "" : cardDate),
+    };
+  }
+  return {
+    title: label,
+    text: withTime || `把「${text}」轻轻放到这一天。`,
+    meta: [time, cardDate === date ? "" : cardDate].filter(Boolean).join(" · ") || card.itemTypeLabel,
+  };
+}
+
+function buildHomeFocus(store, userId, selectedDate, options = {}) {
+  const date = normalizeDate(selectedDate);
+  const profileIds = getProfileIds(store);
+  const dayContext = options.dayContext || buildDayContext(store, date);
+  const relationshipInsights = Array.isArray(options.relationshipInsights)
+    ? options.relationshipInsights
+    : buildRelationshipInsights(store, userId, date);
+  const scheduleItemCards = Array.isArray(options.scheduleItemCards)
+    ? options.scheduleItemCards
+    : buildScheduleItemCards(store, userId, date, relationshipInsights);
+  const memoryItems = Array.isArray(options.memoryItems)
+    ? options.memoryItems
+    : buildMemoryItems(store, userId, date, relationshipInsights);
+  const visibleCaptures = (Array.isArray(options.captures) ? options.captures : store.captures)
+    .filter((capture) => capture.date === date)
+    .filter((capture) => capture.visibility === "shared" || capture.createdBy === userId)
+    .map((capture) => capture.rawKind ? capture : publicCapture(capture))
+    .sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)));
+  const publicFocus = (candidate) => candidate ? {
+    date,
+    kind: sanitizeText(candidate.kind || "note", 40),
+    icon: sanitizeText(candidate.icon || "sparkle", 40),
+    tone: sanitizeText(candidate.tone || "", 40),
+    title: homeFocusLabel(candidate.title, 30),
+    text: homeFocusText(candidate.text || candidate.title, 120),
+    meta: homeFocusLabel(candidate.meta, 32),
+    sourceType: sanitizeText(candidate.sourceType || "", 40),
+    sourceId: sanitizeText(candidate.sourceId || "", 100),
+    actorId: profileIds.includes(candidate.actorId) ? candidate.actorId : "",
+    targetUserId: profileIds.includes(candidate.targetUserId) ? candidate.targetUserId : "",
+  } : null;
+
+  const catWord = visibleCaptures
+    .filter((capture) => capture.rawKind === "cat-word")
+    .find((capture) => homeFocusText(capture.text, 110));
+  if (catWord) {
+    return publicFocus({
+      kind: "cat-word",
+      icon: "sparkle",
+      tone: catWord.createdBy === userId ? "sent" : "received",
+      title: "猫猫的话",
+      text: catWord.text,
+      meta: catWord.createdBy === userId ? "送出" : "收到",
+      sourceType: "cat-word",
+      sourceId: catWord.id,
+      actorId: catWord.createdBy,
+    });
+  }
+
+  const summary = publicDailySummary(store.dailySummaries?.[date]);
+  if (summary) {
+    const title = homeFocusText(normalizeSummaryTitle(summary), 24);
+    const diary = homeFocusText(summary.analysis?.diary?.text || summary.narrative || summary.analysis?.keyMoment?.text, 116);
+    if (title || diary) {
+      return publicFocus({
+        kind: "story",
+        icon: "star",
+        tone: "story",
+        title: title || "日总结",
+        text: diary || title,
+        meta: "日记",
+        sourceType: "daily-summary",
+        sourceId: date,
+      });
+    }
+  }
+
+  const livingCard = scheduleItemCards
+    .filter((card) => !isCompletedPublicLifeCard(card))
+    .filter((card) => !isDefaultLifeCardTitle(card.title))
+    .find((card) => {
+      const cardDate = normalizeDate(card.date, "");
+      return cardDate === date || cardDate > date;
+    });
+  if (livingCard) {
+    const copy = scheduleFocusCopy(livingCard, date);
+    if (copy?.text) {
+      const cardDate = normalizeDate(livingCard.date, date);
+      return publicFocus({
+        kind: "schedule",
+        icon: livingCard.itemType === "date" ? "calendar" : livingCard.itemType === "purchase" ? "bookmark" : "cards",
+        tone: livingCard.priority === "high" ? "warm" : "schedule",
+        title: copy.title,
+        text: copy.text,
+        meta: copy.meta || [cardDate === date ? "" : cardDate, livingCard.itemTypeLabel].filter(Boolean).join(" · "),
+        sourceType: "lifeCard",
+        sourceId: livingCard.id,
+        actorId: livingCard.updatedBy || livingCard.createdBy || "",
+        targetUserId: livingCard.ownerId,
+      });
+    }
+  }
+
+  const warmInsight = relationshipInsights
+    .filter((insight) => ["care", "wish", "promise", "anniversary", "memory", "gratitude"].includes(insight.kind))
+    .find((insight) => homeFocusText(insight.title || insight.sourceText || insight.detail, 96));
+  if (warmInsight) {
+    return publicFocus({
+      kind: warmInsight.kind,
+      icon: warmInsight.kind === "wish" ? "bookmark" : warmInsight.kind === "anniversary" ? "calendar" : "sparkle",
+      tone: "memory",
+      title: relationshipInsightKindLabels[warmInsight.kind] || "记忆",
+      text: warmInsight.title || warmInsight.sourceText || warmInsight.detail,
+      meta: warmInsight.date === date ? "" : warmInsight.date,
+      sourceType: warmInsight.sourceCaptureId ? "capture" : "insight",
+      sourceId: warmInsight.sourceCaptureId || warmInsight.id,
+      actorId: warmInsight.ownerId === "shared" ? "" : warmInsight.ownerId,
+      targetUserId: warmInsight.targetUserId,
+    });
+  }
+
+  const wishMemory = memoryItems
+    .filter((item) => item.group === "wish" || ["wish", "purchase", "anniversary", "memory"].includes(item.kind))
+    .find((item) => homeFocusText(item.title || item.detail, 96));
+  if (wishMemory) {
+    return publicFocus({
+      kind: "memory",
+      icon: wishMemory.group === "time" || wishMemory.kind === "anniversary" ? "calendar" : "bookmark",
+      tone: "memory",
+      title: wishMemory.kindLabel || relationshipInsightKindLabels[wishMemory.kind] || "长期记忆",
+      text: wishMemory.title || wishMemory.detail,
+      meta: wishMemory.suggestedDate || "",
+      sourceType: "memoryItem",
+      sourceId: wishMemory.id,
+      actorId: wishMemory.ownerId === "shared" ? "" : wishMemory.ownerId,
+      targetUserId: wishMemory.targetUserId,
+    });
+  }
+
+  const weather = dayContext.weather || {};
+  const astronomy = dayContext.astronomy || {};
+  const moon = astronomy.moon || {};
+  const calendar = dayContext.calendar || {};
+  const solarTerm = homeFocusText(calendar.solarTerm, 18);
+  const festival = sanitizeList(calendar.festivals, 1, 18)[0];
+  const lunar = homeFocusText(calendar.lunar, 18);
+  const moonLabel = homeFocusText(astronomy.moonLabel || moon.label, 18);
+  const moonIllumination = Math.round(Number(astronomy.moonIllumination ?? moon.illumination) || 0);
+  const weatherLabel = homeFocusText(weather.label, 18);
+  if (festival || solarTerm || lunar) {
+    const title = festival || solarTerm || lunar;
+    return publicFocus({
+      kind: "calendar",
+      icon: festival ? "star" : "sparkle",
+      tone: "calendar",
+      title,
+      text: [festival ? solarTerm : "", lunar].filter(Boolean).join(" · ") || `${title}轻轻来到这一天`,
+      meta: weatherLabel,
+      sourceType: "day-context",
+      sourceId: date,
+    });
+  }
+  if (moonLabel) {
+    return publicFocus({
+      kind: "moon",
+      icon: "moon",
+      tone: "moon",
+      title: moonLabel,
+      text: moonIllumination ? `月亮亮度 ${moonIllumination}%` : "今晚也有月亮",
+      meta: weatherLabel,
+      sourceType: "day-context",
+      sourceId: date,
+    });
+  }
+  return publicFocus({
+    kind: "weather",
+    icon: weather.icon || (weather.isSunny ? "sun" : "cloud"),
+    tone: weather.tone || "weather",
+    title: weatherLabel || "小天气",
+    text: weather.configured ? `今天是${weatherLabel}` : `今天按${weatherLabel || "小天气"}的心情慢慢来`,
+    meta: weather.isSunny ? "晴" : "",
+    sourceType: "day-context",
+    sourceId: date,
+  });
 }
 
 function createLifeCardsFromConfirmation(userId, payload = {}) {
@@ -4556,6 +5246,27 @@ function buildFallbackNarrative(facts) {
   return sentences.length ? `${sentences.join("。")}。` : "";
 }
 
+function storySnippetForPrompt(summary, date) {
+  if (!summary) return null;
+  const analysis = normalizeDailyAnalysis(summary.analysis);
+  const title = normalizeSummaryTitle(summary, "");
+  const diaryText = cleanGeneratedSummaryText(analysis.diary?.text || summary.narrative, 220);
+  if (!title && !diaryText) return null;
+  return {
+    date,
+    title,
+    opening: diaryText ? diaryText.slice(0, 80) : "",
+  };
+}
+
+function buildRecentDailyStorySnippets(store, date, maxItems = 5) {
+  if (!store?.dailySummaries) return [];
+  return Array.from({ length: maxItems * 2 }, (_, index) => addDays(date, -(index + 1)))
+    .map((day) => storySnippetForPrompt(store.dailySummaries[day], day))
+    .filter(Boolean)
+    .slice(0, maxItems);
+}
+
 function analysisUserIds(input) {
   const source = Array.isArray(input?.userIds) ? input.userIds :
     Array.isArray(input?.user_ids) ? input.user_ids : [];
@@ -4781,7 +5492,7 @@ function buildAgentPrompt(facts) {
     "严格规则：",
     "- 只能使用输入事实，不允许编造事件、地点、照片、情绪或完成状态。",
     "- 必须区分人：profiles 是人员表；createdBy/updatedBy 是操作人；doneUsers/pendingUsers 是状态对象；statusUpdatedBy[userId] 是这个人的状态由谁操作。",
-    "- 如果事实不足以判断是谁做的，就写成记录里没有明确归属，不要猜。",
+    "- 如果事实不足以判断是谁做的，就温和写成“归属还不清楚/还没看出是谁按下完成”，不要猜，也不要说“记录里没有明确归属”。",
     "- 最终展示文字必须使用人话，不要写 createdBy、doneUsers、statusUpdatedBy、actorId、每日状态对象等字段名或开发者词。",
     "- 如果只知道归属但不知道操作人，用“归在某人名下，记录没有写明是谁操作完成”，不要暴露字段名。",
     "- 忽略默认占位卡：今天有没有开开心心？、写下今天最重要的一件事、互相确认今天的状态、一起确认今天的安排、一起确认明天的安排。",
@@ -4793,13 +5504,21 @@ function buildAgentPrompt(facts) {
     "- 文字要像给两个人看的回忆，不要写后台、系统、记录留下了几条线索、完成率报表这类话。",
     "- title 必须是 4-12 个中文左右的可爱小标题，要抓当天最有特征的一点，短暂、具体、每天不一样。",
     "- title 禁止写日期、05/09、共同回忆、日总结、今日、这一天，也不要套用固定模板。",
+    "- dayContext 是当天的天气、月相、节气、农历和节日上下文；可以轻轻带进标题或 diary，但只能使用输入里给出的内容。",
+    "- 如果 dayContext.weather.source 是 daily-random，它只是未配置真实天气时的可爱占位，不要把它写成确定的真实天气。",
+    "- 月相、节气、农历和节日可以作为当天氛围锚点，但不能替代真实发生的生活事实。",
     "- next_step 只写明天最值得顺手带上的一件事；没有事实就留轻一点，不要硬编。",
     "- analysis.key_moment 写最值得记住的一件事；core_contributions 写每个人可归属的贡献；carry_forward 写明天顺手带上的事；memory_clues 写长期记忆线索；diary.text 写一篇可直接展示的小日记。",
     "- analysis.daily_review.did 写今天实际做了什么；shortcoming 写有什么不足或还差什么；tomorrow 写明天可以怎么做。三项都必须基于输入事实，不要从统计数字臆测任务。",
-    "- daily_review 三项是给页面展示的短总结：每项 title 要短、具体、有信息；text 写 1 句自然解释。",
+    "- daily_review 三项是给页面展示的短总结：每项 title 要短、具体、有信息；text 写 1 句自然解释；title 不要直接写“今天做了什么/有什么不足/明天怎么做”。",
     "- diary.text 是主展示内容，要像一段写给对方看的小日记：自然、亲近、轻一点，有画面感，但不能油腻、不能编造。",
-    "- diary.text 不要像项目报告，不要用“今天最清楚留下来的，是”“记录里/记录显示/没有显示”“这边”“事项”“收尾情况”“事实不足”等腔调。",
+    "- 反模板要求：不要每天都用同一种开头、同一种三段逻辑、同一种“做了什么/不足/明天”腔调。根据当天事实自然选择重点。",
+    "- diary.text 必须有一个当天独有锚点：一句原话、一个人、一个地点、一个动作、一个未完成的小尾巴、一个偏好或一个长期记忆线索。",
+    "- diary.text 写成 1 段 2-5 句，不要分点，不要像周报，不要把 daily_review 三项再复述一遍。",
+    "- diary.text 不要像项目报告，不要用“今天最清楚留下来的，是”“今天的页面很轻”“记录里/记录显示/没有显示”“没有太多具体安排”“这边”“事项”“收尾情况”“事实不足”“信息不足”“记录较少”等腔调。",
     "- diary.text 可以承认没完成，但要换成人话，例如“作业还差一个轻轻收口”“日料先从找一家安静小店开始”，不要写“没有在记录里收尾/没有显示两个人完成”。",
+    "- 如果今天素材很少，也写成一张很短的小纸条，只抓真实线索；不要写“信息少/数据不足/没有谁完成了什么”。",
+    "- recentDailyStories 只用于避免重复标题、开头和句式，绝不能把其他日期的事件写进今天。",
     "- 结构化字段也要短而有温度：title 像小标题，detail 像一句解释，不要堆证据说明。",
     "- 输出必须严格符合给定 JSON schema。",
     skillText ? "\n参考 skill：\n" + skillText : "",
@@ -4893,6 +5612,8 @@ function getDailySummaryFacts(store, date, options = {}) {
     .sort((a, b) => String(a.createdAt).localeCompare(String(b.createdAt)));
   const photos = captures.flatMap((capture) => capture.assets || []);
   const locations = [...new Set(captures.map((capture) => sanitizeText(capture.location, 80)).filter(Boolean))];
+  const dayContext = buildDayContext(store, date, { captures });
+  const weather = dayContext.weather;
   const people = store.profiles.map((profile) => {
     const day = store.diaryDays[date]?.userDays?.[profile.id] || {};
     const stat = meaningfulStatsByUser[profile.id] || { done: 0, total: 0, percent: 0 };
@@ -4957,6 +5678,8 @@ function getDailySummaryFacts(store, date, options = {}) {
         createdAt: operation.createdAt,
       })),
     locations,
+    weather,
+    dayContext,
     photos: photos.map(publicDiaryAsset).filter(Boolean),
     status_by_user: people,
     source_counts: {
@@ -4973,6 +5696,7 @@ function getDailySummaryFacts(store, date, options = {}) {
         .filter((operation) => operation.date === date || String(operation.createdAt || "").slice(0, 10) === date).length,
     },
     relationshipInsights,
+    recentDailyStories: buildRecentDailyStorySnippets(store, date),
   };
 }
 
@@ -5043,6 +5767,8 @@ function buildDailySummary(store, date, userId, options = {}) {
     moments: facts.captures.slice(0, 8),
     memoryHooks: facts.relationshipInsights.slice(0, 6),
     locations: facts.locations,
+    weather: facts.weather,
+    dayContext: facts.dayContext,
     photos: photos.slice(0, 8),
     stats: facts.completion,
     sourceCounts: facts.source_counts,
@@ -5053,6 +5779,7 @@ function buildDailySummary(store, date, userId, options = {}) {
 }
 
 function getState(userId, options = {}) {
+  ensureDailyCheckinCardPersisted(businessDate(), "system");
   const store = readStore();
   const selectedDate = normalizeDate(options.date);
   const weekDays = getWeekDays(selectedDate);
@@ -5065,6 +5792,16 @@ function getState(userId, options = {}) {
     .map(publicCapture)
     .sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)));
   const relationshipInsights = buildRelationshipInsights(store, userId, selectedDate);
+  const dayContext = buildDayContext(store, selectedDate, { captures: visibleCaptures });
+  const scheduleItemCards = buildScheduleItemCards(store, userId, selectedDate, relationshipInsights);
+  const memoryItems = buildMemoryItems(store, userId, selectedDate, relationshipInsights);
+  const homeFocus = buildHomeFocus(store, userId, selectedDate, {
+    captures: visibleCaptures,
+    dayContext,
+    relationshipInsights,
+    scheduleItemCards,
+    memoryItems,
+  });
 
   return {
     apiVersion: store.apiVersion,
@@ -5073,6 +5810,8 @@ function getState(userId, options = {}) {
     today: businessDate(),
     selectedDate,
     calendarContext: calendarContextForDate(selectedDate),
+    dayContext,
+    homeFocus,
     weekDays,
     monthDays,
     monthSummary: getMonthSummary(store, selectedDate),
@@ -5114,10 +5853,10 @@ function getState(userId, options = {}) {
       .sort((a, b) => a.date.localeCompare(b.date) || String(a.createdAt).localeCompare(String(b.createdAt))),
     diaryDay: getDiaryDaySnapshot(store, selectedDate),
     dailySummary: publicDailySummary(store.dailySummaries[selectedDate]),
-    scheduleItemCards: buildScheduleItemCards(store, userId, selectedDate, relationshipInsights),
+    scheduleItemCards,
     relationshipInsights,
     memoryHints: buildMemoryHints(store, relationshipInsights),
-    memoryItems: buildMemoryItems(store, userId, selectedDate, relationshipInsights),
+    memoryItems,
     timelineDays: buildTimelineDays(store, userId, selectedDate),
     personalPages: Object.fromEntries(
       store.profiles.map((profile) => [
@@ -5305,6 +6044,16 @@ function upsertTodoItem(userId, payload) {
       ])
     );
     Object.assign(existing, buildLifeCardPlanning({ ...payload, date: existing.date, participants }, existing));
+    if (normalizeLifeCardTags(existing.tags, existing).includes(dailyCheckinCardTag)) {
+      existing.itemType = "checkin";
+      existing.ownerId = "shared";
+      existing.participants = profileIds;
+      existing.tags = normalizeLifeCardTags([...(existing.tags || []), dailyCheckinCardTag], { ...existing, itemType: "checkin" });
+      existing.repeatRule = "daily@03:00";
+      existing.statusByUser = Object.fromEntries(
+        profileIds.map((id) => [id, validStatuses.has(existing.statusByUser?.[id]) ? existing.statusByUser[id] : "todo"])
+      );
+    }
     existing.updatedBy = userId;
     existing.updatedAt = nowIso();
 
@@ -5757,6 +6506,77 @@ function updateProfile(userId, payload = {}) {
   });
 }
 
+function updateDayContext(userId, payload = {}) {
+  return mutateStore((store) => {
+    const date = normalizeDate(payload.date);
+    const current = buildDayContext(store, date);
+    const timestamp = nowIso();
+    const nextInput = {
+      ...current,
+      note: payload.note !== undefined ? payload.note : current.note,
+      updatedBy: userId,
+      updatedAt: timestamp,
+    };
+
+    if (payload.weather && typeof payload.weather === "object") {
+      nextInput.weather = {
+        ...current.weather,
+        label: payload.weather.label ?? payload.weather.weatherLabel ?? current.weather.label,
+        icon: payload.weather.icon ?? current.weather.icon,
+        tone: payload.weather.tone ?? current.weather.tone,
+        isSunny: payload.weather.isSunny ?? payload.weather.sunny ?? current.weather.isSunny,
+        source: "manual",
+        configured: true,
+        updatedBy: userId,
+        updatedAt: timestamp,
+      };
+    }
+
+    if (payload.astronomy && typeof payload.astronomy === "object") {
+      const moonPayload = payload.astronomy.moon && typeof payload.astronomy.moon === "object"
+        ? payload.astronomy.moon
+        : {};
+      nextInput.astronomy = {
+        ...current.astronomy,
+        moonLabel: payload.astronomy.moonLabel ?? payload.astronomy.moonPhase ?? moonPayload.label ?? current.astronomy.moonLabel,
+        moonIllumination: payload.astronomy.moonIllumination ?? moonPayload.illumination ?? current.astronomy.moonIllumination,
+        moon: {
+          ...current.astronomy.moon,
+          ...moonPayload,
+          label: moonPayload.label ?? payload.astronomy.moonLabel ?? payload.astronomy.moonPhase ?? current.astronomy.moon?.label,
+          illumination: moonPayload.illumination ?? payload.astronomy.moonIllumination ?? current.astronomy.moon?.illumination,
+        },
+        source: "manual",
+        configured: true,
+        updatedBy: userId,
+        updatedAt: timestamp,
+      };
+    }
+
+    if (payload.calendar && typeof payload.calendar === "object") {
+      nextInput.calendar = {
+        ...current.calendar,
+        solarTerm: payload.calendar.solarTerm ?? current.calendar.solarTerm,
+        lunar: payload.calendar.lunar ?? current.calendar.lunar,
+        festivals: payload.calendar.festivals ?? current.calendar.festivals,
+        source: "manual",
+        configured: true,
+      };
+    }
+
+    const next = normalizeDayContext(nextInput, current);
+    store.dayContexts = store.dayContexts || {};
+    store.dayContexts[date] = next;
+    const summary = store.dailySummaries?.[date];
+    if (summary) {
+      summary.dayContext = next;
+      summary.weather = next.weather;
+    }
+    recordOperation(store, userId || "system", "update", "day-context", date, { date, sourceType: "day-context", title: next.weather.label });
+    return next;
+  });
+}
+
 function refreshDailySummary(userId, payload = {}) {
   return mutateStore((store) => {
     const date = normalizeDate(payload.date);
@@ -5767,6 +6587,11 @@ function refreshDailySummary(userId, payload = {}) {
       model: payload.model,
       timeoutMs: payload.timeoutMs,
     });
+    const dayContext = buildDayContext(store, date);
+    store.dayContexts = store.dayContexts || {};
+    store.dayContexts[date] = dayContext;
+    summary.dayContext = dayContext;
+    summary.weather = dayContext.weather;
     store.dailySummaries = store.dailySummaries || {};
     store.dailySummaries[date] = summary;
     recordOperation(store, userId || "system", "refresh", "daily-summary", date, { date, sourceType: "daily-summary", title: summary.title });
@@ -5801,6 +6626,7 @@ module.exports = {
   toggleLifeCardTimer,
   toggleScheduleItem,
   toggleTodoItem,
+  updateDayContext,
   updatePersonalPage,
   updateProfile,
   updateDiaryDay,
