@@ -115,7 +115,7 @@ fi
 
 if [ "${WITH_CODEX}" = "1" ]; then
   if id "${PEOS_SERVICE_USER}" >/dev/null 2>&1; then
-    if runuser -u "${PEOS_SERVICE_USER}" -- env HOME="/home/${PEOS_SERVICE_USER}" OTEL_SDK_DISABLED=true codex exec --ephemeral --skip-git-repo-check -C "${PEOS_APP_DIR}" "Return exactly: pong" >/tmp/peos-codex-check.out 2>/tmp/peos-codex-check.err; then
+    if runuser -u "${PEOS_SERVICE_USER}" -- env HOME="/home/${PEOS_SERVICE_USER}" OTEL_SDK_DISABLED=true codex exec --ephemeral --skip-git-repo-check -C "${PEOS_APP_DIR}" "Return exactly: pong" </dev/null >/tmp/peos-codex-check.out 2>/tmp/peos-codex-check.err; then
       pass "Codex exec works for ${PEOS_SERVICE_USER}"
       if [ -n "${PEOS_EXPECT_CODEX_PROVIDER}" ]; then
         if grep -hEq "provider: ${PEOS_EXPECT_CODEX_PROVIDER}([[:space:]]|$)" /tmp/peos-codex-check.out /tmp/peos-codex-check.err; then
