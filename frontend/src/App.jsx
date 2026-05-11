@@ -1100,28 +1100,8 @@ function memoryKindText(kinds, fallback = "") {
   return values.length ? [...new Set(values)].join(" · ") : fallback;
 }
 
-function checkinStepTitleLabel(title) {
-  const cleaned = cleanCardText(title || "")
-    .replace(/^确定/, "")
-    .replace(/^进行/, "")
-    .replace(/^完成(?:今日|今天)?/, "")
-    .replace(/体育锻炼|锻炼身体|运动打卡/g, "运动")
-    .replace(/\s+/g, " ")
-    .trim();
-  return cleaned || cleanCardText(title || "");
-}
-
-function checkinSummaryTitle(card, fallback = "今日打卡") {
-  const steps = Array.isArray(card?.steps) ? card.steps : [];
-  const labels = [...new Set(steps
-    .map((step) => checkinStepTitleLabel(step.title))
-    .filter(Boolean)
-  )].slice(0, 3);
-  return labels.length ? labels.join(" · ") : fallback;
-}
-
 function lifeCardDisplayTitle(card, fallback = "记录") {
-  if (isDailyCheckinCard(card)) return checkinSummaryTitle(card);
+  if (isDailyCheckinCard(card)) return "打卡";
   return displayCardTitle(card?.title || card?.sourceCaptureSummary || fallback);
 }
 
