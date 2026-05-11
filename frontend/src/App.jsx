@@ -1100,11 +1100,50 @@ function memoryKindText(kinds, fallback = "") {
   return values.length ? [...new Set(values)].join(" · ") : fallback;
 }
 
+function checkinStepTitleLabel(title) {
+  const cleaned = cleanCardText(title || "")
+    .replace(/^确定/, "")
+    .replace(/^进行/, "")
+    .replace(/^完成(?:今日|今天)?/, "")
+    .replace(/体育锻炼|锻炼身体|运动打卡/g, "运动")
+    .replace(/\s+/g, " ")
+    .trim();
+  return cleaned || cleanCardText(title || "");
+}
+
+function checkinSummaryTitle(card, fallback = "今日打卡") {
+  const steps = Array.isArray(card?.steps) ? card.steps : [];
+  const labels = [...new Set(steps
+    .map((step) => checkinStepTitleLabel(step.title))
+    .filter(Boolean)
+  )].slice(0, 3);
+  return labels.length ? labels.join(" · ") : fallback;
+}
+
+function lifeCardDisplayTitle(card, fallback = "记录") {
+  if (isDailyCheckinCard(card)) return checkinSummaryTitle(card);
+  return displayCardTitle(card?.title || card?.sourceCaptureSummary || fallback);
+}
+
+function completionSummaryForCard(card, profiles, currentUser = null) {
+  const participants = Array.isArray(card?.participants) ? card.participants : [];
+  if (!participants.length) return statusText(card) || card?.statusLabel || "";
+  const updatedBy = card?.statusUpdatedBy || {};
+  return participants
+    .map((id) => {
+      const name = userDisplayName(id, profiles, participantShortName(id, profiles, currentUser, id));
+      const done = isCardDoneForUser(card, id);
+      const actor = updatedBy[id] && updatedBy[id] !== id ? userDisplayName(updatedBy[id], profiles, updatedBy[id]) : "";
+      return `${name}${done ? "已完成" : "未完成"}${actor ? `（${actor}代点）` : ""}`;
+    })
+    .join(" · ");
+}
+
 function compactLifeCardRow(card, context, activeId = "") {
   const itemType = card.itemType && itemTypeLabels[card.itemType] ? card.itemType : "thing";
   return {
     id: card.id,
-    title: cleanCardText(card.title || card.sourceCaptureSummary || "记录"),
+    title: cleanCardText(lifeCardDisplayTitle(card)),
     subtitle: [card.date === today() ? "今天" : shortDate(card.date), primaryTimeLabel(card), itemTypeLabels[itemType]].filter(Boolean).join(" · "),
     ownerIds: cardParticipantIds(card, context.profiles, context.currentUser),
     active: card.id === activeId,
@@ -1196,9 +1235,8 @@ const detailBuilders = {
     const { profiles, currentUser } = context;
     const itemType = card.itemType && itemTypeLabels[card.itemType] ? card.itemType : "thing";
     const participants = cardParticipantIds(card, profiles, currentUser);
-    const title = displayCardTitle(card.title || card.sourceCaptureSummary || "记录");
+    const title = lifeCardDisplayTitle(card);
     const detail = summaryLine(card) || cleanCardText(card.detail || card.slot || "");
-    const sourceSummary = cleanCardText(card.sourceCaptureSummary || "");
     const readOnly = card.readOnly || card.sourceType === "insight";
     const stepStatus = card.stepProgress?.total ? `${card.stepProgress.done}/${card.stepProgress.total}` : "";
     const isDone = isCompletedCard(card);
@@ -1237,10 +1275,9 @@ const detailBuilders = {
         };
       })
       .filter((step) => step.title);
-    const tagLine = (Array.isArray(card.tags) ? card.tags : []).slice(0, 8).join(" · ");
-    const memoryLine = memoryKindText(card.memoryKinds);
-    const hasMemory = Boolean(memoryLine || card.memoryLinks?.length);
-    const statusLine = statusRowsForCard(card, profiles, currentUser).join(" · ");
+    const hasMemory = Boolean(memoryKindText(card.memoryKinds) || card.memoryLinks?.length);
+    const participantLine = namesForIds(participants, profiles);
+    const completionLine = completionSummaryForCard(card, profiles, currentUser);
     return {
       type: "lifeCard",
       label: itemTypeLabels[itemType],
@@ -1249,24 +1286,19 @@ const detailBuilders = {
       date: detailDateLabel(card.date),
       ownerIds: participants,
       chips: [
+        { label: "类型", value: itemTypeLabels[itemType] },
         { label: "时间", value: primaryTimeLabel(card) },
-        { label: "归属", value: ownerLabel(card.ownerId, currentUser) },
-        { label: "状态", value: stepStatus || statusText(card) || card.statusLabel },
-        { label: "编辑", value: actorName(card.updatedBy || card.createdBy, profiles, "") },
+        { label: "参与", value: participantLine || ownerLabel(card.ownerId, currentUser) },
+        { label: "完成", value: stepStatus || statusText(card) || card.statusLabel },
       ].filter((item) => item.value),
       rows: detailRows([
-        card.createdAt ? { label: "创建", value: [compactDateTime(card.createdAt), actorName(card.createdBy, profiles, "")].filter(Boolean).join(" · ") } : null,
-        card.updatedAt ? { label: "编辑", value: [compactDateTime(card.updatedAt), actorName(card.updatedBy, profiles, "")].filter(Boolean).join(" · ") } : null,
+        completionLine ? { label: "完成情况", value: completionLine, wide: true } : null,
         card.nextStep?.title ? { label: "下一步", value: card.nextStep.title, wide: true } : null,
         card.plannedAt ? { label: "开始", value: formatDateTimeShort(card.plannedAt) } : null,
         card.dueAt ? { label: "截止", value: formatDateTimeShort(card.dueAt) } : null,
         card.durationMin ? { label: "预计", value: durationLabel(card.durationMin) } : null,
         card.stepProgress?.total ? { label: "步骤", value: `${card.stepProgress.done}/${card.stepProgress.total}` } : null,
-        statusLine ? { label: "双人状态", value: statusLine, wide: true } : null,
         card.repeatRule ? { label: "周期", value: repeatRuleLabel(card.repeatRule) } : null,
-        tagLine ? { label: "标签", value: tagLine, wide: true } : null,
-        memoryLine ? { label: "记忆", value: memoryLine, wide: true } : null,
-        sourceSummary ? { label: "来源", value: sourceSummary, wide: true } : null,
         card.priority === "high" ? { label: "优先级", value: "重要" } : null,
       ]),
       steps,
@@ -1453,25 +1485,92 @@ function summaryRow(item, status, context) {
 }
 
 function sortCards(cards) {
-  const segmentWeight = { morning: 0, noon: 1, afternoon: 2, evening: 3, allDay: 4 };
   const manualOrder = (card) => Number(card.manualOrder || 0);
   const lifecycleRank = (card) => isArchivedCard(card) ? 2 : isCompletedCard(card) ? 1 : 0;
-  const rank = (card) => {
-    if (lifeCardAgeNotice(card)?.level === "strong") return 0;
-    if (card.priority === "high") return 0;
-    if (card.sourceType === "insight") return 1;
-    if (card.priority === "low") return 3;
-    return 2;
-  };
-  return [...cards].sort((a, b) =>
+  return [...cards].sort((a, b) => {
+    const timeA = cardTimelineSlot(a);
+    const timeB = cardTimelineSlot(b);
+    return String(a.date || "").localeCompare(String(b.date || "")) ||
+    timeA.bucket - timeB.bucket ||
+    timeA.minutes - timeB.minutes ||
+    (timeA.bucket === timeB.bucket && timeA.minutes === timeB.minutes && (manualOrder(a) || manualOrder(b)) ? (manualOrder(a) || 1000000) - (manualOrder(b) || 1000000) : 0) ||
     lifecycleRank(a) - lifecycleRank(b) ||
-    (a.date === b.date && (manualOrder(a) || manualOrder(b)) ? (manualOrder(a) || 1000000) - (manualOrder(b) || 1000000) : 0) ||
-    rank(a) - rank(b) ||
-    (Number(b.rankScore || 0) - Number(a.rankScore || 0)) ||
-    String(a.date || "").localeCompare(String(b.date || "")) ||
-    (segmentWeight[a.segment] ?? 5) - (segmentWeight[b.segment] ?? 5) ||
+    Number(a.sourceType === "insight") - Number(b.sourceType === "insight") ||
     String(a.createdAt || "").localeCompare(String(b.createdAt || ""))
+  });
+}
+
+function dateTimeSortParts(value) {
+  const match = String(value || "").match(/^(\d{4}-\d{2}-\d{2})T(\d{2}):(\d{2})/);
+  if (!match) return null;
+  return {
+    date: match[1],
+    minutes: Number(match[2]) * 60 + Number(match[3]),
+  };
+}
+
+function timeLabelMinutes(value) {
+  const match = String(value || "").match(/^(\d{1,2}):(\d{2})/);
+  if (!match) return null;
+  return Number(match[1]) * 60 + Number(match[2]);
+}
+
+function minutesLabel(minutes) {
+  const value = Math.max(0, Number(minutes) || 0);
+  const hour = Math.floor(value / 60);
+  const minute = value % 60;
+  return `${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}`;
+}
+
+function hasExplicitAllDay(card) {
+  const text = `${card?.title || ""} ${card?.detail || ""} ${card?.slot || ""} ${card?.timeLabel || ""} ${card?.repeatRule || ""}`;
+  return card?.segment === "allDay" ||
+    card?.sourceType === "checkin" ||
+    card?.itemType === "habit" ||
+    Boolean(card?.repeatRule) ||
+    /全天|整天|每天|每日/.test(text);
+}
+
+function cardTimelineSlot(card) {
+  const date = String(card?.date || today());
+  const planned = dateTimeSortParts(card?.plannedAt);
+  if (planned?.date === date) return { group: "timed", label: minutesLabel(planned.minutes), bucket: 1, minutes: planned.minutes };
+  const labelMinutes = timeLabelMinutes(card?.timeLabel);
+  if (labelMinutes !== null) return { group: "timed", label: minutesLabel(labelMinutes), bucket: 1, minutes: labelMinutes };
+  const due = dateTimeSortParts(card?.dueAt);
+  if (due?.date === date) return { group: "deadline", label: `截止 ${minutesLabel(due.minutes)}`, bucket: 2, minutes: due.minutes };
+  if (hasExplicitAllDay(card)) return { group: "all-day", label: "全天", bucket: 0, minutes: 0 };
+  const segmentMinutes = { morning: 9 * 60, noon: 12 * 60 + 30, afternoon: 15 * 60, evening: 19 * 60 + 30 };
+  if (Object.prototype.hasOwnProperty.call(segmentMinutes, card?.segment)) return { group: "segment", label: segmentLabels[card.segment], bucket: 1, minutes: segmentMinutes[card.segment] };
+  return { group: "unscheduled", label: "待安排", bucket: 3, minutes: 0 };
+}
+
+function groupCardsByTimelineSlot(cards) {
+  const groups = [];
+  cards.forEach((card) => {
+    const slot = cardTimelineSlot(card);
+    const key = `${slot.group}-${slot.label}`;
+    const last = groups[groups.length - 1];
+    if (last?.key === key) {
+      last.cards.push(card);
+      return;
+    }
+    groups.push({ key, slot, cards: [card] });
+  });
+  return groups;
+}
+
+function isPriorityPinnedCard(card) {
+  return !isArchivedCard(card) && !isCompletedCard(card) && (
+    card?.priority === "high" ||
+    card?.rankLane === "overdue" ||
+    lifeCardAgeNotice(card)?.level === "strong"
   );
+}
+
+function priorityPinLabel(card) {
+  if (card?.rankLane === "overdue" || lifeCardAgeNotice(card)?.level === "strong") return "已过期";
+  return "重要";
 }
 
 function groupByDate(cards) {
@@ -3114,6 +3213,10 @@ function LifeCardTimeline({ cards, profiles, currentUser, selectedDate, filter, 
     : grouped;
   const focusedCardId = scrubTargetId || axisFocusId;
   const isFocusMode = Boolean(focusedCardId);
+  const pinnedCards = useMemo(() => sortCards(visibleCards
+    .filter((card) => String(card.date || todayKey) === selectedDate)
+    .filter(isPriorityPinnedCard)
+  ).slice(0, 3), [visibleCards, selectedDate, todayKey]);
   const summary = useMemo(() => {
     const activeCards = lifeCards.filter((card) => !isArchivedCard(card));
     const openCards = activeCards.filter((card) => !isCompletedCard(card));
@@ -3440,6 +3543,29 @@ function LifeCardTimeline({ cards, profiles, currentUser, selectedDate, filter, 
           </div>
         </div>
       </div>
+      {pinnedCards.length ? (
+        <section className="priority-strip" aria-label="置顶生活卡">
+          <div className="priority-strip-head">
+            <Icon name="star" />
+            <span>置顶</span>
+          </div>
+          <div className="priority-strip-items">
+            {pinnedCards.map((card) => (
+              <button
+                key={card.id}
+                className={cx("priority-pin", card.rankLane === "overdue" && "is-overdue")}
+                type="button"
+                onClick={() => openDetail?.("lifeCard", card)}
+                title={lifeCardDisplayTitle(card, "生活卡")}
+              >
+                <b>{priorityPinLabel(card)}</b>
+                <strong>{lifeCardDisplayTitle(card, "生活卡")}</strong>
+                <em>{primaryTimeLabel(card)}</em>
+              </button>
+            ))}
+          </div>
+        </section>
+      ) : null}
       <div
         ref={listRef}
         className={cx("timeline-list", isScrollDragging && "is-dragging", isCardScrubbing && "is-card-scrubbing", isFocusMode && "is-card-focused")}
@@ -3458,6 +3584,7 @@ function LifeCardTimeline({ cards, profiles, currentUser, selectedDate, filter, 
           const isTodayGroup = date === todayKey;
           const isCompactDay = compactDates.has(date);
           const visible = isFocusMode ? dayCards : (isExpanded || isSelectedDay || isTodayGroup ? dayCards : dayCards.slice(0, 3));
+          const visibleGroups = groupCardsByTimelineSlot(visible);
           const hiddenCount = isFocusMode ? 0 : dayCards.length - visible.length;
           const openCount = dayCards.filter((card) => !isCompletedCard(card) && !isArchivedCard(card)).length;
           const hasHigh = dayCards.some((card) => card.priority === "high" || Number(card.rankScore || 0) >= 60);
@@ -3472,45 +3599,54 @@ function LifeCardTimeline({ cards, profiles, currentUser, selectedDate, filter, 
                 <span>{date}</span>
               </button>
               <div className="day-cards">
-                {visible.map((card) => {
-                  const isScrubTarget = focusedCardId === card.id;
-                  const isOrderDragging = orderDragRef.current.active && orderDragRef.current.cardId === card.id;
-                  const isCompactCard = (isCompactDay || (!isTodayGroup && !isSelectedDay)) && !isScrubTarget;
-                  return (
-                    <div
-                      key={card.id}
-                      className={cx("timeline-card-slot", isCompactCard && "is-compact", isScrubTarget && "is-scrub-target", isOrderDragging && "is-order-dragging")}
-                      ref={(node) => {
-                        if (node) cardRefs.current.set(card.id, node);
-                        else cardRefs.current.delete(card.id);
-                      }}
-                    >
-                      {canReorderCard(card) ? (
-                        <button
-                          className="card-order-handle"
-                          type="button"
-                          aria-label={`拖动排序 ${card.title || "生活卡"}`}
-                          title="拖动排序"
-                          onPointerDown={(event) => startOrderDrag(event, card, date)}
-                        >
-                          <Icon name="grip" />
-                        </button>
-                      ) : null}
-                      <LifeCard
-                        card={card}
-                        profiles={profiles}
-                        currentUser={currentUser}
-                        compact={isCompactCard}
-                        toggleCard={toggleCard}
-                        archiveCard={archiveCard}
-                        toggleStep={toggleStep}
-                        toggleTimer={toggleTimer}
-                        setEditingCard={setEditingCard}
-                        openDetail={openDetail}
-                      />
+                {visibleGroups.map((group) => (
+                  <section className={cx("timeline-time-group", `is-${group.slot.group}`)} key={group.key}>
+                    <div className="timeline-time-label" aria-label={group.slot.label}>
+                      <span>{group.slot.label}</span>
                     </div>
-                  );
-                })}
+                    <div className="timeline-time-cards">
+                      {group.cards.map((card) => {
+                        const isScrubTarget = focusedCardId === card.id;
+                        const isOrderDragging = orderDragRef.current.active && orderDragRef.current.cardId === card.id;
+                        const isCompactCard = (isCompactDay || (!isTodayGroup && !isSelectedDay)) && !isScrubTarget;
+                        return (
+                          <div
+                            key={card.id}
+                            className={cx("timeline-card-slot", isCompactCard && "is-compact", isScrubTarget && "is-scrub-target", isOrderDragging && "is-order-dragging")}
+                            ref={(node) => {
+                              if (node) cardRefs.current.set(card.id, node);
+                              else cardRefs.current.delete(card.id);
+                            }}
+                          >
+                            {canReorderCard(card) ? (
+                              <button
+                                className="card-order-handle"
+                                type="button"
+                                aria-label={`拖动排序 ${card.title || "生活卡"}`}
+                                title="拖动排序"
+                                onPointerDown={(event) => startOrderDrag(event, card, date)}
+                              >
+                                <Icon name="grip" />
+                              </button>
+                            ) : null}
+                            <LifeCard
+                              card={card}
+                              profiles={profiles}
+                              currentUser={currentUser}
+                              compact={isCompactCard}
+                              toggleCard={toggleCard}
+                              archiveCard={archiveCard}
+                              toggleStep={toggleStep}
+                              toggleTimer={toggleTimer}
+                              setEditingCard={setEditingCard}
+                              openDetail={openDetail}
+                            />
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </section>
+                ))}
                 {hiddenCount > 0 ? (
                   <button
                     className="fold-row"
@@ -3551,7 +3687,6 @@ function LifeCard({ card, profiles, currentUser, compact = false, toggleCard, ar
   if (isDefaultPromptCard(card)) return null;
   const itemType = card.itemType && itemTypeLabels[card.itemType] ? card.itemType : "thing";
   const participants = cardParticipantIds(card, profiles, currentUser);
-  const title = displayCardTitle(card.title || card.sourceCaptureSummary || "记录");
   const status = statusText(card);
   const readOnly = card.readOnly || card.sourceType === "insight";
   const isDraft = Boolean(card.isDraft);
@@ -3560,6 +3695,7 @@ function LifeCard({ card, profiles, currentUser, compact = false, toggleCard, ar
   const completionTarget = completionTargetUserId(card, currentUser);
   const isLegacyCheckin = card.sourceType === "checkin";
   const isDailyCheckin = isDailyCheckinCard(card);
+  const title = lifeCardDisplayTitle(card);
   const timeNote = primaryTimeLabel(card);
   const ageNotice = lifeCardAgeNotice(card);
   const profileById = new Map((profiles || []).map((profile) => [profile.id, profile]));
@@ -3685,7 +3821,7 @@ function LifeCard({ card, profiles, currentUser, compact = false, toggleCard, ar
   };
   return (
     <article
-      className={cx("life-card", `type-${itemType}`, isLegacyCheckin && "is-checkin", isDone && "is-done", isArchived && "is-archived", ageNotice && "is-aged", ageNotice?.level === "strong" && "is-aged-strong", readOnly && "is-readonly", isInsight && "is-insight", isDraft && "is-draft")}
+      className={cx("life-card", `type-${itemType}`, card.priority === "high" && "is-important", isLegacyCheckin && "is-checkin", isDone && "is-done", isArchived && "is-archived", ageNotice && "is-aged", ageNotice?.level === "strong" && "is-aged-strong", readOnly && "is-readonly", isInsight && "is-insight", isDraft && "is-draft")}
       style={{ "--owner-one": ownerColor, "--owner-two": secondColor }}
       onDoubleClick={() => {
         if (!readOnly) setEditingCard(card);
@@ -3754,7 +3890,7 @@ function LifeCard({ card, profiles, currentUser, compact = false, toggleCard, ar
             ))}
           </div>
         ) : null}
-        {!compact && !isLegacyCheckin && stepTotal ? (
+        {!compact && !isLegacyCheckin && !isDailyCheckin && stepTotal ? (
           <button
             className={cx("next-step-row", !pendingStep && "is-done")}
             type="button"
@@ -3772,7 +3908,7 @@ function LifeCard({ card, profiles, currentUser, compact = false, toggleCard, ar
             <b>{`${stepDone}/${stepTotal}`}</b>
           </button>
         ) : null}
-        {!compact && !isLegacyCheckin && card.stepProgress?.total ? (
+        {!compact && !isLegacyCheckin && !isDailyCheckin && card.stepProgress?.total ? (
           <div className="step-meter" aria-label={`步骤 ${card.stepProgress.done}/${card.stepProgress.total}`}>
             <span style={{ width: `${card.stepProgress.percent || 0}%` }} />
           </div>
