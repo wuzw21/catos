@@ -3477,13 +3477,13 @@ function LifeCardTimeline({ cards, profiles, currentUser, selectedDate, filter, 
                         profiles={profiles}
                         currentUser={currentUser}
                         compact={isCompactCard}
-                      toggleCard={toggleCard}
-                      archiveCard={archiveCard}
-                      toggleStep={toggleStep}
-                      toggleTimer={toggleTimer}
-                      setEditingCard={setEditingCard}
-                      openDetail={openDetail}
-                    />
+                        toggleCard={toggleCard}
+                        archiveCard={archiveCard}
+                        toggleStep={toggleStep}
+                        toggleTimer={toggleTimer}
+                        setEditingCard={setEditingCard}
+                        openDetail={openDetail}
+                      />
                     </div>
                   );
                 })}
