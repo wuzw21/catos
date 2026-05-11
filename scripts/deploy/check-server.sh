@@ -29,6 +29,7 @@ PEOS_ENV_FILE="${PEOS_ENV_FILE:-/etc/peos/peos.env}"
 PEOS_SERVICE_NAME="${PEOS_SERVICE_NAME:-peos}"
 PEOS_SERVICE_USER="${PEOS_SERVICE_USER:-peos}"
 PEOS_BASE_URL="${PEOS_BASE_URL:-http://127.0.0.1:2333}"
+PEOS_EXPECT_CODEX_PROVIDER="${PEOS_EXPECT_CODEX_PROVIDER:-mirror}"
 
 failures=0
 
@@ -116,6 +117,13 @@ if [ "${WITH_CODEX}" = "1" ]; then
   if id "${PEOS_SERVICE_USER}" >/dev/null 2>&1; then
     if runuser -u "${PEOS_SERVICE_USER}" -- env HOME="/home/${PEOS_SERVICE_USER}" OTEL_SDK_DISABLED=true codex exec --ephemeral --skip-git-repo-check -C "${PEOS_APP_DIR}" "Return exactly: pong" >/tmp/peos-codex-check.out 2>/tmp/peos-codex-check.err; then
       pass "Codex exec works for ${PEOS_SERVICE_USER}"
+      if [ -n "${PEOS_EXPECT_CODEX_PROVIDER}" ]; then
+        if grep -hEq "provider: ${PEOS_EXPECT_CODEX_PROVIDER}([[:space:]]|$)" /tmp/peos-codex-check.out /tmp/peos-codex-check.err; then
+          pass "Codex provider is ${PEOS_EXPECT_CODEX_PROVIDER}"
+        else
+          fail "Codex provider is not ${PEOS_EXPECT_CODEX_PROVIDER}; output: $(grep -hE 'provider: ' /tmp/peos-codex-check.out /tmp/peos-codex-check.err | tr '\n' ' ' | sed 's/[[:space:]]\+/ /g')"
+        fi
+      fi
     else
       fail "Codex exec failed for ${PEOS_SERVICE_USER}; stderr: $(tr '\n' ' ' </tmp/peos-codex-check.err | sed 's/[[:space:]]\+/ /g')"
     fi
