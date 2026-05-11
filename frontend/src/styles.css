@@ -860,12 +860,78 @@ button.cat-word-mini:hover {
   overflow: hidden;
 }
 
+.icon-upload.is-disabled {
+  cursor: not-allowed;
+  opacity: 0.42;
+  transform: none;
+  box-shadow: none;
+}
+
 .icon-upload input,
 .upload-row input {
   position: absolute;
   inset: 0;
   opacity: 0;
   cursor: pointer;
+}
+
+.composer-preview {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.composer-photo {
+  position: relative;
+  display: inline-grid;
+  grid-template-columns: 42px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  max-width: min(100%, 260px);
+  padding: 5px 6px 5px 5px;
+  border: 1px solid rgba(46, 38, 48, 0.1);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.74);
+}
+
+.composer-photo img {
+  width: 42px;
+  height: 42px;
+  border-radius: 9px;
+  object-fit: cover;
+}
+
+.composer-photo b {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--ink);
+  font-size: 0.76rem;
+  font-weight: 850;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.composer-photo button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border: 0;
+  border-radius: 9px;
+  background: rgba(46, 38, 48, 0.07);
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.composer-photo button:hover {
+  background: rgba(219, 67, 129, 0.12);
+  color: var(--pink-deep);
+}
+
+.composer-photo svg {
+  width: 14px;
+  height: 14px;
 }
 
 .confirm-strip {
@@ -2622,18 +2688,13 @@ button.cat-word-mini:hover {
 .timeline-card-slot.is-compact .next-step-row,
 .timeline-list.is-card-scrubbing .timeline-card-slot:not(.is-scrub-target) .next-step-row,
 .timeline-list.is-card-focused .timeline-card-slot:not(.is-scrub-target) .next-step-row {
-  display: inline-flex;
-  max-width: calc(100% - 46px);
-  margin: 4px 0 0 46px;
+  display: none;
 }
 
 .timeline-card-slot.is-compact .card-checkin-board,
 .timeline-list.is-card-scrubbing .timeline-card-slot:not(.is-scrub-target) .card-checkin-board,
 .timeline-list.is-card-focused .timeline-card-slot:not(.is-scrub-target) .card-checkin-board {
-  display: flex;
-  justify-content: flex-end;
-  gap: 5px;
-  margin: 0;
+  display: none;
 }
 
 .timeline-card-slot.is-compact .checkin-person,
@@ -2651,13 +2712,29 @@ button.cat-word-mini:hover {
 .timeline-list.is-card-focused .timeline-card-slot:not(.is-scrub-target) .card-actions {
   display: flex;
   flex-direction: row;
-  max-width: min(48vw, 250px);
+  max-width: none;
   align-self: center;
   justify-content: flex-end;
   gap: 5px;
-  overflow-x: auto;
-  overscroll-behavior-x: contain;
-  scrollbar-width: none;
+  overflow: visible;
+}
+
+.timeline-card-slot.is-compact .timer-toggle,
+.timeline-card-slot.is-compact .detail-toggle,
+.timeline-card-slot.is-compact .archive-toggle,
+.timeline-list.is-card-scrubbing .timeline-card-slot:not(.is-scrub-target) .timer-toggle,
+.timeline-list.is-card-scrubbing .timeline-card-slot:not(.is-scrub-target) .detail-toggle,
+.timeline-list.is-card-scrubbing .timeline-card-slot:not(.is-scrub-target) .archive-toggle,
+.timeline-list.is-card-focused .timeline-card-slot:not(.is-scrub-target) .timer-toggle,
+.timeline-list.is-card-focused .timeline-card-slot:not(.is-scrub-target) .detail-toggle,
+.timeline-list.is-card-focused .timeline-card-slot:not(.is-scrub-target) .archive-toggle {
+  display: none;
+}
+
+.timeline-card-slot.is-compact .compact-only-action,
+.timeline-list.is-card-scrubbing .timeline-card-slot:not(.is-scrub-target) .compact-only-action,
+.timeline-list.is-card-focused .timeline-card-slot:not(.is-scrub-target) .compact-only-action {
+  display: inline-flex;
 }
 
 .timeline-card-slot.is-compact .card-actions::-webkit-scrollbar,
@@ -3382,6 +3459,43 @@ button.cat-word-mini:hover {
   width: 12px;
   height: 12px;
   flex: 0 0 auto;
+}
+
+.compact-only-action {
+  display: none;
+}
+
+.card-actions .complete-toggle,
+.card-actions .done-mark {
+  min-width: 62px;
+  height: 32px;
+  padding: 0 11px;
+  border-color: color-mix(in srgb, var(--type) 28%, rgba(46, 38, 48, 0.08));
+  background: color-mix(in srgb, var(--type) 14%, #fff);
+  color: color-mix(in srgb, var(--type) 78%, var(--ink));
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.38);
+}
+
+.card-actions .done-mark {
+  border-color: rgba(36, 185, 154, 0.22);
+  background: rgba(36, 185, 154, 0.12);
+  color: #14957c;
+}
+
+.card-actions .timer-toggle {
+  border-color: rgba(46, 38, 48, 0.07);
+  background: rgba(255, 255, 255, 0.38);
+  color: rgba(46, 38, 48, 0.5);
+}
+
+.card-actions .detail-toggle {
+  width: 32px;
+  min-width: 32px;
+  padding: 0;
+}
+
+.card-actions .detail-toggle span {
+  display: none;
 }
 
 .archive-toggle,
@@ -6699,6 +6813,18 @@ button.home-focus-note:hover {
   transform: translateY(-1px);
 }
 
+.detail-action-row button.is-primary {
+  min-height: 38px;
+  padding: 0 14px;
+  border-color: rgba(36, 185, 154, 0.22);
+  background: rgba(36, 185, 154, 0.12);
+  color: #14957c;
+}
+
+.detail-action-row button.is-tool {
+  color: rgba(46, 38, 48, 0.58);
+}
+
 .detail-action-row button:active {
   transform: scale(0.97);
 }
@@ -6830,10 +6956,40 @@ button.detail-step:hover {
 }
 
 .detail-step em {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  align-items: center;
   color: var(--muted);
   font-size: 0.76rem;
   font-style: normal;
   font-weight: 850;
+}
+
+.detail-step em b,
+.detail-step em i,
+.detail-step em small {
+  display: inline-flex;
+  min-height: 20px;
+  align-items: center;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.66);
+  font-size: 0.7rem;
+  font-style: normal;
+  font-weight: 920;
+}
+
+.detail-step em b {
+  color: color-mix(in srgb, var(--type) 70%, var(--ink));
+}
+
+.detail-step em i {
+  color: rgba(46, 38, 48, 0.56);
+}
+
+.detail-step.is-done em i {
+  color: #14957c;
 }
 
 .detail-step .avatar-pair {
@@ -6954,6 +7110,35 @@ button.detail-step:hover {
   .timeline-day.is-today .day-label {
     justify-self: start;
     min-width: 0;
+  }
+
+  .timeline-list {
+    max-height: none;
+    overflow: visible;
+    padding: 0;
+  }
+
+  .timeline-card-slot.is-compact .life-card,
+  .timeline-list.is-card-scrubbing .timeline-card-slot:not(.is-scrub-target) .life-card,
+  .timeline-list.is-card-focused .timeline-card-slot:not(.is-scrub-target) .life-card {
+    grid-template-columns: minmax(0, 1fr);
+    min-height: 58px;
+    padding: 9px 10px 9px 14px;
+  }
+
+  .timeline-card-slot.is-compact .next-step-row,
+  .timeline-card-slot.is-compact .card-checkin-board,
+  .timeline-list.is-card-scrubbing .timeline-card-slot:not(.is-scrub-target) .next-step-row,
+  .timeline-list.is-card-scrubbing .timeline-card-slot:not(.is-scrub-target) .card-checkin-board,
+  .timeline-list.is-card-focused .timeline-card-slot:not(.is-scrub-target) .next-step-row,
+  .timeline-list.is-card-focused .timeline-card-slot:not(.is-scrub-target) .card-checkin-board {
+    display: none;
+  }
+
+  .timeline-card-slot.is-compact .card-main,
+  .timeline-list.is-card-scrubbing .timeline-card-slot:not(.is-scrub-target) .card-main,
+  .timeline-list.is-card-focused .timeline-card-slot:not(.is-scrub-target) .card-main {
+    grid-column: 1;
   }
 
   .tool-groups {

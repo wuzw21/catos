@@ -3,7 +3,7 @@ const { spawn, spawnSync } = require("child_process");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
-const { contentPath, relativeToContent, repoPath, repoRoot } = require("./lib/runtime-paths.js");
+const { contentPath, contentRoot, relativeToContent, repoPath, repoRoot } = require("./lib/runtime-paths.js");
 
 const storePath = contentPath("private", "couple-workspace.json");
 const captureAnalysisSchemaPath = repoPath("schemas", "couple-capture-analysis.schema.json");
@@ -78,6 +78,8 @@ const captureAgentPrompt = [
   "如果一句话包含多个动作，要输出 relatedItems，并用 relatedGroupId 表示一改全动的关系。",
   "如果输入同时包含偏好/心愿和具体行动，优先输出 schedule，并把偏好/心愿压进 detail/reason，后端会从 raw 和分析轨迹沉淀记忆。",
   "如果输入是在定义纪念日、周年、生日等重要日期，而不是安排庆祝动作，返回 memory，memoryKind=anniversary。",
+  "如果输入包含图片，图片也是 raw capture 的一部分；分析图片只能生成轻确认，不能覆盖 raw。",
+  "如果图片是截图、手写清单、便签或 todolist，先识别文字与勾选状态，再把未完成的明确行动拆成 schedule/relatedItems；已勾选内容可写入 detail 或 dailyStory，不要当成待办。",
   "如果只是偏好、边界、愿望、承诺或照顾线索，不要强行生成 Schedule Item，返回 memory。",
   "如果只是当天素材、照片说明、情绪片段或回忆，不要强行生成 Schedule Item，返回 dailyStory。",
   "输出轻确认，不直接写入最终生活卡，除非用户确认。",
@@ -3326,6 +3328,23 @@ function publicCaptureAgentContextItem(item, sourceType) {
   };
 }
 
+function captureAssetFilePath(asset) {
+  const url = String(asset?.url || "");
+  if (!url.startsWith("/__content/")) return "";
+  const relativePath = decodeURIComponent(url.replace(/^\/__content\//, ""));
+  const filePath = path.normalize(contentPath(relativePath));
+  if (filePath !== contentRoot && !filePath.startsWith(`${contentRoot}${path.sep}`)) return "";
+  if (!fs.existsSync(filePath) || !fs.statSync(filePath).isFile()) return "";
+  return filePath;
+}
+
+function captureImagePaths(capture) {
+  return (Array.isArray(capture?.assets) ? capture.assets : [])
+    .map(captureAssetFilePath)
+    .filter(Boolean)
+    .slice(0, 3);
+}
+
 function buildCaptureAgentFacts(store, userId, payload, capture, text, selectedDate, ownerId, templateDraft) {
   const profileIds = getProfileIds(store);
   const startDate = addDays(selectedDate, -14);
@@ -3354,6 +3373,13 @@ function buildCaptureAgentFacts(store, userId, payload, capture, text, selectedD
       text,
       rawKind: capture?.rawKind || payload.rawKind || "raw",
       rawFormat: capture?.rawFormat || payload.rawFormat || "markdown",
+      assets: (Array.isArray(capture?.assets) ? capture.assets : []).map((asset, index) => ({
+        index: index + 1,
+        id: asset.id || "",
+        name: asset.name || asset.filename || `image-${index + 1}`,
+        mimeType: asset.mimeType || "",
+        size: Number(asset.size) || 0,
+      })),
       createdBy: capture?.createdBy || userId,
       createdAt: capture?.createdAt || "",
     },
@@ -3394,6 +3420,8 @@ function buildCaptureAgentStructuredPrompt(facts) {
     "- itemType 默认 thing；工作/作业/会议用 work；购买用 purchase；约会/一起出去用 date；提醒/截止用 reminder；打卡用 checkin；周期习惯用 habit。",
     "- ownerId 默认当前用户；只有明确共同参与才用 shared。participants 必须从 profileIds 或 shared 对应成员中选择。",
     "- 相对日期必须按 selectedDate 解析，例如今天下午、周日、下周一。",
+    "- 如果 rawCapture.assets 非空，你会收到同顺序的图片附件；必须结合图片内容和 rawCapture.text 分析。",
+    "- 图片里如果是 todo list、备忘录、聊天截图、白板或手写清单：识别每一条文字；未勾选/待办项生成 schedule 或 relatedItems；已勾选/完成项不要生成待办，可放进 detail/reason。",
     "- 如果一句话包含多个动作，用 relatedItems 拆出子生活卡；标题必须短，不要重复日期词。",
     "- 可以输出 tags 和 memoryKinds：tags 是短标签；memoryKinds 用于长期记忆沉淀，只能来自 allowedMemoryKinds。",
     "- 如果无法匹配明确动作，返回 decision=capture，title 可以概括 raw。",
@@ -3409,12 +3437,16 @@ function runCaptureAgentCodex(facts, options = {}) {
   }
 
   const outputPath = path.join(os.tmpdir(), `couple-capture-analysis-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.json`);
+  const imageArgs = (Array.isArray(options.imagePaths) ? options.imagePaths : [])
+    .filter((filePath) => filePath && fs.existsSync(filePath))
+    .flatMap((filePath) => ["--image", filePath]);
   const args = [
     "exec",
     "--ephemeral",
     "--skip-git-repo-check",
     "-C",
     repoRoot,
+    ...imageArgs,
     "--output-schema",
     captureAnalysisSchemaPath,
     "-o",
@@ -3693,6 +3725,7 @@ async function analyzeCaptureWithAgent(userId, payload = {}) {
   });
   const facts = buildCaptureAgentFacts(store, userId, payload, capture, text, selectedDate, ownerId, templateDraft);
   const agentOutput = await runCaptureAgentCodex(facts, {
+    imagePaths: captureImagePaths(capture),
     model: payload.model,
     timeoutMs: payload.timeoutMs,
   });
@@ -6653,11 +6686,6 @@ function addDiaryAsset(userId, payload) {
 
 function addCapture(userId, payload) {
   return mutateStore((store) => {
-    const text = sanitizeText(payload.text, 1200);
-    if (!text) {
-      throw new Error("capture text is required");
-    }
-
     const date = normalizeDate(payload.date);
     const visibility = validVisibilities.has(payload.visibility) ? payload.visibility : "shared";
     const mode = validCaptureModes.has(payload.mode) ? payload.mode : "save";
@@ -6665,6 +6693,10 @@ function addCapture(userId, payload) {
       ...(Array.isArray(payload.assets) ? payload.assets : []),
       payload.dataUrl ? { name: payload.name, dataUrl: payload.dataUrl } : null,
     ].filter(Boolean);
+    const text = sanitizeText(payload.text, 1200) || (assetPayloads.length ? "图片随手记" : "");
+    if (!text) {
+      throw new Error("capture text is required");
+    }
     const assets = assetPayloads.slice(0, 3).map((asset) =>
       createImageAsset(userId, asset, {
         date,

@@ -868,7 +868,7 @@ function profileColor(profiles, id, fallback = "#ff6fa8") {
 }
 
 function isCompletedCard(card) {
-  return Boolean(card?.completion?.allDone || card?.completion?.currentUserDone);
+  return Boolean(card?.completion?.allDone);
 }
 
 function isArchivedCard(card) {
@@ -919,6 +919,28 @@ function statusRowsForCard(card, profiles) {
       return `${name}${done ? "已完成" : "待完成"}${actor ? `（${actor}代点）` : ""}`;
     })
     .filter(Boolean);
+}
+
+function stepOwnerIds(step, participants = []) {
+  if (step?.ownerId) return [step.ownerId].filter(Boolean);
+  return participants.length ? participants : [];
+}
+
+function stepOwnerLabel(step, profiles, participants = [], currentUser = null) {
+  const ids = stepOwnerIds(step, participants);
+  if (!step?.ownerId && ids.length > 1) return "共同";
+  const id = ids[0] || "";
+  if (!id) return "共同";
+  return id === currentUser?.id ? "我" : userDisplayName(id, profiles, "对方");
+}
+
+function stepStateLabel(step, profiles, participants = [], currentUser = null) {
+  if (step?.status === "done") return "已完成";
+  const ids = stepOwnerIds(step, participants);
+  if (!step?.ownerId && ids.length > 1) return "待共同完成";
+  const id = ids[0] || "";
+  if (!id || id === currentUser?.id) return "待我完成";
+  return `待${userDisplayName(id, profiles, "对方")}完成`;
 }
 
 function timeOnlyLabel(value) {
@@ -1167,6 +1189,7 @@ const detailBuilders = {
     const isDone = isCompletedCard(card);
     const isArchived = isArchivedCard(card);
     const { targetUserId, isProxy, targetName } = proxyActionMeta(card, currentUser, profiles);
+    const targetDone = targetUserId ? isCardDoneForUser(card, targetUserId) : isDone;
     const timerActive = Boolean(card.timeTracking?.currentUserActive);
     const profileById = new Map((profiles || []).map((profile) => [profile.id, profile]));
     const rawSteps = card.sourceType === "checkin"
@@ -1178,16 +1201,23 @@ const detailBuilders = {
         }))
       : (Array.isArray(card.steps) ? card.steps : []);
     const steps = rawSteps
-      .map((step) => ({
-        id: step.id || step.title,
-        title: cleanCardText(step.title || ""),
-        done: step.status === "done",
-        ownerIds: [step.ownerId].filter(Boolean),
-        hint: durationLabel(step.estimateMin),
-        action: !readOnly && card.sourceType !== "checkin" && (!step.ownerId || step.ownerId === currentUser?.id || step.ownerId === targetUserId)
-          ? { type: "toggle-step", card, step }
-          : null,
-      }))
+      .map((step) => {
+        const ownerIds = stepOwnerIds(step, participants);
+        const state = stepStateLabel(step, profiles, participants, currentUser);
+        const owner = stepOwnerLabel(step, profiles, participants, currentUser);
+        return {
+          id: step.id || step.title,
+          title: cleanCardText(step.title || ""),
+          done: step.status === "done",
+          ownerIds,
+          owner,
+          state,
+          hint: durationLabel(step.estimateMin),
+          action: !readOnly && card.sourceType !== "checkin" && (!step.ownerId || step.ownerId === currentUser?.id || step.ownerId === targetUserId)
+            ? { type: "toggle-step", card, step }
+            : null,
+        };
+      })
       .filter((step) => step.title);
     const tagLine = (Array.isArray(card.tags) ? card.tags : []).slice(0, 8).join(" · ");
     const memoryLine = memoryKindText(card.memoryKinds);
@@ -1225,7 +1255,7 @@ const detailBuilders = {
       sections: lifeCardDetailSections(card, context),
       images: [],
       actions: [
-        !readOnly && !isArchived && targetUserId ? { type: "toggle-card", icon: isDone ? "undo" : "check", label: isDone ? "取消" : isProxy ? `帮${targetName}完成` : "完成", card } : null,
+        !readOnly && !isArchived && targetUserId ? { type: "toggle-card", icon: targetDone ? "undo" : "check", label: targetDone ? "取消" : isProxy ? `帮${targetName}完成` : "完成", card } : null,
         !readOnly && !isArchived && !card.isDraft && card.sourceType !== "checkin" ? { type: "timer-card", icon: timerActive ? "stop" : "clock", label: timerActive ? "停止" : "计时", card } : null,
         !readOnly && ["schedule", "todo"].includes(card.sourceType) ? { type: "archive-card", icon: isArchived ? "undo" : "archive", label: isArchived ? "恢复" : "归档", card } : null,
         !readOnly && !card.isDraft ? { type: "remember-card", icon: "bookmark", label: hasMemory ? "已记" : "记忆", card } : null,
@@ -1728,8 +1758,8 @@ export function App() {
   }
 
   async function saveRawCapture(mode, assets = []) {
-    const text = composerText.trim();
-    if (!text) return;
+    const text = composerText.trim() || (assets.length ? "图片随手记" : "");
+    if (!text) return false;
     setBusy(true);
     try {
       const captureResult = await request("/api/couple/capture", {
@@ -1745,7 +1775,7 @@ export function App() {
           analysisIntent: mode === "agent" ? "agent" : mode === "template" ? "template" : "",
         },
       });
-      if (!captureResult) return;
+      if (!captureResult) return false;
       setData(captureResult.state);
       if (mode === "agent" || mode === "template") {
         const analyzed = await request("/api/couple/capture/analyze", {
@@ -1774,10 +1804,12 @@ export function App() {
         toast.success("已保存随手记");
       }
       setComposerText("");
+      return true;
     } catch (err) {
       const message = errorMessage(err, "保存失败");
       setError(message);
       toast.error(message);
+      return false;
     } finally {
       setBusy(false);
     }
@@ -2410,14 +2442,39 @@ function DateRail({ selectedDate, chooseDate }) {
 
 function Composer({ text, setText, saveRawCapture, profiles, currentUser, busy, agentJob, confirmation, submitConfirmation, dismissConfirmation, retryAgentJob, clearAgentJob, composingRef }) {
   const [routeDraft, setRouteDraft] = useState(null);
+  const [selectedAssets, setSelectedAssets] = useState([]);
+  const fileInputRef = useRef(null);
   useEffect(() => {
     setRouteDraft(confirmation ? { ...confirmation } : null);
   }, [confirmation]);
 
   async function submit(mode) {
-    await saveRawCapture(mode, []);
+    const ok = await saveRawCapture(mode, selectedAssets.map(({ name, dataUrl }) => ({ name, dataUrl })));
+    if (ok) setSelectedAssets([]);
   }
+  async function chooseCaptureFiles(event) {
+    const slots = Math.max(0, 3 - selectedAssets.length);
+    const files = Array.from(event.target.files || []).filter((file) => file.type.startsWith("image/")).slice(0, slots);
+    event.target.value = "";
+    if (!files.length) return;
+    try {
+      const assets = await Promise.all(files.map(async (file) => {
+        if (file.size > 5 * 1024 * 1024) throw new Error(`${file.name} 超过 5MB`);
+        const dataUrl = await readFileAsDataUrl(file);
+        return {
+          id: `${file.name}-${file.size}-${file.lastModified}`,
+          name: file.name,
+          dataUrl,
+        };
+      }));
+      setSelectedAssets((current) => [...current, ...assets].slice(0, 3));
+    } catch (err) {
+      toast.error(errorMessage(err, "图片读取失败"));
+    }
+  }
+  const removeCaptureAsset = (id) => setSelectedAssets((current) => current.filter((asset) => asset.id !== id));
   const draft = routeDraft || confirmation;
+  const canSubmit = Boolean(text.trim() || selectedAssets.length);
   const confirmationPeople = draft ? cardParticipantIds(draft, profiles, currentUser) : [];
   const visibleDecision = ["schedule", "capture"].includes(draft?.decision) ? draft.decision : "";
   const decisionMeta = captureDecisionMeta(draft?.decision);
@@ -2489,10 +2546,27 @@ function Composer({ text, setText, saveRawCapture, profiles, currentUser, busy, 
           placeholder="随手记"
         />
         <div className="composer-actions">
-          <IconButton icon="bookmark" label="默认" disabled={busy || !text.trim()} onClick={() => submit("template")} />
-          <IconButton icon="sparkle" label="Agent" primary disabled={busy || agentRunning || !text.trim()} onClick={() => submit("agent")} />
+          <label className={cx("icon-upload", (busy || selectedAssets.length >= 3) && "is-disabled")} title="加入图片">
+            <Icon name="image" />
+            <input ref={fileInputRef} type="file" accept="image/png,image/jpeg,image/webp,image/gif" multiple disabled={busy || selectedAssets.length >= 3} onChange={chooseCaptureFiles} />
+          </label>
+          <IconButton icon="bookmark" label="默认" disabled={busy || !canSubmit} onClick={() => submit("template")} />
+          <IconButton icon="sparkle" label="Agent" primary disabled={busy || agentRunning || !canSubmit} onClick={() => submit("agent")} />
         </div>
       </form>
+      {selectedAssets.length ? (
+        <div className="composer-preview" aria-label="待保存图片">
+          {selectedAssets.map((asset) => (
+            <span className="composer-photo" key={asset.id}>
+              <img src={asset.dataUrl} alt={asset.name || "图片"} />
+              <b>{shortText(asset.name || "图片", 18)}</b>
+              <button type="button" onClick={() => removeCaptureAsset(asset.id)} aria-label={`移除 ${asset.name || "图片"}`} title="移除图片">
+                <Icon name="x" />
+              </button>
+            </span>
+          ))}
+        </div>
+      ) : null}
       {agentJob ? (
         <div className={cx("agent-strip", agentFailed && "is-failed")} role="status" aria-live="polite">
           <Icon name={agentFailed ? "refresh" : "sparkle"} />
@@ -3372,10 +3446,28 @@ function LifeCard({ card, profiles, currentUser, toggleCard, archiveCard, toggle
       })
     : [];
   const checkinDoneCount = checkinPeople.filter((person) => person.done).length;
-  const isDone = isLegacyCheckin && checkinPeople.length
+  const isGroupCard = participants.length > 1 || card.ownerId === "shared";
+  const pendingOwnerIds = [...new Set(
+    isLegacyCheckin
+      ? checkinPeople.filter((person) => !person.done).map((person) => person.id)
+      : allSteps.length
+        ? allSteps
+            .filter((step) => step.status !== "done")
+            .flatMap((step) => {
+              const owners = stepOwnerIds(step, participants);
+              return owners.length ? owners : [completionTarget || currentUser?.id].filter(Boolean);
+            })
+        : participants.filter((id) => !isCardDoneForUser(card, id))
+  )];
+  const groupAllDone = isLegacyCheckin && checkinPeople.length
     ? checkinDoneCount === checkinPeople.length
-    : storedDone;
-  const currentCheckinPerson = checkinPeople.find((person) => person.id === currentUser?.id);
+    : allSteps.length
+      ? allSteps.every((step) => step.status === "done")
+      : participants.length
+        ? participants.every((id) => isCardDoneForUser(card, id))
+        : storedDone;
+  const isDone = isGroupCard ? groupAllDone : storedDone;
+  const currentUserPending = pendingOwnerIds.includes(currentUser?.id || "");
   const isInsight = card.sourceType === "insight";
   const ownerColor = card.ownerId === "shared" ? "#ff6fa8" : profileColor(profiles, card.ownerId, avatarColor(currentUser));
   const secondColor = participants.length > 1 ? profileColor(profiles, participants[1], "#24b99a") : ownerColor;
@@ -3391,13 +3483,13 @@ function LifeCard({ card, profiles, currentUser, toggleCard, archiveCard, toggle
   }, [timerActive, card.timeTracking?.activeStartedAt]);
   const totalTimeLabel = compactDuration(timerTotalSeconds(card, timerNow));
   const progressStatus = card.stepProgress?.total ? `${card.stepProgress.done}/${card.stepProgress.total}` : status;
-  const waitLabel = !isDone && !isArchived && checkinPeople.length
-    ? (currentCheckinPerson && !currentCheckinPerson.done ? "等我" : checkinPeople.some((person) => !person.done) ? "等对方" : "")
+  const waitLabel = !isDone && !isArchived && isGroupCard
+    ? (currentUserPending ? "等我" : pendingOwnerIds.length ? "等对方" : "")
     : "";
   const displayedStatus = isArchived
     ? "已归档"
     : isDone
-      ? (isLegacyCheckin || card.completion?.allDone ? "已完成" : "我已完成")
+      ? (isGroupCard || card.completion?.allDone ? "已完成" : "我已完成")
     : waitLabel || progressStatus;
   const contextBits = [
     timeNote,
@@ -3512,20 +3604,17 @@ function LifeCard({ card, profiles, currentUser, toggleCard, archiveCard, toggle
       </div>
       {!readOnly && !isDraft ? (
         <div className="card-actions">
-          {!isArchived && !isLegacyCheckin ? (
+          {!isArchived && isLegacyCheckin && completionTarget ? (
             <button
-              className={cx("action-chip timer-toggle", timerActive && "is-active")}
+              className={cx("action-chip compact-only-action", isCardDoneForUser(card, completionTarget) ? "done-mark" : "complete-toggle")}
               type="button"
-              aria-label={timerActive ? "停止计时" : "开始计时"}
-              aria-pressed={timerActive ? "true" : "false"}
-              title={timerActive ? "停止计时" : "开始计时"}
-              onClick={(event) => {
-                stopAction(event);
-                toggleTimer?.(card);
-              }}
+              aria-label={isCardDoneForUser(card, completionTarget) ? undoLabel : completeLabel}
+              aria-pressed={isCardDoneForUser(card, completionTarget) ? "true" : "false"}
+              title={isCardDoneForUser(card, completionTarget) ? undoLabel : completeLabel}
+              onClick={completeCard}
             >
-              <Icon name={timerActive ? "stop" : "clock"} />
-              <span>{timerActive ? "停止" : "计时"}</span>
+              <Icon name={isCardDoneForUser(card, completionTarget) ? "check" : "circle"} />
+              <span>{isCardDoneForUser(card, completionTarget) ? undoLabel : completeLabel}</span>
             </button>
           ) : null}
           {!isArchived && !isLegacyCheckin && completionTarget && isCardDoneForUser(card, completionTarget) ? (
@@ -3551,6 +3640,22 @@ function LifeCard({ card, profiles, currentUser, toggleCard, archiveCard, toggle
             >
               <Icon name="circle" />
               <span>{completeLabel}</span>
+            </button>
+          ) : null}
+          {!isArchived && !isLegacyCheckin ? (
+            <button
+              className={cx("action-chip timer-toggle", timerActive && "is-active")}
+              type="button"
+              aria-label={timerActive ? "停止计时" : "开始计时"}
+              aria-pressed={timerActive ? "true" : "false"}
+              title={timerActive ? "停止计时" : "开始计时"}
+              onClick={(event) => {
+                stopAction(event);
+                toggleTimer?.(card);
+              }}
+            >
+              <Icon name={timerActive ? "stop" : "clock"} />
+              <span>{timerActive ? "停止" : "计时"}</span>
             </button>
           ) : null}
           {isArchived && ["schedule", "todo"].includes(card.sourceType) ? (
@@ -4128,7 +4233,12 @@ function DetailDrawer({ detail, profiles, onClose, onAction }) {
         {detail.actions?.length ? (
           <div className="detail-action-row" aria-label="操作">
             {detail.actions.slice(0, 6).map((action) => (
-              <button key={`${action.type}-${action.label}`} type="button" onClick={() => onAction(action)}>
+              <button
+                key={`${action.type}-${action.label}`}
+                className={cx(action.type === "toggle-card" && "is-primary", action.type === "timer-card" && "is-tool")}
+                type="button"
+                onClick={() => onAction(action)}
+              >
                 <Icon name={action.icon} />
                 <span>{action.label}</span>
               </button>
@@ -4170,7 +4280,11 @@ function DetailDrawer({ detail, profiles, onClose, onAction }) {
                   </span>
                   <span>
                     <strong>{step.title}</strong>
-                    {step.hint ? <em>{step.hint}</em> : null}
+                    <em>
+                      {step.owner ? <b>{step.owner}</b> : null}
+                      {step.state ? <i>{step.state}</i> : null}
+                      {step.hint ? <small>{step.hint}</small> : null}
+                    </em>
                   </span>
                   {step.ownerIds?.length ? <AvatarPair profiles={profiles} ids={step.ownerIds} /> : null}
                 </>

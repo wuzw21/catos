@@ -55,6 +55,22 @@ try {
   assert.equal(anniversary.date, "2026-01-09");
   assert.equal(anniversary.title, "在一起的日子");
 
+  const imageOnlyCapture = store.addCapture("you", {
+    date: "2026-05-10",
+    text: "",
+    mode: "analysis",
+    visibility: "shared",
+    assets: [
+      {
+        name: "todo-list.png",
+        dataUrl: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=",
+      },
+    ],
+  }).result;
+  assert.equal(imageOnlyCapture.text, "图片随手记");
+  assert.equal(imageOnlyCapture.rawFormat, "markdown+photo");
+  assert.equal(imageOnlyCapture.assets.length, 1);
+
   const capture = store.addCapture("you", {
     date: "2026-05-10",
     text: "她不喜欢太吵的店",
