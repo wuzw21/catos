@@ -77,7 +77,9 @@ const captureAgentPrompt = [
   "必须解析相对日期：今天、明天、今晚、今天下午、周日、下周一、具体月日。",
   "如果一句话包含多个动作，要输出 relatedItems，并用 relatedGroupId 表示一改全动的关系。",
   "如果输入同时包含偏好/心愿和具体行动，优先输出 schedule，并把偏好/心愿压进 detail/reason，后端会从 raw 和分析轨迹沉淀记忆。",
-  "如果输入是在定义纪念日、周年、生日等重要日期，而不是安排庆祝动作，返回 memory，memoryKind=anniversary。",
+  "如果输入是在定义纪念日、周年、生日、在一起、相识、领证、结婚、第一次等重要日期，而不是安排庆祝动作，返回 memory，memoryKind=anniversary。",
+  "纪念日定义支持无年份日期，例如“纪念日：1月9日在一起”“1.9 是在一起的日子”；date 用 selectedDate/currentDate 所在年份补齐，repeatRule 用 yearly，ownerId 用 shared，participants 用双方。",
+  "纪念日记忆会用于倒计时、今年第几天、提前提醒和准备建议；如果用户明确说要提醒、准备、买礼物、订餐厅、整理照片、写信或庆祝，才返回 schedule，并把 memoryKinds 包含 anniversary，多个准备动作拆进 relatedItems。",
   "如果输入包含图片，图片也是 raw capture 的一部分；分析图片只能生成轻确认，不能覆盖 raw。",
   "如果图片是截图、手写清单、便签或 todolist，先识别文字与勾选状态，再把未完成的明确行动拆成 schedule/relatedItems；已勾选内容可写入 detail 或 dailyStory，不要当成待办。",
   "如果只是偏好、边界、愿望、承诺或照顾线索，不要强行生成 Schedule Item，返回 memory。",
@@ -105,6 +107,8 @@ const lowSignalSummaryTitleKeys = new Set(["做别的事", "日记", "今日", "
 const badGeneratedSummaryPattern = /值得记住的是|今天最清楚留下来(?:的)?是|今天最值得记住的是|今天的页面很轻|记录留下了\s*\d+\s*条现场线索|完成了\s*今天有没有开开心心|需要顺手带到明天的是\s*今天有没有开开心心|还没有明确完成项|没有明确贡献记录|没有太多具体安排|没有谁完成了什么|没有具体安排|信息不足|数据不足|记录较少|记录里|记录显示|没有显示|做了?别的事|随手记还比较少|先补上|小偏好|自动日总结|每日状态对象|doneUsers|pendingUsers|createdBy|updatedBy|statusUpdatedBy|actorId|targetUserId|status_by_user|source_counts/;
 const importantEventPattern = /答辩|考试|面试|汇报|演讲|提交|材料|ddl|deadline|截止|证件|面谈|复试|重要(?!的一件事)/i;
 const anniversaryPattern = /纪念日|周年|生日|情人节|七夕|圣诞|跨年|节日|纪念/i;
+const anniversaryEventCuePattern = /在一起|认识|相识|领证|结婚|恋爱|第一次|定情|告白|生日/i;
+const anniversaryPreparationActionPattern = /提醒|记得|别忘|提前|安排|准备|预案|庆祝|买|订|预约|预订|送|约|写信|写封信|写卡片|整理照片|整理相册|做相册|做礼物|拍照|订餐厅|吃饭|吃顿饭|看电影/i;
 const promisePattern = /答应|承诺|说好|我(?:会|来|去|周末|今晚|明天|下次|之后|以后)?[^。！？\n]{0,18}(?:帮你|给你|带你|陪你|替你|负责|弄|整理|修|买|订|处理|搞定)/;
 const wishPattern = /想(?:要|去|吃|买|看|体验|喝|逛|试|拍|一起)?|好想|以后想|以后要|想一起/;
 const preferencePattern = /喜欢|不喜欢|讨厌|雷区|边界|偏好|好闻|爱吃|不爱|不要太|别太|太吵|安静/;
@@ -261,6 +265,13 @@ function daysBetween(startDateText, endDateText) {
   const end = parseDate(normalizeDate(endDateText));
   if (!start || !end) return 0;
   return Math.floor((end.getTime() - start.getTime()) / 86400000);
+}
+
+function dayOfYear(dateText) {
+  const date = parseDate(normalizeDate(dateText, ""));
+  if (!date) return 0;
+  const yearStart = new Date(date.getFullYear(), 0, 1);
+  return Math.floor((date.getTime() - yearStart.getTime()) / 86400000) + 1;
 }
 
 function dateInRange(dateText, startText, endText) {
@@ -722,7 +733,7 @@ function inferLifeCardTags(payload = {}) {
   if (/工作|会议|项目|需求|客户|面试|汇报|周报/i.test(text)) tags.push("工作");
   if (/日料|餐厅|吃|饭|咖啡|奶茶|甜品/i.test(text)) tags.push("吃喝");
   if (/护手霜|礼物|买|下单|购物|购买/i.test(text)) tags.push("购买");
-  if (/纪念日|生日|周年|情人节|七夕/i.test(text)) tags.push("纪念");
+  if (/纪念日|生日|周年|情人节|七夕/i.test(text) || hasAnniversaryMemorySignal(text)) tags.push("纪念");
   if (/照片|相册|回忆|日记|故事/i.test(text)) tags.push("回忆");
   if (/承诺|答应|说好|帮你|带你|陪你|整理|处理/i.test(text)) tags.push("承诺");
   if (/开心|累|难过|生气|吵架|道歉|情绪/i.test(text)) tags.push("情绪");
@@ -750,7 +761,7 @@ function inferLifeCardMemoryKinds(payload = {}) {
   if (promisePattern.test(text)) kinds.push("promise");
   if (gratitudePattern.test(text)) kinds.push("gratitude");
   if (repairPattern.test(text)) kinds.push("repair");
-  if (anniversaryPattern.test(text)) kinds.push("anniversary");
+  if (anniversaryPattern.test(text) || hasAnniversaryMemorySignal(text)) kinds.push("anniversary");
   if (/照片|相册|回忆|日记|故事/.test(text)) kinds.push("memory");
   if (/照顾|很累|太累|鼓励|材料|证件|奶茶|晚饭|休息/.test(text)) kinds.push("care");
   if (/目标|未来|长期|成为|以后想|以后要/.test(text)) kinds.push("goal");
@@ -3087,17 +3098,33 @@ function isCompletedCaptureStatement(text) {
   return donePattern.test(raw) && !futurePattern.test(raw.replace(/(?:写完了|做完了|完成了|弄完了|搞定了|交了|交完了|提交了|处理完了|整理完了|买好了|订好了)/g, ""));
 }
 
+function hasAnniversaryMemorySignal(text) {
+  const raw = String(text || "").trim();
+  if (!raw) return false;
+  if (anniversaryPattern.test(raw)) return true;
+  return Boolean((extractExplicitDate(raw) || extractMonthDay(raw)) && anniversaryEventCuePattern.test(raw));
+}
+
+function isAnniversaryPreparationCapture(text) {
+  const raw = String(text || "").trim();
+  if (!raw || !hasAnniversaryMemorySignal(raw)) return false;
+  if (!anniversaryPreparationActionPattern.test(raw)) return false;
+  if (/^(?:纪念日|周年|生日)\s*[:：]\s*(?:\d{4}\s*(?:年|[./-])\s*)?\d{1,2}\s*(?:月|[./-])\s*\d{1,2}\s*日?\s*(?:是|=|＝|在)?\s*(?:在一起|认识|相识|领证|结婚|恋爱|第一次|生日)(?:的日子)?\s*[。.!！]?$/.test(raw)) {
+    return false;
+  }
+  return true;
+}
+
 function isAnniversaryMemoryCapture(text) {
   const raw = String(text || "").trim();
-  if (!raw || !anniversaryPattern.test(raw)) return false;
+  if (!raw || !hasAnniversaryMemorySignal(raw)) return false;
+  if (isAnniversaryPreparationCapture(raw)) return false;
+  const hasDate = Boolean(extractExplicitDate(raw) || extractMonthDay(raw));
   const describesDate = /(?:纪念日|周年|生日)\s*[:：]/.test(raw) ||
     /(?:纪念日|周年|生日).{0,30}(?:是|日期|日子|在)/.test(raw) ||
-    /(?:在一起|认识|第一次|领证|结婚).{0,30}(?:日子|纪念日|周年|日期)/.test(raw);
-  if (!describesDate) return false;
-
-  const hasAction = /提醒|记得|别忘|安排|准备|庆祝|买|订|预约|送|约|吃|看|去|见|带|写|做/.test(raw);
-  const hasMemoryCue = /是|日期|日子|在一起|认识|第一次|领证|结婚|生日/.test(raw);
-  return !hasAction || hasMemoryCue;
+    /(?:在一起|认识|相识|第一次|领证|结婚|恋爱|生日).{0,30}(?:日子|纪念日|周年|日期)/.test(raw) ||
+    (hasDate && anniversaryEventCuePattern.test(raw));
+  return describesDate;
 }
 
 function cleanAnniversaryTitle(text) {
@@ -3156,7 +3183,7 @@ function buildAnniversaryMemoryConfirmation(store, userId, payload, capture, tex
     routeDestinations: captureRouteDestinations,
     agentPrompt: analysisMode === "agent" ? captureAgentPrompt : "",
     confirmationText: "保存为纪念日长期记忆",
-    reason: "这句话是在定义一个重要日期，不是今天要完成的生活卡。",
+    reason: `这句话是在定义一个重要日期，不是今天要完成的生活卡。保存后可按 yearly 生成倒计时、今年第 ${dayOfYear(date) || "几"} 天、提前提醒和准备建议。`,
     confidence: 0.96,
     relatedItems: [],
   };
@@ -3225,7 +3252,7 @@ function analyzeRelatedScheduleItems(text, primaryTitle, base) {
       };
     })
     .filter((item) => item.title && item.title !== primaryKey)
-    .filter((item) => item.itemType !== "thing" || /记得|别忘|提醒|准备|带|订|预约|买|下单|处理|整理|帮/.test(item.detail))
+    .filter((item) => item.itemType !== "thing" || /记得|别忘|提醒|准备|带|订|预约|买|下单|处理|整理|写信|写封信|写卡片|照片|相册|餐厅|礼物|帮/.test(item.detail))
     .slice(0, 4);
 }
 
@@ -3434,7 +3461,9 @@ function buildCaptureAgentStructuredPrompt(facts) {
     "决策要求：",
     "- decision=schedule：用户明确说了要发生、要提醒、要买、要做、要约、要打卡、要养成习惯的事。",
     "- 查资料、搜视频、学习、练习、训练、复习、准备、处理、整理这类短动作也属于 schedule，默认落到今天的 thing/work。",
-    "- 纪念日/周年/生日的日期定义属于 memory，memoryKind=anniversary；只有明确要买、约、提醒、庆祝动作时才生成 schedule。",
+    "- 纪念日/周年/生日/在一起/相识/领证/结婚/第一次的日期定义属于 memory，memoryKind=anniversary；无年份日期用 selectedDate/currentDate 所在年份补齐，repeatRule=yearly，ownerId=shared，participants=双方。",
+    "- 纪念日记忆要在 reason/detail 中说明可用于倒计时、今年第几天、提前提醒和准备建议；不要因为“今天录入”把 date 设成今天。",
+    "- 只有明确要提醒、准备、买礼物、订餐厅、整理照片、写信、庆祝时才生成 schedule；这类 schedule 的 memoryKinds 必须包含 anniversary，礼物/吃饭/照片/信等准备动作要拆成 relatedItems。",
     "- decision=memory：偏好、心愿、承诺、照顾线索、纪念线索、感谢、修复、关系资料、长期目标。",
     "- decision=dailyStory：适合进入当天日总结素材，但不是未来行动或长期记忆。",
     "- decision=capture：只保留 raw，不需要任何生活卡或长期记忆。",
@@ -4281,21 +4310,26 @@ function buildAnniversaryInsights(store, selectedDate, captureInsights) {
     .filter((candidate) => candidate.daysUntil <= 14)
     .sort((a, b) => a.daysUntil - b.daysUntil)
     .slice(0, 2)
-    .map((candidate) => makeInsight(store, {
-      id: insightId("anniversary", candidate.id, candidate.date),
-      kind: "anniversary",
-      title: `提前预案：${shortText(candidate.title, 28)}`,
-      detail: `${candidate.daysUntil} 天后就是这件事。${wishDetail} 建议先定一个小预案：预约、礼物、回忆卡片各一项。`,
-      date: today,
-      segment: "allDay",
-      itemType: "reminder",
-      ownerId: "shared",
-      participants: getProfileIds(store),
-      sourceCaptureId: candidate.sourceCaptureId || "",
-      sourceText: candidate.detail || candidate.title,
-      priority: candidate.daysUntil <= 3 ? "high" : "normal",
-      score: 90 - candidate.daysUntil,
-    }));
+    .map((candidate) => {
+      const countdown = candidate.daysUntil === 0 ? "今天就是这件事" : `${candidate.daysUntil} 天后就是这件事`;
+      const ordinalDay = dayOfYear(candidate.date);
+      const dateMeta = ordinalDay ? `${candidate.date} 是这一年第 ${ordinalDay} 天` : candidate.date;
+      return makeInsight(store, {
+        id: insightId("anniversary", candidate.id, candidate.date),
+        kind: "anniversary",
+        title: `提前预案：${shortText(candidate.title, 28)}`,
+        detail: `${countdown}，${dateMeta}。${wishDetail} 建议先定一个小预案：预约、礼物、照片/信各一项；可以按 14/7/3/1 天提前提醒。`,
+        date: today,
+        segment: "allDay",
+        itemType: "reminder",
+        ownerId: "shared",
+        participants: getProfileIds(store),
+        sourceCaptureId: candidate.sourceCaptureId || "",
+        sourceText: candidate.detail || candidate.title,
+        priority: candidate.daysUntil <= 3 ? "high" : "normal",
+        score: 90 - candidate.daysUntil,
+      });
+    });
 }
 
 function buildOnThisDayInsights(store, userId, selectedDate) {

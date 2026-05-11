@@ -54,6 +54,41 @@ try {
   assert.equal(anniversary.memoryKind, "anniversary");
   assert.equal(anniversary.date, "2026-01-09");
   assert.equal(anniversary.title, "在一起的日子");
+  assert(anniversary.reason.includes("倒计时"));
+
+  const shortAnniversary = store.analyzeCapture("you", {
+    date: "2026-05-11",
+    text: "纪念日：1月9日在一起",
+    analysisMode: "template",
+  });
+  assert.equal(shortAnniversary.decision, "memory");
+  assert.equal(shortAnniversary.memoryKind, "anniversary");
+  assert.equal(shortAnniversary.date, "2026-01-09");
+  assert.equal(shortAnniversary.ownerId, "shared");
+  assert.equal(shortAnniversary.repeatRule, "yearly");
+  assert.equal(shortAnniversary.title, "在一起");
+
+  const implicitAnniversary = store.analyzeCapture("you", {
+    date: "2026-05-11",
+    text: "1月9日是在一起的日子",
+    analysisMode: "template",
+  });
+  assert.equal(implicitAnniversary.decision, "memory");
+  assert.equal(implicitAnniversary.memoryKind, "anniversary");
+  assert.equal(implicitAnniversary.date, "2026-01-09");
+  assert.equal(implicitAnniversary.title, "在一起的日子");
+
+  const anniversaryPrep = store.analyzeCapture("you", {
+    date: "2026-01-01",
+    text: "1月9日准备在一起纪念日：买礼物，订餐厅，整理照片，写信",
+    analysisMode: "template",
+  });
+  assert.equal(anniversaryPrep.decision, "schedule");
+  assert.equal(anniversaryPrep.date, "2026-01-09");
+  assert(anniversaryPrep.memoryKinds.includes("anniversary"));
+  assert(anniversaryPrep.relatedItems.some((item) => item.title === "订餐厅"));
+  assert(anniversaryPrep.relatedItems.some((item) => item.title === "整理照片"));
+  assert(anniversaryPrep.relatedItems.some((item) => item.title === "写信"));
 
   const noise = store.analyzeCapture("you", {
     date: "2026-05-12",
