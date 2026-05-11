@@ -1674,6 +1674,21 @@ function syncArchiveWithCompletion(item, userId) {
   }
 }
 
+function resetLifeCardCompletion(item) {
+  const participants = Array.isArray(item.participants) ? item.participants : [];
+  const steps = normalizeLifeCardSteps(item.steps, participants, item.title);
+  if (steps.length) {
+    item.steps = steps.map((step) => ({ ...step, status: "todo" }));
+  }
+  item.statusByUser = Object.fromEntries(participants.map((id) => [id, "todo"]));
+  item.statusUpdatedBy = {};
+  item.statusUpdatedAt = {};
+  const timeBlocks = normalizeLifeCardTimeBlocks(item.timeBlocks, item.steps || steps);
+  if (timeBlocks.length) {
+    item.timeBlocks = timeBlocks.map((block) => ({ ...block, status: "planned" }));
+  }
+}
+
 function markStatusOperation(item, targetUserId, userId, timestamp = nowIso()) {
   if (!targetUserId || !userId) return;
   item.statusUpdatedBy = {
@@ -6274,6 +6289,7 @@ function archiveScheduleItem(userId, payload) {
     if (restoring) {
       item.archivedAt = "";
       item.archivedBy = "";
+      resetLifeCardCompletion(item);
     } else {
       item.archivedAt = timestamp;
       item.archivedBy = userId;
@@ -6404,6 +6420,7 @@ function archiveTodoItem(userId, payload) {
     if (restoring) {
       item.archivedAt = "";
       item.archivedBy = "";
+      resetLifeCardCompletion(item);
     } else {
       item.archivedAt = timestamp;
       item.archivedBy = userId;

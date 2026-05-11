@@ -135,6 +135,39 @@ try {
   }).result;
   assert.equal(remembered.memory.kind, "purchase");
   assert(remembered.card.memoryLinks.some((item) => item.id === remembered.memory.id));
+
+  const resetTodo = store.upsertTodoItem("you", {
+    date: "2026-05-12",
+    title: "恢复测试",
+    ownerId: "shared",
+    participants: ["you", "partner"],
+    steps: [
+      { id: "reset-step-1", title: "大猫确认", ownerId: "you" },
+      { id: "reset-step-2", title: "小猫确认", ownerId: "partner" },
+    ],
+  }).result;
+  store.toggleLifeCardStep("you", {
+    sourceType: "todo",
+    id: resetTodo.id,
+    stepId: "reset-step-1",
+    targetUserId: "you",
+  });
+  store.toggleLifeCardStep("partner", {
+    sourceType: "todo",
+    id: resetTodo.id,
+    stepId: "reset-step-2",
+    targetUserId: "partner",
+  });
+  const resetStateDone = store.getState("you", { date: "2026-05-12" });
+  const resetDoneCard = resetStateDone.scheduleItemCards.find((card) => card.sourceId === resetTodo.id);
+  assert(resetDoneCard.archivedAt);
+  assert(resetDoneCard.steps.every((step) => step.status === "done"));
+
+  const restored = store.archiveTodoItem("you", { id: resetTodo.id }).result;
+  assert.equal(restored.archivedAt, "");
+  assert(restored.steps.every((step) => step.status === "todo"));
+  assert.deepEqual(restored.statusByUser, { you: "todo", partner: "todo" });
+  assert.deepEqual(restored.statusUpdatedBy, {});
 } finally {
   fs.rmSync(tempRoot, { recursive: true, force: true });
 }

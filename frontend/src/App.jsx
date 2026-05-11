@@ -875,6 +875,14 @@ function isArchivedCard(card) {
   return Boolean(card?.archivedAt);
 }
 
+function isDailyCheckinCard(card) {
+  const tags = Array.isArray(card?.tags) ? card.tags : [];
+  return Boolean(
+    card?.itemType === "checkin" &&
+    (card?.repeatRule === "daily@03:00" || tags.includes("daily-checkin-card") || card?.title === "一起打卡！")
+  );
+}
+
 function canCurrentUserCompleteCard(card, currentUser) {
   const userId = currentUser?.id || "";
   if (!card || !userId) return false;
@@ -1198,13 +1206,16 @@ const detailBuilders = {
     const { targetUserId, isProxy, targetName } = proxyActionMeta(card, currentUser, profiles);
     const targetDone = targetUserId ? isCardDoneForUser(card, targetUserId) : isDone;
     const timerActive = Boolean(card.timeTracking?.currentUserActive);
-    const profileById = new Map((profiles || []).map((profile) => [profile.id, profile]));
+    const peerCheckinCards = card.sourceType === "checkin"
+      ? (Array.isArray(context.cards) ? context.cards : [])
+          .filter((item) => item.sourceType === "checkin" && item.date === card.date)
+      : [];
     const rawSteps = card.sourceType === "checkin"
-      ? participants.map((id) => ({
-          id: `checkin-${id}`,
-          title: profileById.get(id)?.displayName || ownerLabel(id, currentUser),
-          ownerId: id,
-          status: card.statusByUser?.[id] === "done" ? "done" : "todo",
+      ? (peerCheckinCards.length ? peerCheckinCards : [card]).map((item) => ({
+          id: `checkin-item-${item.sourceId || item.id}`,
+          title: displayCardTitle(item.title || item.sourceCaptureSummary || "打卡项"),
+          ownerId: "",
+          status: item.completion?.allDone ? "done" : "todo",
         }))
       : (Array.isArray(card.steps) ? card.steps : []);
     const steps = rawSteps
@@ -2070,7 +2081,7 @@ export function App() {
   return (
     <>
       <div className="app-shell">
-        <TopNav page={page} navigate={navigate} profiles={profiles} currentUser={currentUser} logout={logout} />
+        <TopNav page={page} navigate={navigate} profiles={profiles} currentUser={currentUser} now={now} logout={logout} />
         <main className="workspace">
           {showDeepNightNotice ? <NightNoticeBanner notice={catNotice} onOpen={() => navigate("cat-note")} /> : null}
           {page === "dashboard" && (
@@ -2215,7 +2226,7 @@ function LoginScreen({ bootstrap, profiles, login, setLogin, password, setPasswo
   );
 }
 
-function TopNav({ page, navigate, profiles, currentUser, logout }) {
+function TopNav({ page, navigate, profiles, currentUser, now, logout }) {
   const items = [
     { id: "dashboard", label: "猫猫日记本" },
     { id: "month", label: "月历" },
@@ -2226,10 +2237,13 @@ function TopNav({ page, navigate, profiles, currentUser, logout }) {
   ];
   return (
     <header className="topbar">
-      <button className="brand-mark" type="button" onClick={() => navigate("dashboard")}>
-        <AvatarPair profiles={profiles} className="avatar-pair-brand brand-cats" />
-        <span>猫猫日记本</span>
-      </button>
+      <div className="brand-cluster">
+        <button className="brand-mark" type="button" onClick={() => navigate("dashboard")}>
+          <AvatarPair profiles={profiles} className="avatar-pair-brand brand-cats" />
+          <span>猫猫日记本</span>
+        </button>
+        <HomeTime now={now} />
+      </div>
       <nav className="nav-tabs" aria-label="主导航">
         {items.map((item) => (
           <button
@@ -2291,7 +2305,9 @@ function Dashboard(props) {
     <section className="dashboard">
       <section className="home-paper">
         <div className="home-context-strip">
-          <DateRail selectedDate={selectedDate} chooseDate={chooseDate} />
+          <div className="home-date-row">
+            <DateRail selectedDate={selectedDate} chooseDate={chooseDate} />
+          </div>
           <StoryDayContext dayContext={data.dayContext} calendarContext={data.calendarContext} className="home-day-context" />
         </div>
         <HomeFocusNote focus={data.homeFocus} data={data} profiles={profiles} onOpen={openDetail} />
@@ -2337,6 +2353,14 @@ function Dashboard(props) {
         chooseDate={chooseDate}
       />
     </section>
+  );
+}
+
+function HomeTime({ now }) {
+  return (
+    <time className="home-time" dateTime={now?.toISOString?.() || ""} aria-label="当前时间">
+      <strong>{clockLabel(now)}</strong>
+    </time>
   );
 }
 
@@ -3535,6 +3559,7 @@ function LifeCard({ card, profiles, currentUser, compact = false, toggleCard, ar
   const isArchived = isArchivedCard(card);
   const completionTarget = completionTargetUserId(card, currentUser);
   const isLegacyCheckin = card.sourceType === "checkin";
+  const isDailyCheckin = isDailyCheckinCard(card);
   const timeNote = primaryTimeLabel(card);
   const ageNotice = lifeCardAgeNotice(card);
   const profileById = new Map((profiles || []).map((profile) => [profile.id, profile]));
@@ -3554,7 +3579,7 @@ function LifeCard({ card, profiles, currentUser, compact = false, toggleCard, ar
   const stepDone = Number.isFinite(progressDone) && progressDone >= 0 ? progressDone : allSteps.filter((step) => step.status === "done").length;
   const compactStepTitle = isLegacyCheckin ? "" : pendingStep?.title || (stepTotal ? "都完成了" : "");
   const statusByUser = card.statusByUser || {};
-  const checkinPeople = isLegacyCheckin
+  const checkinPeople = isLegacyCheckin || isDailyCheckin
     ? participants.map((id) => {
         const profile = profileById.get(id);
         const done = statusByUser[id] === "done";
@@ -3562,7 +3587,6 @@ function LifeCard({ card, profiles, currentUser, compact = false, toggleCard, ar
           id,
           done,
           label: profile?.displayName || ownerLabel(id, currentUser),
-          initials: profile?.initials || (profile?.displayName || ownerLabel(id, currentUser)).slice(0, 1),
           color: profileColor(profiles, id, id === currentUser?.id ? avatarColor(currentUser) : "#24b99a"),
         };
       })
@@ -3633,7 +3657,7 @@ function LifeCard({ card, profiles, currentUser, compact = false, toggleCard, ar
   const completeLabel = isProxy ? `帮${targetName}完成` : "完成";
   const undoLabel = isProxy ? `取消${targetName}` : "取消";
   const targetDone = completionTarget ? isCardDoneForUser(card, completionTarget) : isDone;
-  const participantStates = !isLegacyCheckin && isGroupCard
+  const participantStates = !isLegacyCheckin && !isDailyCheckin && isGroupCard
     ? participants.map((id) => {
         const profile = profileById.get(id);
         const done = isCardDoneForUser(card, id);
@@ -3687,10 +3711,10 @@ function LifeCard({ card, profiles, currentUser, compact = false, toggleCard, ar
             <strong>{title}</strong>
           </div>
         </button>
-        {!compact && isLegacyCheckin && checkinPeople.length ? (
+        {!compact && checkinPeople.length ? (
           <div className="card-checkin-board" aria-label="共同打卡完成情况">
             {checkinPeople.map((person) => {
-              const disabled = readOnly || (person.id !== currentUser?.id && person.id !== completionTarget);
+              const disabled = readOnly || isDailyCheckin || (person.id !== currentUser?.id && person.id !== completionTarget);
               return (
                 <button
                   key={person.id}
@@ -3702,9 +3726,8 @@ function LifeCard({ card, profiles, currentUser, compact = false, toggleCard, ar
                   onClick={(event) => toggleStepAction(event, { ownerId: person.id })}
                   disabled={disabled}
                 >
-                  <em>{person.initials}</em>
                   <span>{person.label}</span>
-                  <b>{person.done ? "已打卡" : "未打卡"}</b>
+                  <b aria-hidden="true"><Icon name={person.done ? "check" : "circle"} /></b>
                 </button>
               );
             })}
