@@ -3245,9 +3245,10 @@ function analyzeCapture(userId, payload = {}) {
   const anniversaryMemory = buildAnniversaryMemoryConfirmation(store, userId, payload, capture, text, selectedDate, ownerId, analysisMode);
   if (anniversaryMemory) return anniversaryMemory;
   const templateMatched = analysisMode === "template" ? isTemplateScheduleMatch(text) : true;
+  const inferredDecision = inferCaptureDecision(text);
   const decision = analysisMode === "template"
-    ? "schedule"
-    : inferCaptureDecision(text);
+    ? (templateMatched ? "schedule" : inferredDecision)
+    : inferredDecision;
   const clauses = splitCaptureClauses(text);
   const scheduleClause = templateMatched
     ? (clauses.find((part) => isTemplateScheduleMatch(part)) || clauses[0] || text)
@@ -3687,6 +3688,45 @@ function normalizeCaptureAgentConfirmation(store, userId, payload, capture, text
   };
 }
 
+function buildCaptureAgentFallbackConfirmation(templateDraft, error) {
+  const agentError = sanitizeText(error?.message || error || "", 500);
+  const fallbackDecision = templateDraft?.isDefaultDraft
+    ? "capture"
+    : normalizeCaptureDecision(templateDraft?.decision, "capture");
+  const shouldKeepScheduleFields = fallbackDecision === "schedule";
+  const title = sanitizeText(templateDraft?.title || shortText(templateDraft?.text, 80) || "随手记", 120);
+  return {
+    ...templateDraft,
+    decision: fallbackDecision,
+    itemType: normalizeScheduleItemType(templateDraft?.itemType, "thing"),
+    memoryKind: normalizeMemoryKind(templateDraft?.memoryKind),
+    title,
+    detail: shouldKeepScheduleFields ? sanitizeText(templateDraft?.detail, 800) : "",
+    repeatRule: shouldKeepScheduleFields ? sanitizeText(templateDraft?.repeatRule, 120) : "",
+    plannedAt: shouldKeepScheduleFields ? normalizeDateTime(templateDraft?.plannedAt) : "",
+    dueAt: shouldKeepScheduleFields ? normalizeDateTime(templateDraft?.dueAt) : "",
+    durationMin: shouldKeepScheduleFields ? normalizeDurationMin(templateDraft?.durationMin, 0) : 0,
+    steps: shouldKeepScheduleFields ? normalizeLifeCardSteps(templateDraft?.steps, templateDraft?.participants, title) : [],
+    timeBlocks: shouldKeepScheduleFields ? normalizeLifeCardTimeBlocks(templateDraft?.timeBlocks, templateDraft?.steps) : [],
+    relatedItems: shouldKeepScheduleFields && Array.isArray(templateDraft?.relatedItems) ? templateDraft.relatedItems : [],
+    tags: fallbackDecision === "capture" ? [] : normalizeLifeCardTags(templateDraft?.tags, templateDraft),
+    memoryKinds: fallbackDecision === "capture"
+      ? []
+      : fallbackDecision === "memory"
+      ? normalizeLifeCardMemoryKinds(templateDraft?.memoryKinds || templateDraft?.memoryKind, templateDraft)
+      : normalizeLifeCardMemoryKinds(templateDraft?.memoryKinds, templateDraft),
+    analysisMode: "fallback",
+    analyzer: "template-fallback",
+    agentPrompt: captureAgentPrompt,
+    agentError,
+    confirmationText: fallbackDecision === "capture" ? "先保存为随手记" : "先按本地规则生成轻确认",
+    reason: agentError
+      ? `Agent 分析暂时不可用，已使用本地规则兜底：${shortText(agentError, 180)}`
+      : "Agent 分析暂时不可用，已使用本地规则兜底。",
+    confidence: fallbackDecision === "capture" ? 0.35 : 0.55,
+  };
+}
+
 function recordCaptureAnalysis(userId, confirmation) {
   const captureId = sanitizeText(confirmation?.sourceCaptureId || confirmation?.captureId, 80);
   if (!captureId) return null;
@@ -3744,11 +3784,18 @@ async function analyzeCaptureWithAgent(userId, payload = {}) {
     analysisMode: "template",
   });
   const facts = buildCaptureAgentFacts(store, userId, payload, capture, text, selectedDate, ownerId, templateDraft);
-  const agentOutput = await runCaptureAgentCodex(facts, {
-    imagePaths: captureImagePaths(capture),
-    model: payload.model,
-    timeoutMs: payload.timeoutMs,
-  });
+  let agentOutput = null;
+  try {
+    agentOutput = await runCaptureAgentCodex(facts, {
+      imagePaths: captureImagePaths(capture),
+      model: payload.model,
+      timeoutMs: payload.timeoutMs,
+    });
+  } catch (error) {
+    const fallback = buildCaptureAgentFallbackConfirmation(templateDraft, error);
+    recordCaptureAnalysis(userId, fallback);
+    return fallback;
+  }
   const confirmation = normalizeCaptureAgentConfirmation(store, userId, payload, capture, text, agentOutput);
   recordCaptureAnalysis(userId, confirmation);
   return confirmation;

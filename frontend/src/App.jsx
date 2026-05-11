@@ -664,7 +664,8 @@ function summaryLine(card) {
 
 function primaryTimeLabel(card) {
   const planned = formatCardPlannedLabel(card);
-  return planned || card.timeLabel || repeatRuleLabel(card.repeatRule) || segmentLabels[card.segment] || "全天";
+  const due = formatCardDueLabel(card);
+  return planned || due || card.timeLabel || repeatRuleLabel(card.repeatRule) || segmentLabels[card.segment] || "全天";
 }
 
 function formatCardPlannedLabel(card) {
@@ -673,6 +674,14 @@ function formatCardPlannedLabel(card) {
   if (!match) return "";
   if (match[1] === card?.date) return `${match[2]}:${match[3]}`;
   return formatDateTimeShort(raw);
+}
+
+function formatCardDueLabel(card) {
+  const raw = String(card?.dueAt || "");
+  const match = raw.match(/^(\d{4}-\d{2}-\d{2})T(\d{2}):(\d{2})/);
+  if (!match) return "";
+  const label = match[1] === card?.date ? `${match[2]}:${match[3]}` : formatDateTimeShort(raw);
+  return label ? `截止 ${label}` : "";
 }
 
 function formatDateTimeShort(value) {

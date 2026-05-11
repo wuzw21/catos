@@ -55,6 +55,14 @@ try {
   assert.equal(anniversary.date, "2026-01-09");
   assert.equal(anniversary.title, "在一起的日子");
 
+  const noise = store.analyzeCapture("you", {
+    date: "2026-05-12",
+    text: "1231231",
+    analysisMode: "template",
+  });
+  assert.equal(noise.decision, "capture");
+  assert.equal(noise.isDefaultDraft, true);
+
   const imageOnlyCapture = store.addCapture("you", {
     date: "2026-05-10",
     text: "",
