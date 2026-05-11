@@ -15,5 +15,18 @@ export default defineConfig({
   build: {
     outDir: "../web",
     emptyOutDir: false,
+    rollupOptions: {
+      output: {
+        manualChunks(id) {
+          if (!id.includes("node_modules")) return undefined;
+          if (id.includes("react-hook-form") || id.includes("@hookform") || id.includes("zod")) return "forms";
+          if (id.includes("@radix-ui")) return "radix";
+          if (id.includes("react-day-picker") || id.includes("date-fns")) return "calendar";
+          if (id.includes("lucide-react")) return "icons";
+          if (id.includes("sonner")) return "feedback";
+          return "vendor";
+        },
+      },
+    },
   },
 });

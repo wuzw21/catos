@@ -1,4 +1,51 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import * as Dialog from "@radix-ui/react-dialog";
+import * as Popover from "@radix-ui/react-popover";
+import * as Select from "@radix-ui/react-select";
+import * as Tabs from "@radix-ui/react-tabs";
+import * as Tooltip from "@radix-ui/react-tooltip";
+import { DayPicker } from "react-day-picker";
+import { Toaster, toast } from "sonner";
+import { useFieldArray, useForm } from "react-hook-form";
+import { zodResolver } from "@hookform/resolvers/zod";
+import { z } from "zod";
+import {
+  Archive,
+  Bookmark,
+  Calendar,
+  Camera,
+  Check,
+  ChevronDown,
+  ChevronLeft,
+  ChevronRight,
+  ChevronUp,
+  Circle,
+  Clock,
+  Cloud,
+  Ellipsis,
+  Focus,
+  GripVertical,
+  Image,
+  LayoutGrid,
+  List,
+  LogOut,
+  Moon,
+  Pencil,
+  Plus,
+  RefreshCw,
+  Send,
+  Settings,
+  Sparkles,
+  Square,
+  Star,
+  Sun,
+  Trash2,
+  Undo2,
+  User,
+  Users,
+  X,
+} from "lucide-react";
+import "react-day-picker/style.css";
 
 const itemTypeLabels = {
   thing: "事情",
@@ -11,6 +58,50 @@ const itemTypeLabels = {
 };
 
 const itemTypeOptions = Object.entries(itemTypeLabels);
+const itemTypeIds = Object.keys(itemTypeLabels);
+const priorityOptions = [
+  { id: "high", label: "重要", hint: "先冒出来", icon: "star" },
+  { id: "normal", label: "普通", hint: "按时间排", icon: "circle" },
+  { id: "low", label: "轻松", hint: "不催", icon: "cloud" },
+];
+const avatarOptions = ["pink-cat", "violet-cat", "mint-cat", "yellow-cat", "custom"];
+const editorStepSchema = z.object({
+  id: z.string().optional().default(""),
+  title: z.string().default(""),
+  ownerId: z.string().optional().default(""),
+  estimateMin: z.coerce.number().min(0, "分钟不能小于 0").optional().default(0),
+  status: z.enum(["todo", "done"]).optional().default("todo"),
+});
+const cardEditorSchema = z.object({
+  title: z.string().trim().min(1, "标题不能为空").max(120, "标题太长了"),
+  detail: z.string().optional().default(""),
+  date: z.string().min(1, "需要日期"),
+  itemType: z.string().refine((value) => itemTypeIds.includes(value), "类型不对"),
+  ownerId: z.string().min(1, "需要归属"),
+  priority: z.enum(["high", "normal", "low"]).default("normal"),
+  segment: z.string().optional().default("allDay"),
+  repeatRule: z.string().optional().default(""),
+  plannedAt: z.string().optional().default(""),
+  dueAt: z.string().optional().default(""),
+  durationMin: z.coerce.number().min(0, "预计不能小于 0").optional().default(0),
+  tags: z.string().max(240, "标签太长了").optional().default(""),
+  steps: z.array(editorStepSchema).default([]),
+});
+const personalPageSchema = z.object({
+  userId: z.string().optional().default(""),
+  identityGoal: z.string().max(1200, "内容太长了").optional().default(""),
+  likes: z.string().max(1200, "内容太长了").optional().default(""),
+  notes: z.string().max(1600, "内容太长了").optional().default(""),
+  longTermGoal: z.string().max(1200, "内容太长了").optional().default(""),
+  updatedAt: z.string().optional().default(""),
+  updatedBy: z.string().optional().default(""),
+}).passthrough();
+const profileFormSchema = z.object({
+  displayName: z.string().trim().min(1, "昵称不能为空").max(16, "昵称太长了"),
+  initials: z.string().trim().min(1, "短标记不能为空").max(2, "短标记最多 2 个字"),
+  color: z.string().regex(/^#[0-9a-fA-F]{6}$/, "颜色格式不对"),
+  avatar: z.string().refine((value) => avatarOptions.includes(value), "头像不对"),
+});
 const memoryLaneLabels = {
   profile: "资料",
   taste: "偏好",
@@ -362,8 +453,22 @@ function shortDate(value) {
   return value ? value.slice(5).replace("-", "/") : "";
 }
 
+function detailDateLabel(value) {
+  const text = String(value || "").trim();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(text)) return "";
+  return text;
+}
+
 function cx(...parts) {
   return parts.filter(Boolean).join(" ");
+}
+
+function reorder(list, startIndex, endIndex) {
+  const next = Array.from(list || []);
+  const [removed] = next.splice(startIndex, 1);
+  if (!removed) return next;
+  next.splice(endIndex, 0, removed);
+  return next;
 }
 
 async function readFileAsDataUrl(file) {
@@ -375,213 +480,108 @@ async function readFileAsDataUrl(file) {
   });
 }
 
-function iconPath(name) {
-  const icons = {
-    check: <path d="M20 7 10 17l-4-4" />,
-    undo: (
-      <>
-        <path d="M8 8H4v4" />
-        <path d="M4 12a8 8 0 1 0 2.2-5.4" />
-      </>
-    ),
-    edit: (
-      <>
-        <path d="M5 19h4" />
-        <path d="m13.5 5.5 5 5L8 21H3v-5Z" />
-      </>
-    ),
-    trash: (
-      <>
-        <path d="M5 7h14" />
-        <path d="M9 7V5h6v2" />
-        <path d="M8 7.5V19h8V7.5" />
-      </>
-    ),
-    plus: (
-      <>
-        <path d="M12 5v14" />
-        <path d="M5 12h14" />
-      </>
-    ),
-    grip: (
-      <>
-        <path d="M9 6h.01M15 6h.01" />
-        <path d="M9 12h.01M15 12h.01" />
-        <path d="M9 18h.01M15 18h.01" />
-      </>
-    ),
-    sparkle: (
-      <>
-        <path d="M12 3.5l1.6 4.4L18 9.5l-4.4 1.6L12 15.5l-1.6-4.4L6 9.5l4.4-1.6Z" />
-        <path d="M18 13l.9 2.6L21.5 16l-2.6.9L18 19.5l-.9-2.6L14.5 16l2.6-.4Z" />
-      </>
-    ),
-    bookmark: <path d="M7 5h10v14l-5-3-5 3Z" />,
-    calendar: (
-      <>
-        <rect x="4" y="6" width="16" height="14" rx="3" />
-        <path d="M8 4v4M16 4v4M4 10h16" />
-      </>
-    ),
-    chevronLeft: <path d="m14 6-6 6 6 6" />,
-    chevronRight: <path d="m10 6 6 6-6 6" />,
-    chevronDown: <path d="m6 9 6 6 6-6" />,
-    chevronUp: <path d="m18 15-6-6-6 6" />,
-    rows: (
-      <>
-        <path d="M5 7h14" />
-        <path d="M5 12h14" />
-        <path d="M5 17h14" />
-      </>
-    ),
-    cards: (
-      <>
-        <rect x="5" y="5" width="6" height="6" rx="1.5" />
-        <rect x="13" y="5" width="6" height="6" rx="1.5" />
-        <rect x="5" y="13" width="6" height="6" rx="1.5" />
-        <rect x="13" y="13" width="6" height="6" rx="1.5" />
-      </>
-    ),
-    focus: (
-      <>
-        <path d="M12 4v3" />
-        <path d="M12 17v3" />
-        <path d="M4 12h3" />
-        <path d="M17 12h3" />
-        <circle cx="12" cy="12" r="4" />
-      </>
-    ),
-    moon: (
-      <>
-        <path d="M19 14.4A7.6 7.6 0 0 1 9.6 5 8 8 0 1 0 19 14.4Z" />
-        <path d="M16 4.5h.01M20 8h.01" />
-      </>
-    ),
-    clock: (
-      <>
-        <circle cx="12" cy="12" r="8" />
-        <path d="M12 8v5l3 2" />
-      </>
-    ),
-    stop: <rect x="7" y="7" width="10" height="10" rx="2" />,
-    more: (
-      <>
-        <circle cx="6" cy="12" r="1.2" />
-        <circle cx="12" cy="12" r="1.2" />
-        <circle cx="18" cy="12" r="1.2" />
-      </>
-    ),
-    cloud: (
-      <>
-        <path d="M7 18h10a4 4 0 0 0 .8-7.9A6 6 0 0 0 6.3 9 4.5 4.5 0 0 0 7 18Z" />
-      </>
-    ),
-    sun: (
-      <>
-        <circle cx="12" cy="12" r="4" />
-        <path d="M12 2.8v2.1" />
-        <path d="M12 19.1v2.1" />
-        <path d="m4.2 4.2 1.5 1.5" />
-        <path d="m18.3 18.3 1.5 1.5" />
-        <path d="M2.8 12h2.1" />
-        <path d="M19.1 12h2.1" />
-        <path d="m4.2 19.8 1.5-1.5" />
-        <path d="m18.3 5.7 1.5-1.5" />
-      </>
-    ),
-    user: (
-      <>
-        <circle cx="12" cy="8" r="3.5" />
-        <path d="M5.5 20a6.5 6.5 0 0 1 13 0" />
-      </>
-    ),
-    users: (
-      <>
-        <circle cx="9" cy="8" r="3" />
-        <path d="M3.8 19a5.2 5.2 0 0 1 10.4 0" />
-        <path d="M15.5 6.5a3 3 0 0 1 0 5.8" />
-        <path d="M15.5 14a5 5 0 0 1 4.7 5" />
-      </>
-    ),
-    archive: (
-      <>
-        <path d="M4 7h16" />
-        <path d="M6 7v12h12V7" />
-        <path d="M9 11h6" />
-        <path d="m12 15 3-3M12 15l-3-3" />
-      </>
-    ),
-    star: <path d="m12 4 2.3 4.7 5.2.8-3.8 3.7.9 5.2-4.6-2.5-4.6 2.5.9-5.2-3.8-3.7 5.2-.8Z" />,
-    circle: <circle cx="12" cy="12" r="7" />,
-    image: (
-      <>
-        <rect x="4" y="5" width="16" height="14" rx="3" />
-        <path d="m7 15 3-3 3 3 2-2 2 2" />
-      </>
-    ),
-    settings: (
-      <>
-        <path d="M12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8Z" />
-        <path d="M4 12h2M18 12h2M12 4v2M12 18v2M6.6 6.6 8 8M16 16l1.4 1.4M17.4 6.6 16 8M8 16l-1.4 1.4" />
-      </>
-    ),
-    refresh: (
-      <>
-        <path d="M18.5 7.5A8 8 0 0 0 6.7 6.7" />
-        <path d="M5.5 6.5v4h4" />
-        <path d="M5.5 16.5A8 8 0 0 0 17.3 17.3" />
-        <path d="M18.5 17.5v-4h-4" />
-      </>
-    ),
-    send: (
-      <>
-        <path d="M21 3 10 14" />
-        <path d="m21 3-7 18-4-7-7-4Z" />
-      </>
-    ),
-    logout: (
-      <>
-        <path d="M10 5H6a1 1 0 0 0-1 1v12a1 1 0 0 0 1 1h4" />
-        <path d="M14 9l4 3-4 3" />
-        <path d="M18 12H10" />
-      </>
-    ),
-    x: (
-      <>
-        <path d="m6 6 12 12" />
-        <path d="m18 6-12 12" />
-      </>
-    ),
-    camera: (
-      <>
-        <path d="M5 8h4l2-2h2l2 2h4a2 2 0 0 1 2 2v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-7a2 2 0 0 1 2-2Z" />
-        <circle cx="12" cy="13" r="3" />
-      </>
-    ),
-  };
-  return icons[name] || icons.check;
-}
+const icons = {
+  archive: Archive,
+  bookmark: Bookmark,
+  calendar: Calendar,
+  camera: Camera,
+  cards: LayoutGrid,
+  check: Check,
+  chevronDown: ChevronDown,
+  chevronLeft: ChevronLeft,
+  chevronRight: ChevronRight,
+  chevronUp: ChevronUp,
+  circle: Circle,
+  clock: Clock,
+  cloud: Cloud,
+  edit: Pencil,
+  focus: Focus,
+  grip: GripVertical,
+  image: Image,
+  logout: LogOut,
+  moon: Moon,
+  more: Ellipsis,
+  plus: Plus,
+  refresh: RefreshCw,
+  rows: List,
+  send: Send,
+  settings: Settings,
+  sparkle: Sparkles,
+  star: Star,
+  stop: Square,
+  sun: Sun,
+  trash: Trash2,
+  undo: Undo2,
+  user: User,
+  users: Users,
+  x: X,
+};
 
-function Icon({ name }) {
-  return (
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-      {iconPath(name)}
-    </svg>
-  );
+function Icon({ name, ...props }) {
+  const Component = icons[name] || Check;
+  return <Component aria-hidden="true" strokeWidth={1.9} {...props} />;
 }
 
 function IconButton({ icon, label, active, danger, primary, type = "button", onClick, disabled, className = "" }) {
-  return (
+  const button = (
     <button
       className={cx("icon-button", active && "is-active", primary && "is-primary", danger && "is-danger", className)}
       type={type}
       aria-label={label}
-      title={label}
       onClick={onClick}
       disabled={disabled}
     >
       <Icon name={icon} />
     </button>
+  );
+  if (disabled) return button;
+  return (
+    <Tooltip.Provider delayDuration={220}>
+      <Tooltip.Root>
+        <Tooltip.Trigger asChild>{button}</Tooltip.Trigger>
+        <Tooltip.Portal>
+          <Tooltip.Content className="tooltip-content" sideOffset={7}>
+            {label}
+            <Tooltip.Arrow className="tooltip-arrow" />
+          </Tooltip.Content>
+        </Tooltip.Portal>
+      </Tooltip.Root>
+    </Tooltip.Provider>
+  );
+}
+
+const EMPTY_SELECT_VALUE = "__peos_empty__";
+
+function EditorSelect({ value, onValueChange, options, disabled, ariaLabel, placeholder = "选择" }) {
+  const selected = options.find((option) => option.id === value);
+  const displayValue = value === "" ? EMPTY_SELECT_VALUE : value ?? "";
+  return (
+    <Select.Root
+      value={displayValue}
+      onValueChange={(nextValue) => onValueChange(nextValue === EMPTY_SELECT_VALUE ? "" : nextValue)}
+      disabled={disabled}
+    >
+      <Select.Trigger className="editor-select-trigger" aria-label={ariaLabel}>
+        <Select.Value placeholder={selected?.label || placeholder} />
+        <Select.Icon asChild>
+          <Icon name="chevronDown" />
+        </Select.Icon>
+      </Select.Trigger>
+      <Select.Portal>
+        <Select.Content className="editor-select-content" position="popper" sideOffset={6}>
+          <Select.Viewport className="editor-select-viewport">
+            {options.map((option) => (
+              <Select.Item className="editor-select-item" key={option.id || "shared"} value={option.id === "" ? EMPTY_SELECT_VALUE : option.id}>
+                <Select.ItemText>{option.label}</Select.ItemText>
+                <Select.ItemIndicator>
+                  <Icon name="check" />
+                </Select.ItemIndicator>
+              </Select.Item>
+            ))}
+          </Select.Viewport>
+        </Select.Content>
+      </Select.Portal>
+    </Select.Root>
   );
 }
 
@@ -835,6 +835,20 @@ function shortText(value, max = 52) {
   return `${text.slice(0, Math.max(0, max - 1))}…`;
 }
 
+function normalizeEditableTags(value, maxItems = 12) {
+  const parts = Array.isArray(value)
+    ? value
+    : String(value || "").split(/[#,，、\s]+/);
+  return [...new Set(parts
+    .map((part) => String(part || "").replace(/^#+/, "").trim())
+    .filter(Boolean)
+  )].slice(0, maxItems);
+}
+
+function tagsInputValue(tags) {
+  return normalizeEditableTags(tags).join(" ");
+}
+
 function profileColor(profiles, id, fallback = "#ff6fa8") {
   return profiles.find((profile) => profile.id === id)?.color || fallback;
 }
@@ -845,6 +859,71 @@ function isCompletedCard(card) {
 
 function isArchivedCard(card) {
   return Boolean(card?.archivedAt);
+}
+
+function canCurrentUserCompleteCard(card, currentUser) {
+  const userId = currentUser?.id || "";
+  if (!card || !userId) return false;
+  const participants = Array.isArray(card.participants) ? card.participants : [];
+  return card.ownerId === "shared" || card.ownerId === userId || participants.includes(userId);
+}
+
+function completionTargetUserId(card, currentUser) {
+  const userId = currentUser?.id || "";
+  if (!card || !userId) return "";
+  if (canCurrentUserCompleteCard(card, currentUser)) return userId;
+  const participants = Array.isArray(card.participants) ? card.participants : [];
+  if (card.ownerId && card.ownerId !== "shared") return card.ownerId;
+  return participants.find((id) => id && id !== userId) || participants[0] || "";
+}
+
+function isCardDoneForUser(card, userId) {
+  if (!card || !userId) return isCompletedCard(card);
+  return card.statusByUser?.[userId] === "done" || (!card.statusByUser?.[userId] && isCompletedCard(card));
+}
+
+function userDisplayName(id, profiles, fallback = "对方") {
+  return profiles.find((profile) => profile.id === id)?.displayName || fallback;
+}
+
+function proxyActionMeta(card, currentUser, profiles) {
+  const targetUserId = completionTargetUserId(card, currentUser);
+  const isProxy = Boolean(targetUserId && targetUserId !== currentUser?.id);
+  const targetName = isProxy ? userDisplayName(targetUserId, profiles, "对方") : "";
+  return { targetUserId, isProxy, targetName };
+}
+
+function statusRowsForCard(card, profiles) {
+  const participants = Array.isArray(card?.participants) ? card.participants : [];
+  const statusByUser = card?.statusByUser || {};
+  const updatedBy = card?.statusUpdatedBy || {};
+  return participants
+    .map((id) => {
+      const name = userDisplayName(id, profiles, id);
+      const done = statusByUser[id] === "done";
+      const actor = updatedBy[id] && updatedBy[id] !== id ? userDisplayName(updatedBy[id], profiles, updatedBy[id]) : "";
+      return `${name}${done ? "已完成" : "待完成"}${actor ? `（${actor}代点）` : ""}`;
+    })
+    .filter(Boolean);
+}
+
+function timeOnlyLabel(value) {
+  const match = String(value || "").match(/T(\d{2}):(\d{2})/);
+  return match ? `${match[1]}:${match[2]}` : "";
+}
+
+function completionTimeLabel(value, selectedDate) {
+  const raw = String(value || "");
+  const match = raw.match(/^(\d{4}-\d{2}-\d{2})T(\d{2}):(\d{2})/);
+  if (!match) return compactDateTime(value);
+  return match[1] === selectedDate ? `${match[2]}:${match[3]}` : `${shortDate(match[1])} ${match[2]}:${match[3]}`;
+}
+
+function taskDateLabel(date, selectedDate) {
+  if (!date) return "";
+  if (date === selectedDate) return "当天";
+  if (date === today()) return "今天";
+  return shortDate(date);
 }
 
 function isDefaultPromptCard(card) {
@@ -1073,6 +1152,7 @@ const detailBuilders = {
     const stepStatus = card.stepProgress?.total ? `${card.stepProgress.done}/${card.stepProgress.total}` : "";
     const isDone = isCompletedCard(card);
     const isArchived = isArchivedCard(card);
+    const { targetUserId, isProxy, targetName } = proxyActionMeta(card, currentUser, profiles);
     const timerActive = Boolean(card.timeTracking?.currentUserActive);
     const profileById = new Map((profiles || []).map((profile) => [profile.id, profile]));
     const rawSteps = card.sourceType === "checkin"
@@ -1090,18 +1170,21 @@ const detailBuilders = {
         done: step.status === "done",
         ownerIds: [step.ownerId].filter(Boolean),
         hint: durationLabel(step.estimateMin),
-        action: !readOnly && card.sourceType !== "checkin" ? { type: "toggle-step", card, step } : null,
+        action: !readOnly && card.sourceType !== "checkin" && (!step.ownerId || step.ownerId === currentUser?.id || step.ownerId === targetUserId)
+          ? { type: "toggle-step", card, step }
+          : null,
       }))
       .filter((step) => step.title);
     const tagLine = (Array.isArray(card.tags) ? card.tags : []).slice(0, 8).join(" · ");
     const memoryLine = memoryKindText(card.memoryKinds);
     const hasMemory = Boolean(memoryLine || card.memoryLinks?.length);
+    const statusLine = statusRowsForCard(card, profiles).join(" · ");
     return {
       type: "lifeCard",
       label: itemTypeLabels[itemType],
       title,
       body: detail,
-      date: card.date,
+      date: detailDateLabel(card.date),
       ownerIds: participants,
       chips: [
         { label: "时间", value: primaryTimeLabel(card) },
@@ -1117,6 +1200,7 @@ const detailBuilders = {
         card.dueAt ? { label: "截止", value: formatDateTimeShort(card.dueAt) } : null,
         card.durationMin ? { label: "预计", value: durationLabel(card.durationMin) } : null,
         card.stepProgress?.total ? { label: "步骤", value: `${card.stepProgress.done}/${card.stepProgress.total}` } : null,
+        statusLine ? { label: "双人状态", value: statusLine, wide: true } : null,
         card.repeatRule ? { label: "周期", value: card.repeatRule } : null,
         tagLine ? { label: "标签", value: tagLine, wide: true } : null,
         memoryLine ? { label: "记忆", value: memoryLine, wide: true } : null,
@@ -1127,7 +1211,7 @@ const detailBuilders = {
       sections: lifeCardDetailSections(card, context),
       images: [],
       actions: [
-        !readOnly && !isArchived ? { type: "toggle-card", icon: isDone ? "undo" : "check", label: isDone ? "取消" : "完成", card } : null,
+        !readOnly && !isArchived && targetUserId ? { type: "toggle-card", icon: isDone ? "undo" : "check", label: isDone ? "取消" : isProxy ? `帮${targetName}完成` : "完成", card } : null,
         !readOnly && !isArchived && !card.isDraft && card.sourceType !== "checkin" ? { type: "timer-card", icon: timerActive ? "stop" : "clock", label: timerActive ? "停止" : "计时", card } : null,
         !readOnly && ["schedule", "todo"].includes(card.sourceType) ? { type: "archive-card", icon: isArchived ? "undo" : "archive", label: isArchived ? "恢复" : "归档", card } : null,
         !readOnly && !card.isDraft ? { type: "remember-card", icon: "bookmark", label: hasMemory ? "已记" : "记忆", card } : null,
@@ -1145,7 +1229,7 @@ const detailBuilders = {
       label: item.kindLabel || lane,
       title: cleanCardText(item.title || lane),
       body: cleanCardText(item.detail || ""),
-      date: item.suggestedDate || String(item.updatedAt || "").slice(0, 10),
+      date: detailDateLabel(item.source === "profile" ? "" : item.suggestedDate),
       ownerIds,
       chips: [
         { label: "分组", value: lane },
@@ -1154,11 +1238,11 @@ const detailBuilders = {
       ].filter((part) => part.value),
       rows: detailRows([
         item.actionable ? { label: "可行动", value: itemTypeLabels[item.itemType] || "提醒" } : null,
-        item.suggestedDate ? { label: "建议日期", value: item.suggestedDate } : null,
+        item.source !== "profile" && item.suggestedDate ? { label: "建议日期", value: item.suggestedDate } : null,
       ]),
       images: [],
       actions: [
-        item.suggestedDate ? { type: "go-date", icon: "calendar", label: "打开日期", date: item.suggestedDate, page: "month" } : null,
+        item.source !== "profile" && item.suggestedDate ? { type: "go-date", icon: "calendar", label: "打开日期", date: item.suggestedDate, page: "month" } : null,
         { type: "go-page", icon: "bookmark", label: "长期记忆", page: "goals" },
       ].filter(Boolean),
     };
@@ -1171,7 +1255,7 @@ const detailBuilders = {
       label: capture.rawKind === "raw" ? "Raw" : "随手记",
       title: shortText(text || "随手记", 42),
       body: text,
-      date: capture.date,
+      date: detailDateLabel(capture.date),
       ownerIds,
       chips: [
         { label: "格式", value: capture.rawFormat || "markdown" },
@@ -1206,7 +1290,7 @@ const detailBuilders = {
       label: item?.kindLabel || item?.kind || status,
       title: title || status,
       body,
-      date: item?.date || context.selectedDate,
+      date: detailDateLabel(item?.date),
       ownerIds,
       chips: [
         item?.doneUsers?.length ? { label: "完成", value: namesForIds(item.doneUsers, context.profiles) } : null,
@@ -1230,7 +1314,7 @@ const detailBuilders = {
       label: "日总结",
       title: storyDisplayTitle(summary, context.selectedDate),
       body: cleanStoryText(summary?.narrative || ""),
-      date: context.selectedDate,
+      date: detailDateLabel(context.selectedDate),
       ownerIds: context.profiles.map((profile) => profile.id).slice(0, 2),
       chips: [
         { label: "完成", value: summary?.stats ? `${summary.stats.done || 0}/${summary.stats.total || 0}` : "" },
@@ -1308,9 +1392,9 @@ function summaryRow(item, status, context) {
 
 function sortCards(cards) {
   const segmentWeight = { morning: 0, noon: 1, afternoon: 2, evening: 3, allDay: 4 };
+  const manualOrder = (card) => Number(card.manualOrder || 0);
+  const lifecycleRank = (card) => isArchivedCard(card) ? 2 : isCompletedCard(card) ? 1 : 0;
   const rank = (card) => {
-    if (isArchivedCard(card)) return 5;
-    if (isCompletedCard(card)) return 4;
     if (lifeCardAgeNotice(card)?.level === "strong") return 0;
     if (card.priority === "high") return 0;
     if (card.sourceType === "insight") return 1;
@@ -1318,6 +1402,8 @@ function sortCards(cards) {
     return 2;
   };
   return [...cards].sort((a, b) =>
+    lifecycleRank(a) - lifecycleRank(b) ||
+    (a.date === b.date && (manualOrder(a) || manualOrder(b)) ? (manualOrder(a) || 1000000) - (manualOrder(b) || 1000000) : 0) ||
     rank(a) - rank(b) ||
     (Number(b.rankScore || 0) - Number(a.rankScore || 0)) ||
     String(a.date || "").localeCompare(String(b.date || "")) ||
@@ -1343,6 +1429,10 @@ function useHashRoute() {
     return () => window.removeEventListener("hashchange", onHash);
   }, []);
   return [page, setPage];
+}
+
+function errorMessage(err, fallback = "操作失败") {
+  return err?.message || fallback;
 }
 
 export function App() {
@@ -1464,19 +1554,27 @@ export function App() {
       if (result) {
         setData(result.state);
         setPassword("");
+        toast.success("已进入猫猫日记本");
       }
     } catch (err) {
-      setError(err.message === "invalid login or password" ? "访问码不对。" : err.message);
+      const message = err.message === "invalid login or password" ? "访问码不对。" : errorMessage(err);
+      setError(message);
+      toast.error(message);
     } finally {
       setBusy(false);
     }
   }
 
   async function logout() {
-    await request("/api/couple/logout", { method: "POST", body: {} });
-    setData(null);
-    setConfirmation(null);
-    loadSession();
+    try {
+      await request("/api/couple/logout", { method: "POST", body: {} });
+      setData(null);
+      setConfirmation(null);
+      toast.success("已退出");
+      loadSession();
+    } catch (err) {
+      toast.error(errorMessage(err, "退出失败"));
+    }
   }
 
   async function chooseDate(date) {
@@ -1520,6 +1618,7 @@ export function App() {
         }
         setConfirmation(result?.confirmation || null);
         setAgentJob(null);
+        toast.success(result?.confirmation ? "Agent 分析完成" : "Agent 已更新日记本");
       })
       .catch((err) => {
         setAgentJob({
@@ -1530,6 +1629,7 @@ export function App() {
           date: meta.date || selectedDate,
           error: err.message,
         });
+        toast.error(errorMessage(err, "Agent 分析失败"));
       });
   }
 
@@ -1564,6 +1664,7 @@ export function App() {
         status: "failed",
         error: err.message,
       }));
+      toast.error(errorMessage(err, "Agent 重试失败"));
     } finally {
       setBusy(false);
     }
@@ -1632,24 +1733,6 @@ export function App() {
       });
       if (!captureResult) return;
       setData(captureResult.state);
-      const commitRoute = async (route) => {
-        if (!route) return null;
-        const result = await request("/api/couple/capture/route", {
-          method: "POST",
-          body: {
-            ...route,
-            ownerId: route.ownerId || currentUser?.id || "",
-            sourceCaptureId: route.sourceCaptureId || route.captureId,
-          },
-        });
-        if (result) {
-          setData(result.state);
-          setSelectedDate(route.date || selectedDate);
-          if (route.decision === "schedule") setFilter("all");
-          setConfirmation(null);
-        }
-        return result;
-      };
       if (mode === "agent" || mode === "template") {
         const analyzed = await request("/api/couple/capture/analyze", {
           method: "POST",
@@ -1663,22 +1746,24 @@ export function App() {
         });
         if (mode === "agent" && analyzed?.jobId) {
           setConfirmation(null);
+          toast.message("Agent 正在分析", { description: "完成后会自动更新页面。" });
           startAgentJob(analyzed.jobId, {
             captureId: captureResult.capture.id,
             text,
             date: selectedDate,
           });
-        } else if (mode === "template" && analyzed?.confirmation?.decision === "schedule") {
-          await commitRoute(analyzed.confirmation);
         } else {
           setConfirmation(analyzed?.confirmation || null);
         }
       } else {
         setConfirmation(null);
+        toast.success("已保存随手记");
       }
       setComposerText("");
     } catch (err) {
-      setError(err.message);
+      const message = errorMessage(err, "保存失败");
+      setError(message);
+      toast.error(message);
     } finally {
       setBusy(false);
     }
@@ -1703,9 +1788,12 @@ export function App() {
         setSelectedDate(route.date || selectedDate);
         if (route.decision === "schedule") setFilter("all");
         setConfirmation(null);
+        toast.success(route.decision === "schedule" ? "已加入生活卡" : "已保存");
       }
     } catch (err) {
-      setError(err.message);
+      const message = errorMessage(err, "保存失败");
+      setError(message);
+      toast.error(message);
     } finally {
       setBusy(false);
     }
@@ -1713,19 +1801,28 @@ export function App() {
 
   async function toggleCardStep(card, step) {
     if (!currentUser || !card || !step || card.readOnly || card.sourceType === "insight" || card.sourceType === "checkin") return;
+    const targetUserId = step.ownerId || currentUser.id;
+    const isProxy = Boolean(targetUserId && targetUserId !== currentUser.id);
+    if (isProxy) {
+      const targetName = actorName(targetUserId, profiles, "对方");
+      const actionText = step.status === "done" ? "取消完成" : "完成";
+      if (!window.confirm(`确认帮 ${targetName} ${actionText}这一步吗？`)) return;
+    }
     const result = await request("/api/couple/life-cards/step-toggle", {
       method: "POST",
       body: {
         sourceType: card.sourceType,
         id: card.sourceId,
         stepId: step.id,
-        targetUserId: step.ownerId || currentUser.id,
+        targetUserId,
+        proxyConfirmed: isProxy,
         date: card.date,
       },
     });
     if (result) {
       setData(result.state);
       refreshDetailCardFromState(result.state, card);
+      toast.success(step.status === "done" ? "已恢复步骤" : "已完成步骤");
     }
   }
 
@@ -1742,12 +1839,21 @@ export function App() {
     if (result) {
       setData(result.state);
       refreshDetailCardFromState(result.state, card);
+      toast.success(card.timeTracking?.currentUserActive ? "已停止计时" : "已开始计时");
     }
   }
 
-  async function toggleCard(card, targetUserId = currentUser?.id) {
+  async function toggleCard(card) {
     if (!currentUser || card.readOnly || card.sourceType === "insight") return;
-    const wasCompleted = card.statusByUser?.[targetUserId] === "done" || (!card.statusByUser?.[targetUserId] && isCompletedCard(card));
+    const targetUserId = completionTargetUserId(card, currentUser);
+    if (!targetUserId) return;
+    const isProxy = targetUserId !== currentUser.id;
+    const wasCompleted = isCardDoneForUser(card, targetUserId);
+    if (isProxy) {
+      const targetName = actorName(targetUserId, profiles, "对方");
+      const actionText = wasCompleted ? "取消完成" : "完成";
+      if (!window.confirm(`确认帮 ${targetName} ${actionText}这张卡吗？`)) return;
+    }
     const endpoint = {
       schedule: "/api/couple/schedule/toggle",
       todo: "/api/couple/todos/toggle",
@@ -1757,12 +1863,13 @@ export function App() {
     if (!endpoint) return;
     const result = await request(endpoint, {
       method: "POST",
-      body: { id: card.sourceId, targetUserId, date: card.date, status: wasCompleted ? "todo" : "done" },
+      body: { id: card.sourceId, targetUserId, proxyConfirmed: isProxy, date: card.date, status: wasCompleted ? "todo" : "done" },
     });
     if (result) {
       setData(result.state);
       refreshDetailCardFromState(result.state, card);
       if (wasCompleted) setFilter("all");
+      toast.success(wasCompleted ? "已恢复待办" : "已完成");
     }
   }
 
@@ -1781,6 +1888,7 @@ export function App() {
       setData(result.state);
       refreshDetailCardFromState(result.state, card);
       if (isArchivedCard(card)) setFilter("all");
+      toast.success(isArchivedCard(card) ? "已恢复归档" : "已归档");
     }
   }
 
@@ -1797,6 +1905,7 @@ export function App() {
     if (result) {
       setData(result.state);
       refreshDetailCardFromState(result.state, card);
+      toast.success("已写入记忆");
     }
   }
 
@@ -1820,6 +1929,7 @@ export function App() {
     if (result) {
       setData(result.state);
       setEditingCard(null);
+      toast.success("已删除");
     }
   }
 
@@ -1849,10 +1959,12 @@ export function App() {
       plannedAt: payload.plannedAt || "",
       dueAt: payload.dueAt || "",
       durationMin: payload.durationMin || 0,
+      tags: normalizeEditableTags(payload.tags),
       steps: payload.steps || card.steps || [],
       timeBlocks: payload.timeBlocks || card.timeBlocks || [],
       bucket: card.isDraft ? (payload.date > today() ? "future" : "today") : (card.bucket || (payload.date > selectedDate ? "future" : "today")),
-      priority: card.priority || "normal",
+      priority: payload.priority || card.priority || "normal",
+      manualOrder: card.manualOrder || 0,
       relatedGroupId: card.relatedGroupId || "",
       parentItemId: card.parentItemId || "",
     };
@@ -1860,103 +1972,130 @@ export function App() {
     if (result) {
       setData(result.state);
       setEditingCard(null);
+      toast.success(card.isDraft ? "已创建生活卡" : "已保存修改");
+    }
+  }
+
+  async function reorderCards(date, orderedCards) {
+    const order = (orderedCards || [])
+      .filter((card) => card && !card.readOnly && card.sourceType !== "insight" && !card.isDraft)
+      .map((card, index) => ({
+        sourceType: card.sourceType,
+        sourceId: card.sourceId,
+        manualOrder: (index + 1) * 1000,
+      }));
+    if (!date || !order.length) return;
+    const result = await request("/api/couple/life-cards/reorder", {
+      method: "POST",
+      body: { date, order },
+    });
+    if (result) {
+      setData(result.state);
+      toast.success("顺序已更新");
     }
   }
 
   if (!data) {
     return (
-      <LoginScreen
-        bootstrap={bootstrap}
-        profiles={profiles}
-        login={login}
-        setLogin={setLogin}
-        password={password}
-        setPassword={setPassword}
-        error={error}
-        busy={busy}
-        onSubmit={handleLogin}
-      />
+      <>
+        <LoginScreen
+          bootstrap={bootstrap}
+          profiles={profiles}
+          login={login}
+          setLogin={setLogin}
+          password={password}
+          setPassword={setPassword}
+          error={error}
+          busy={busy}
+          onSubmit={handleLogin}
+        />
+        <Toaster position="top-center" richColors closeButton toastOptions={{ className: "peos-toast" }} />
+      </>
     );
   }
 
   return (
-    <div className="app-shell">
-      <TopNav page={page} navigate={navigate} profiles={profiles} currentUser={currentUser} logout={logout} />
-      <main className="workspace">
-        {showDeepNightNotice ? <NightNoticeBanner notice={catNotice} onOpen={() => navigate("cat-note")} /> : null}
-        {page === "dashboard" && (
-          <Dashboard
-            data={data}
+    <>
+      <div className="app-shell">
+        <TopNav page={page} navigate={navigate} profiles={profiles} currentUser={currentUser} logout={logout} />
+        <main className="workspace">
+          {showDeepNightNotice ? <NightNoticeBanner notice={catNotice} onOpen={() => navigate("cat-note")} /> : null}
+          {page === "dashboard" && (
+            <Dashboard
+              data={data}
+              profiles={profiles}
+              currentUser={currentUser}
+              selectedDate={selectedDate}
+              chooseDate={chooseDate}
+              composerText={composerText}
+              setComposerText={setComposerText}
+              confirmation={confirmation}
+              agentJob={agentJob}
+              submitConfirmation={submitConfirmation}
+              dismissConfirmation={() => setConfirmation(null)}
+              retryAgentJob={retryAgentJob}
+              clearAgentJob={() => setAgentJob(null)}
+              saveRawCapture={saveRawCapture}
+              busy={busy}
+              error={error}
+              filter={filter}
+              setFilter={setFilter}
+              timelineScope={timelineScope}
+              setTimelineScope={setTimelineScope}
+              expanded={expanded}
+              setExpanded={setExpanded}
+              toggleCard={toggleCard}
+              archiveCard={archiveCard}
+              toggleStep={toggleCardStep}
+              toggleTimer={toggleCardTimer}
+              setEditingCard={setEditingCard}
+              openDetail={openDetail}
+              reorderCards={reorderCards}
+              composingRef={composingRef}
+            />
+          )}
+          {page === "month" && (
+            <MonthPage
+              data={data}
+              selectedDate={selectedDate}
+              chooseDate={chooseDate}
+              setPage={navigate}
+            />
+          )}
+          {page === "daily-summary" && (
+            <DailySummaryPage data={data} profiles={profiles} currentUser={currentUser} request={request} setData={setData} selectedDate={selectedDate} chooseDate={chooseDate} openDetail={openDetail} />
+          )}
+          {page === "cat-note" && (
+            <CatNoticePage profiles={profiles} currentUser={currentUser} now={now} data={data} request={request} setData={setData} setSelectedDate={setSelectedDate} />
+          )}
+          {page === "goals" && (
+            <MemoryPage data={data} profiles={profiles} currentUser={currentUser} request={request} setData={setData} selectedDate={selectedDate} openDetail={openDetail} />
+          )}
+          {page === "settings" && (
+            <SettingsPage data={data} currentUser={currentUser} profiles={profiles} request={request} setData={setData} selectedDate={selectedDate} />
+          )}
+        </main>
+        <MobileTabBar page={page} navigate={navigate} />
+        {editingCard && (
+          <CardEditor
+            card={editingCard}
             profiles={profiles}
-            currentUser={currentUser}
-            selectedDate={selectedDate}
-            chooseDate={chooseDate}
-            composerText={composerText}
-            setComposerText={setComposerText}
-            confirmation={confirmation}
-            agentJob={agentJob}
-            submitConfirmation={submitConfirmation}
-            dismissConfirmation={() => setConfirmation(null)}
-            retryAgentJob={retryAgentJob}
-            clearAgentJob={() => setAgentJob(null)}
-            saveRawCapture={saveRawCapture}
-            busy={busy}
-            error={error}
-            filter={filter}
-            setFilter={setFilter}
-            timelineScope={timelineScope}
-            setTimelineScope={setTimelineScope}
-            expanded={expanded}
-            setExpanded={setExpanded}
-            toggleCard={toggleCard}
-            archiveCard={archiveCard}
-            toggleStep={toggleCardStep}
-            toggleTimer={toggleCardTimer}
-            setEditingCard={setEditingCard}
-            openDetail={openDetail}
-            composingRef={composingRef}
+            onClose={() => setEditingCard(null)}
+            onSave={saveCardEdit}
+            onDelete={() => deleteCard(editingCard)}
           />
         )}
-        {page === "month" && (
-          <MonthPage
-            data={data}
-            selectedDate={selectedDate}
-            chooseDate={chooseDate}
-            setPage={navigate}
+        {activeDetail ? (
+          <DetailDrawer
+            detail={activeDetail}
+            profiles={profiles}
+            onClose={() => setDetailRequest(null)}
+            onAction={handleDetailAction}
           />
-        )}
-        {page === "daily-summary" && (
-          <DailySummaryPage data={data} profiles={profiles} currentUser={currentUser} request={request} setData={setData} selectedDate={selectedDate} chooseDate={chooseDate} openDetail={openDetail} />
-        )}
-        {page === "cat-note" && (
-          <CatNoticePage profiles={profiles} currentUser={currentUser} now={now} data={data} request={request} setData={setData} setSelectedDate={setSelectedDate} />
-        )}
-        {page === "goals" && (
-          <MemoryPage data={data} profiles={profiles} currentUser={currentUser} request={request} setData={setData} selectedDate={selectedDate} openDetail={openDetail} />
-        )}
-        {page === "settings" && (
-          <SettingsPage data={data} currentUser={currentUser} profiles={profiles} request={request} setData={setData} selectedDate={selectedDate} />
-        )}
-      </main>
-      <MobileTabBar page={page} navigate={navigate} />
-      {editingCard && (
-        <CardEditor
-          card={editingCard}
-          profiles={profiles}
-          onClose={() => setEditingCard(null)}
-          onSave={saveCardEdit}
-          onDelete={() => deleteCard(editingCard)}
-        />
-      )}
-      {activeDetail ? (
-        <DetailDrawer
-          detail={activeDetail}
-          profiles={profiles}
-          onClose={() => setDetailRequest(null)}
-          onAction={handleDetailAction}
-        />
-      ) : null}
-    </div>
+        ) : null}
+      </div>
+      <Toaster position="top-center" richColors closeButton toastOptions={{ className: "peos-toast" }} />
+    </>
   );
 }
 
@@ -2091,15 +2230,22 @@ function Dashboard(props) {
     toggleTimer,
     setEditingCard,
     openDetail,
+    reorderCards,
     composingRef,
   } = props;
 
   return (
     <section className="dashboard">
       <section className="home-paper">
-        <DateRail selectedDate={selectedDate} chooseDate={chooseDate} />
-        <StoryDayContext dayContext={data.dayContext} calendarContext={data.calendarContext} className="home-day-context" />
+        <div className="home-context-strip">
+          <DateRail selectedDate={selectedDate} chooseDate={chooseDate} />
+          <StoryDayContext dayContext={data.dayContext} calendarContext={data.calendarContext} className="home-day-context" />
+        </div>
         <HomeFocusNote focus={data.homeFocus} data={data} profiles={profiles} onOpen={openDetail} />
+        <button className="partner-note-link" type="button" onClick={() => { window.location.hash = "cat-note"; }}>
+          <Icon name="send" />
+          <span>给对方留一句</span>
+        </button>
       </section>
       <Composer
         text={composerText}
@@ -2134,6 +2280,7 @@ function Dashboard(props) {
         toggleTimer={toggleTimer}
         setEditingCard={setEditingCard}
         openDetail={openDetail}
+        reorderCards={reorderCards}
         chooseDate={chooseDate}
       />
     </section>
@@ -2201,48 +2348,48 @@ function DateRail({ selectedDate, chooseDate }) {
   useEffect(() => {
     setCursor(selectedDate);
   }, [selectedDate]);
-  const days = useMemo(() => getCalendarDays(cursor), [cursor]);
 
   async function selectDate(date) {
+    const dateKey = formatDate(date);
     setOpen(false);
-    await chooseDate(date);
+    await chooseDate(dateKey);
   }
 
   return (
     <div className="date-rail">
       <IconButton icon="chevronLeft" label="上一天" onClick={() => chooseDate(addDays(selectedDate, -1))} />
-      <button className={cx("date-pill", open && "is-open")} type="button" onClick={() => setOpen(!open)} aria-expanded={open} aria-label="选择日期" title={selectedDate}>
-        <Icon name="calendar" />
-        <span>
-          <strong>{selectedDate === today() ? "今天" : shortDate(selectedDate)}</strong>
-          <em>{selectedDate}</em>
-        </span>
-      </button>
+      <Popover.Root open={open} onOpenChange={setOpen}>
+        <Popover.Trigger asChild>
+          <button className={cx("date-pill", open && "is-open")} type="button" aria-expanded={open} aria-label="选择日期" title={selectedDate}>
+            <Icon name="calendar" />
+            <span>
+              <strong>{selectedDate === today() ? "今天" : shortDate(selectedDate)}</strong>
+              <em>{selectedDate}</em>
+            </span>
+          </button>
+        </Popover.Trigger>
+        <Popover.Portal>
+          <Popover.Content className="date-popover" align="center" sideOffset={10}>
+            <DayPicker
+              animate
+              className="peos-day-picker"
+              mode="single"
+              month={parseDate(cursor) || new Date()}
+              selected={parseDate(selectedDate)}
+              weekStartsOn={1}
+              onMonthChange={(date) => setCursor(formatDate(date))}
+              onSelect={(date) => {
+                if (date) selectDate(date);
+              }}
+              formatters={{
+                formatCaption: (date) => monthLabel(formatDate(date)),
+                formatWeekdayName: (date) => weekLabels[(date.getDay() + 6) % 7],
+              }}
+            />
+          </Popover.Content>
+        </Popover.Portal>
+      </Popover.Root>
       <IconButton icon="chevronRight" label="下一天" onClick={() => chooseDate(addDays(selectedDate, 1))} />
-      {open ? (
-        <div className="date-popover">
-          <div className="date-popover-head">
-            <IconButton icon="chevronLeft" label="上个月" onClick={() => setCursor(addMonths(cursor, -1))} />
-            <strong>{monthLabel(cursor)}</strong>
-            <IconButton icon="chevronRight" label="下个月" onClick={() => setCursor(addMonths(cursor, 1))} />
-          </div>
-          <div className="mini-month-grid">
-            {weekLabels.map((label) => <span key={label}>{label}</span>)}
-            {days.map((day) => day.isPad ? (
-              <i key={day.id} aria-hidden="true" />
-            ) : (
-              <button
-                key={day.id}
-                className={cx(day.id === selectedDate && "is-active", day.isToday && "is-today")}
-                type="button"
-                onClick={() => selectDate(day.id)}
-              >
-                {day.dayNumber}
-              </button>
-            ))}
-          </div>
-        </div>
-      ) : null}
     </div>
   );
 }
@@ -2271,19 +2418,27 @@ function Composer({ text, setText, saveRawCapture, profiles, currentUser, busy, 
     { id: "schedule", icon: "cards", label: "生活卡" },
     { id: "capture", icon: "camera", label: "随手记" },
   ];
+  const ownerOptions = [
+    { id: "shared", label: "共同" },
+    ...profiles.map((profile) => ({ id: profile.id, label: profile.displayName })),
+  ];
+  const ownerText = draft?.decision === "schedule"
+    ? (ownerOptions.find((option) => option.id === (draft.ownerId || currentUser?.id || ""))?.label || "我")
+    : "";
   const updateDraft = (patch) => setRouteDraft((current) => current ? { ...current, ...patch } : current);
   const updateDestination = (decision) => {
     setRouteDraft((current) => {
       if (!current) return current;
       if (decision === "schedule") {
-        return {
-          ...current,
-          decision: "schedule",
-          itemType: current.itemType || "thing",
-          date: current.date || today(),
-          segment: current.segment || "allDay",
-          ownerId: current.ownerId || currentUser?.id || "",
-        };
+                return {
+                  ...current,
+                  decision: "schedule",
+                  itemType: current.itemType || "thing",
+                  date: current.date || today(),
+                  segment: current.segment || "allDay",
+                  priority: current.priority || "normal",
+                  ownerId: current.ownerId || currentUser?.id || "",
+                };
       }
       return { ...current, decision: "capture" };
     });
@@ -2390,10 +2545,30 @@ function Composer({ text, setText, saveRawCapture, profiles, currentUser, busy, 
                   <select value={draft.segment || "allDay"} onChange={(event) => updateDraft({ segment: event.target.value })} aria-label="时段">
                     {Object.entries(segmentLabels).map(([id, label]) => <option key={id} value={id}>{label}</option>)}
                   </select>
+                  <select value={draft.ownerId || currentUser?.id || ""} onChange={(event) => updateDraft({ ownerId: event.target.value })} aria-label="归属">
+                    {ownerOptions.map((option) => <option key={option.id} value={option.id}>{option.label}</option>)}
+                  </select>
+                  <select value={draft.priority || "normal"} onChange={(event) => updateDraft({ priority: event.target.value })} aria-label="优先级">
+                    {priorityOptions.map((option) => <option key={option.id} value={option.id}>{option.label}</option>)}
+                  </select>
                   </div>
                 </details>
               ) : null}
             </div>
+            {ownerText ? (
+              <div className="route-owner-quick" aria-label="生活卡归属">
+                {ownerOptions.map((option) => (
+                  <button
+                    key={option.id}
+                    className={cx((draft.ownerId || currentUser?.id || "") === option.id && "is-active")}
+                    type="button"
+                    onClick={() => updateDraft({ ownerId: option.id })}
+                  >
+                    {option.label}
+                  </button>
+                ))}
+              </div>
+            ) : null}
             {draft.relatedItems?.length ? (
               <div className="confirm-related" aria-label="子生活卡">
                 {draft.relatedItems.slice(0, 4).map((item, index) => (
@@ -2491,37 +2666,43 @@ function CalendarContextButton({ context, onOpen }) {
 function CalendarPopover({ context, onClose }) {
   const marks = context?.marks || [];
   return (
-    <div className="calendar-popover-backdrop" role="presentation" onMouseDown={onClose}>
-      <section className="calendar-popover" role="dialog" aria-modal="true" aria-label="日历提示" onMouseDown={(event) => event.stopPropagation()}>
-        <div className="calendar-popover-head">
-          <span>
-            <Icon name="calendar" />
-            <strong>{context?.date}</strong>
-          </span>
-          <IconButton icon="x" label="关闭" onClick={onClose} />
-        </div>
-        <div className="calendar-popover-base">
-          <b>{context?.weekday || "日历"}</b>
-          {context?.lunar ? <em>{context.lunar}</em> : null}
-          <i>{context?.isWorkday ? "班" : context?.isRestDay ? "休" : "平"}</i>
-        </div>
-        {marks.length ? (
-          <div className="calendar-mark-list">
-            {marks.map((mark) => (
-              <span className={`tone-${mark.tone || mark.type}`} key={`${mark.type}-${mark.title}`}>
-                <Icon name={mark.icon || "star"} />
-                <b>{mark.title}</b>
-                <em>{mark.detail}</em>
-              </span>
-            ))}
+    <Dialog.Root open onOpenChange={(nextOpen) => {
+      if (!nextOpen) onClose();
+    }}>
+      <Dialog.Portal>
+        <Dialog.Overlay className="calendar-popover-backdrop" />
+        <Dialog.Content className="calendar-popover" aria-describedby={undefined}>
+          <Dialog.Title className="sr-only">日历提示</Dialog.Title>
+          <div className="calendar-popover-head">
+            <span>
+              <Icon name="calendar" />
+              <strong>{context?.date}</strong>
+            </span>
+            <IconButton icon="x" label="关闭" onClick={onClose} />
           </div>
-        ) : (
-          <div className="calendar-mark-empty">
-            <Icon name="moon" />
+          <div className="calendar-popover-base">
+            <b>{context?.weekday || "日历"}</b>
+            {context?.lunar ? <em>{context.lunar}</em> : null}
+            <i>{context?.isWorkday ? "班" : context?.isRestDay ? "休" : "平"}</i>
           </div>
-        )}
-      </section>
-    </div>
+          {marks.length ? (
+            <div className="calendar-mark-list">
+              {marks.map((mark) => (
+                <span className={`tone-${mark.tone || mark.type}`} key={`${mark.type}-${mark.title}`}>
+                  <Icon name={mark.icon || "star"} />
+                  <b>{mark.title}</b>
+                  <em>{mark.detail}</em>
+                </span>
+              ))}
+            </div>
+          ) : (
+            <div className="calendar-mark-empty">
+              <Icon name="moon" />
+            </div>
+          )}
+        </Dialog.Content>
+      </Dialog.Portal>
+    </Dialog.Root>
   );
 }
 
@@ -2642,7 +2823,7 @@ function MonthPage({ data, selectedDate, chooseDate, setPage }) {
   );
 }
 
-function LifeCardTimeline({ cards, profiles, currentUser, selectedDate, filter, setFilter, timelineScope = "today", setTimelineScope, expanded, setExpanded, toggleCard, archiveCard, toggleStep, toggleTimer, setEditingCard, openDetail, chooseDate }) {
+function LifeCardTimeline({ cards, profiles, currentUser, selectedDate, filter, setFilter, timelineScope = "today", setTimelineScope, expanded, setExpanded, toggleCard, archiveCard, toggleStep, toggleTimer, setEditingCard, openDetail, chooseDate, reorderCards }) {
   const [isScrollDragging, setIsScrollDragging] = useState(false);
   const [isCardScrubbing, setIsCardScrubbing] = useState(false);
   const [scrubTargetId, setScrubTargetId] = useState("");
@@ -2654,6 +2835,8 @@ function LifeCardTimeline({ cards, profiles, currentUser, selectedDate, filter, 
   const scrubFrame = useRef(0);
   const scrubClearTimer = useRef(0);
   const dragState = useRef({ active: false, kind: "", startY: 0, scrollTop: 0, moved: false, blockClick: false, pointerId: null, targetId: "", latestY: 0 });
+  const orderDragRef = useRef({ active: false, cardId: "", date: "", pointerId: null, moved: false });
+  const orderPreviewRef = useRef(null);
   const todayKey = today();
   const lifeCards = useMemo(() => (cards || [])
     .filter((card) => !isDefaultPromptCard(card))
@@ -2688,6 +2871,14 @@ function LifeCardTimeline({ cards, profiles, currentUser, selectedDate, filter, 
   const visibleCards = filteredCards;
   const grouped = groupByDate(visibleCards);
   const dates = [...grouped.keys()].sort((a, b) => a.localeCompare(b));
+  const [orderPreview, setOrderPreview] = useState(null);
+  const updateOrderPreview = useCallback((nextPreview) => {
+    orderPreviewRef.current = nextPreview;
+    setOrderPreview(nextPreview);
+  }, []);
+  const displayGrouped = orderPreview
+    ? new Map([...grouped].map(([date, dayCards]) => [date, date === orderPreview.date ? orderPreview.cards : dayCards]))
+    : grouped;
   const focusedCardId = scrubTargetId || axisFocusId;
   const isFocusMode = Boolean(focusedCardId);
   const summary = useMemo(() => {
@@ -2725,6 +2916,10 @@ function LifeCardTimeline({ cards, profiles, currentUser, selectedDate, filter, 
   useEffect(() => {
     if (axisFocusId && !visibleCards.some((card) => card.id === axisFocusId)) setAxisFocusId("");
   }, [axisFocusId, visibleCards]);
+  useEffect(() => {
+    updateOrderPreview(null);
+    orderDragRef.current = { active: false, cardId: "", date: "", pointerId: null, moved: false };
+  }, [filter, selectedDate, timelineScope, updateOrderPreview]);
   const axisPercentFromPointer = (event) => {
     const rect = event.currentTarget.getBoundingClientRect();
     if (!rect.height) return dayProgressPercent(selectedDate);
@@ -2767,6 +2962,80 @@ function LifeCardTimeline({ cards, profiles, currentUser, selectedDate, filter, 
       centerCardNearPointer(dragState.current.latestY, force);
     });
   };
+  const canReorderCard = (card) => Boolean(reorderCards && card && !card.readOnly && card.sourceType !== "insight" && !card.isDraft);
+  const reorderCardsAtY = useCallback((clientY) => {
+    const drag = orderDragRef.current;
+    if (!drag.active || !drag.cardId || !drag.date) return;
+    const preview = orderPreviewRef.current;
+    const baseCards = preview?.date === drag.date ? preview.cards : (grouped.get(drag.date) || []);
+    if (baseCards.length < 2) return;
+    const rows = baseCards
+      .map((card, index) => ({ card, index, node: cardRefs.current.get(card.id) }))
+      .filter((item) => item.node);
+    if (rows.length < 2) return;
+    let targetIndex = rows.length;
+    rows.some((item, index) => {
+      const rect = item.node.getBoundingClientRect();
+      if (clientY < rect.top + rect.height / 2) {
+        targetIndex = index;
+        return true;
+      }
+      return false;
+    });
+    const currentIndex = baseCards.findIndex((card) => card.id === drag.cardId);
+    if (currentIndex < 0) return;
+    const nextIndex = Math.max(0, Math.min(baseCards.length - 1, targetIndex > currentIndex ? targetIndex - 1 : targetIndex));
+    if (nextIndex === currentIndex) return;
+    drag.moved = true;
+    dragState.current.blockClick = true;
+    updateOrderPreview({ date: drag.date, cards: reorder(baseCards, currentIndex, nextIndex) });
+  }, [grouped, updateOrderPreview]);
+  const startOrderDrag = useCallback((event, card, date) => {
+    if (!canReorderCard(card)) return;
+    if (event.button !== undefined && event.button !== 0) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const pointerId = event.pointerId;
+    orderDragRef.current = { active: true, cardId: card.id, date, pointerId, moved: false };
+    setAxisFocusId("");
+    setScrubTargetId("");
+    setIsCardScrubbing(false);
+    updateOrderPreview({ date, cards: grouped.get(date) || [] });
+    const target = event.currentTarget;
+    target.setPointerCapture?.(pointerId);
+    const onMove = (moveEvent) => {
+      if (pointerId !== undefined && moveEvent.pointerId !== pointerId) return;
+      moveEvent.preventDefault();
+      reorderCardsAtY(moveEvent.clientY);
+    };
+    const stopDrag = async (stopEvent) => {
+      if (pointerId !== undefined && stopEvent?.pointerId !== undefined && stopEvent.pointerId !== pointerId) return;
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", stopDrag);
+      window.removeEventListener("pointercancel", stopDrag);
+      try {
+        target.releasePointerCapture?.(pointerId);
+      } catch {
+        // The browser may release pointer capture before our cleanup runs.
+      }
+      const finished = orderDragRef.current;
+      const preview = orderPreviewRef.current;
+      orderDragRef.current = { active: false, cardId: "", date: "", pointerId: null, moved: false };
+      if (finished.moved && preview?.date === date) {
+        try {
+          await reorderCards?.(date, preview.cards);
+        } catch (err) {
+          updateOrderPreview(null);
+          toast.error(errorMessage(err, "排序失败"));
+          return;
+        }
+      }
+      updateOrderPreview(null);
+    };
+    window.addEventListener("pointermove", onMove, { passive: false });
+    window.addEventListener("pointerup", stopDrag);
+    window.addEventListener("pointercancel", stopDrag);
+  }, [canReorderCard, grouped, reorderCards, reorderCardsAtY, updateOrderPreview]);
   const startDragScroll = (event) => {
     if (event.pointerType === "mouse" && event.button !== 0) return;
     const axisTarget = Boolean(event.target.closest(".timeline-node"));
@@ -2950,7 +3219,7 @@ function LifeCardTimeline({ cards, profiles, currentUser, selectedDate, filter, 
       >
         {dates.length ? <span className="timeline-axis-handle" aria-hidden="true" /> : null}
         {dates.length ? dates.map((date) => {
-          const dayCards = grouped.get(date) || [];
+          const dayCards = displayGrouped.get(date) || [];
           const isExpanded = expanded.has(date);
           const isSelectedDay = date === selectedDate;
           const isTodayGroup = date === todayKey;
@@ -2972,16 +3241,28 @@ function LifeCardTimeline({ cards, profiles, currentUser, selectedDate, filter, 
               <div className="day-cards">
                 {visible.map((card) => {
                   const isScrubTarget = focusedCardId === card.id;
+                  const isOrderDragging = orderDragRef.current.active && orderDragRef.current.cardId === card.id;
                   const isCompactCard = (isCompactDay || (!isTodayGroup && !isSelectedDay)) && !isScrubTarget;
                   return (
                     <div
                       key={card.id}
-                      className={cx("timeline-card-slot", isCompactCard && "is-compact", isScrubTarget && "is-scrub-target")}
+                      className={cx("timeline-card-slot", isCompactCard && "is-compact", isScrubTarget && "is-scrub-target", isOrderDragging && "is-order-dragging")}
                       ref={(node) => {
                         if (node) cardRefs.current.set(card.id, node);
                         else cardRefs.current.delete(card.id);
                       }}
                     >
+                      {canReorderCard(card) ? (
+                        <button
+                          className="card-order-handle"
+                          type="button"
+                          aria-label={`拖动排序 ${card.title || "生活卡"}`}
+                          title="拖动排序"
+                          onPointerDown={(event) => startOrderDrag(event, card, date)}
+                        >
+                          <Icon name="grip" />
+                        </button>
+                      ) : null}
                       <LifeCard
                         card={card}
                         profiles={profiles}
@@ -3043,6 +3324,7 @@ function LifeCard({ card, profiles, currentUser, toggleCard, archiveCard, toggle
   const isDraft = Boolean(card.isDraft);
   const isDone = isCompletedCard(card);
   const isArchived = isArchivedCard(card);
+  const completionTarget = completionTargetUserId(card, currentUser);
   const isLegacyCheckin = card.sourceType === "checkin";
   const timeNote = primaryTimeLabel(card);
   const ageNotice = lifeCardAgeNotice(card);
@@ -3104,6 +3386,9 @@ function LifeCard({ card, profiles, currentUser, toggleCard, archiveCard, toggle
     event.preventDefault();
     event.stopPropagation();
   };
+  const { isProxy, targetName } = proxyActionMeta(card, currentUser, profiles);
+  const completeLabel = isProxy ? `帮${targetName}完成` : "完成";
+  const undoLabel = isProxy ? `取消${targetName}` : "取消";
   const completeCard = (event) => {
     stopAction(event);
     toggleCard(card);
@@ -3111,10 +3396,10 @@ function LifeCard({ card, profiles, currentUser, toggleCard, archiveCard, toggle
   const toggleStepAction = (event, step) => {
     stopAction(event);
     if (isLegacyCheckin) {
-      if (step.ownerId === currentUser?.id) toggleCard?.(card, step.ownerId);
+      if (step.ownerId === currentUser?.id || step.ownerId === completionTarget) toggleCard?.(card);
       return;
     }
-    if (!readOnly) toggleStep?.(card, step);
+    if (!readOnly && (!step.ownerId || step.ownerId === currentUser?.id || step.ownerId === completionTarget)) toggleStep?.(card, step);
   };
   return (
     <article
@@ -3165,7 +3450,7 @@ function LifeCard({ card, profiles, currentUser, toggleCard, archiveCard, toggle
                   aria-label={isLegacyCheckin ? (done ? `取消 ${step.title}` : `${step.title} 确认`) : (done ? `取消 ${step.title}` : `完成 ${step.title}`)}
                   title={step.title}
                   onClick={(event) => toggleStepAction(event, step)}
-                  disabled={readOnly || (isLegacyCheckin && step.ownerId !== currentUser?.id)}
+                  disabled={readOnly || (isLegacyCheckin && step.ownerId !== currentUser?.id && step.ownerId !== completionTarget)}
                 >
                   <Icon name={done ? "check" : "circle"} />
                   <em title={owner.label}>{owner.initials}</em>
@@ -3235,29 +3520,29 @@ function LifeCard({ card, profiles, currentUser, toggleCard, archiveCard, toggle
               <span>{timerActive ? "停止" : "计时"}</span>
             </button>
           ) : null}
-          {!isArchived && isDone ? (
+          {!isArchived && completionTarget && isCardDoneForUser(card, completionTarget) ? (
             <button
               className="action-chip done-mark"
               type="button"
-              aria-label="取消完成"
+              aria-label={undoLabel}
               aria-pressed="true"
-              title="取消完成"
+              title={undoLabel}
               onClick={completeCard}
             >
               <Icon name="check" />
-              <span>取消</span>
+              <span>{undoLabel}</span>
             </button>
-          ) : !isArchived ? (
+          ) : !isArchived && completionTarget ? (
             <button
               className="action-chip complete-toggle"
               type="button"
-              aria-label="完成"
+              aria-label={completeLabel}
               aria-pressed="false"
-              title="完成"
+              title={completeLabel}
               onClick={completeCard}
             >
               <Icon name="circle" />
-              <span>完成</span>
+              <span>{completeLabel}</span>
             </button>
           ) : null}
           {isArchived && ["schedule", "todo"].includes(card.sourceType) ? (
@@ -3321,66 +3606,161 @@ function makeEditorStep(step = {}, index = 0) {
   };
 }
 
-function CardEditor({ card, profiles, onClose, onSave, onDelete }) {
-  const isDailyCheckin = card.title === "一起打卡！" || card.repeatRule === "daily@03:00";
-  const [form, setForm] = useState({
+function buildCardEditorDefaults(card) {
+  return {
     title: card.title || "",
     detail: card.detail || card.slot || "",
     date: card.date || today(),
     itemType: card.itemType || "thing",
     ownerId: card.ownerId || "shared",
+    priority: card.priority || "normal",
     segment: card.segment || "allDay",
     repeatRule: card.repeatRule || "",
     plannedAt: dateTimeLocalValue(card.plannedAt),
     dueAt: dateTimeLocalValue(card.dueAt),
     durationMin: card.durationMin || "",
+    tags: tagsInputValue(card.tags),
     steps: (card.steps || []).map(makeEditorStep),
+  };
+}
+
+function CardEditor({ card, profiles, onClose, onSave, onDelete }) {
+  const isDailyCheckin = card.title === "一起打卡！" || card.repeatRule === "daily@03:00";
+  const defaultValues = useMemo(() => buildCardEditorDefaults(card), [card]);
+  const {
+    control,
+    register,
+    handleSubmit,
+    reset,
+    getValues,
+    setValue,
+    watch,
+    formState: { errors, isDirty, isSubmitting },
+  } = useForm({
+    resolver: zodResolver(cardEditorSchema),
+    defaultValues,
+    mode: "onBlur",
   });
+  const { fields, append, remove, move } = useFieldArray({ control, name: "steps", keyName: "formId" });
+  const form = watch();
+  const formSteps = watch("steps") || [];
   const [dragStepId, setDragStepId] = useState("");
-  const update = (key, value) => setForm((current) => ({ ...current, [key]: value }));
-  const updateStep = (id, patch) => setForm((current) => ({
-    ...current,
-    steps: current.steps.map((step) => step.id === id ? { ...step, ...patch } : step),
-  }));
-  const moveStep = (id, direction) => setForm((current) => {
-    const steps = [...current.steps];
+  const dragStepIdRef = useRef("");
+  const stepListRef = useRef(null);
+  const dragCleanupRef = useRef(null);
+  useEffect(() => {
+    reset(defaultValues);
+  }, [defaultValues, reset]);
+  const moveStep = (id, direction) => {
+    const steps = getValues("steps") || [];
     const index = steps.findIndex((step) => step.id === id);
     const nextIndex = index + direction;
-    if (index < 0 || nextIndex < 0 || nextIndex >= steps.length) return current;
-    [steps[index], steps[nextIndex]] = [steps[nextIndex], steps[index]];
-    return { ...current, steps };
-  });
-  const dropStep = (targetId) => setForm((current) => {
-    if (!dragStepId || dragStepId === targetId) return current;
-    const steps = [...current.steps];
-    const from = steps.findIndex((step) => step.id === dragStepId);
-    const to = steps.findIndex((step) => step.id === targetId);
-    if (from < 0 || to < 0) return current;
-    const [moved] = steps.splice(from, 1);
-    steps.splice(to, 0, moved);
-    return { ...current, steps };
-  });
-  const addStep = () => setForm((current) => ({
-    ...current,
-    steps: [...current.steps, makeEditorStep({ title: "", estimateMin: "", ownerId: "" }, current.steps.length)],
-  }));
-  const removeStep = (id) => setForm((current) => ({
-    ...current,
-    steps: current.steps.filter((step) => step.id !== id),
-  }));
-  const submit = (event) => {
+    if (index < 0 || nextIndex < 0 || nextIndex >= steps.length) return;
+    move(index, nextIndex);
+  };
+  const addStep = () => append(makeEditorStep({ title: "", estimateMin: "", ownerId: "" }, (getValues("steps") || []).length));
+  const addStepTemplate = (templateId) => {
+    const baseIndex = (getValues("steps") || []).length;
+    const cardTitle = String(getValues("title") || "").trim();
+    const templateSteps = templateId === "split" && profiles.length
+      ? profiles.map((profile) => ({ title: `${profile.displayName} 负责的部分`, estimateMin: 15, ownerId: profile.id }))
+      : templateId === "three"
+        ? [
+            { title: "准备一下", estimateMin: 5, ownerId: "" },
+            { title: cardTitle || "开始做", estimateMin: 25, ownerId: "" },
+            { title: "收尾确认", estimateMin: 5, ownerId: "" },
+          ]
+        : [{ title: isDailyCheckin ? "完成今日打卡" : "先做 5 分钟", estimateMin: 5, ownerId: "" }];
+    append(templateSteps.map((step, offset) => makeEditorStep(step, baseIndex + offset)));
+    setEditorSection("steps");
+  };
+  const removeStep = (id) => {
+    const index = (getValues("steps") || []).findIndex((step) => step.id === id);
+    if (index >= 0) remove(index);
+  };
+  const reorderStepAtY = useCallback((clientY) => {
+    const activeId = dragStepIdRef.current;
+    const list = stepListRef.current;
+    if (!activeId || !list) return;
+    const rows = Array.from(list.querySelectorAll("[data-step-id]"));
+    if (!rows.length) return;
+    let targetIndex = rows.length;
+    rows.some((row, index) => {
+      const rect = row.getBoundingClientRect();
+      if (clientY < rect.top + rect.height / 2) {
+        targetIndex = index;
+        return true;
+      }
+      return false;
+    });
+    const steps = getValues("steps") || [];
+    const currentIndex = steps.findIndex((step) => step.id === activeId);
+    if (currentIndex < 0) return;
+    const endIndex = Math.max(0, Math.min(steps.length - 1, targetIndex > currentIndex ? targetIndex - 1 : targetIndex));
+    if (endIndex === currentIndex) return;
+    move(currentIndex, endIndex);
+  }, [getValues, move]);
+  const startStepDrag = useCallback((event, id, inputType = "pointer") => {
+    if (event.button !== undefined && event.button !== 0) return;
+    if (dragStepIdRef.current) {
+      event.preventDefault();
+      event.stopPropagation();
+      return;
+    }
     event.preventDefault();
-    onSave({
-      ...form,
-      title: isDailyCheckin ? "一起打卡！" : form.title,
-      itemType: isDailyCheckin ? "checkin" : form.itemType,
-      ownerId: isDailyCheckin ? "shared" : form.ownerId,
-      repeatRule: isDailyCheckin ? "daily@03:00" : form.repeatRule,
-      durationMin: Number(form.durationMin) || 0,
-      steps: form.steps
+    event.stopPropagation();
+    dragCleanupRef.current?.();
+    dragStepIdRef.current = id;
+    setDragStepId(id);
+    const target = event.currentTarget;
+    const pointerId = inputType === "pointer" ? event.pointerId : undefined;
+    const moveEventName = inputType === "mouse" ? "mousemove" : "pointermove";
+    const upEventName = inputType === "mouse" ? "mouseup" : "pointerup";
+    if (inputType === "pointer") target.setPointerCapture?.(pointerId);
+    const onMove = (moveEvent) => {
+      if (inputType === "pointer" && pointerId !== undefined && moveEvent.pointerId !== pointerId) return;
+      moveEvent.preventDefault();
+      reorderStepAtY(moveEvent.clientY);
+    };
+    const stopDrag = (stopEvent) => {
+      if (inputType === "pointer" && pointerId !== undefined && stopEvent?.pointerId !== undefined && stopEvent.pointerId !== pointerId) return;
+      window.removeEventListener(moveEventName, onMove);
+      window.removeEventListener(upEventName, stopDrag);
+      window.removeEventListener("pointercancel", stopDrag);
+      if (inputType === "pointer") {
+        try {
+          target.releasePointerCapture?.(pointerId);
+        } catch {
+          // Pointer capture can already be released by the browser on pointerup.
+        }
+      }
+      dragCleanupRef.current = null;
+      dragStepIdRef.current = "";
+      setDragStepId("");
+    };
+    dragCleanupRef.current = stopDrag;
+    window.addEventListener(moveEventName, onMove, { passive: false });
+    window.addEventListener(upEventName, stopDrag);
+    if (inputType === "pointer") window.addEventListener("pointercancel", stopDrag);
+    reorderStepAtY(event.clientY);
+  }, [reorderStepAtY]);
+  useEffect(() => {
+    return () => dragCleanupRef.current?.();
+  }, []);
+  const submit = handleSubmit((values) => {
+    return onSave({
+      ...values,
+      title: isDailyCheckin ? "一起打卡！" : values.title,
+      itemType: isDailyCheckin ? "checkin" : values.itemType,
+      ownerId: isDailyCheckin ? "shared" : values.ownerId,
+      priority: isDailyCheckin ? "normal" : values.priority,
+      repeatRule: isDailyCheckin ? "daily@03:00" : values.repeatRule,
+      durationMin: Number(values.durationMin) || 0,
+      tags: normalizeEditableTags(values.tags),
+      steps: (values.steps || [])
         .map((step, index) => ({
           id: step.id || `step-${index + 1}`,
-          title: step.title.trim(),
+          title: String(step.title || "").trim(),
           ownerId: step.ownerId,
           estimateMin: Number(step.estimateMin) || 0,
           status: step.status === "done" ? "done" : "todo",
@@ -3388,7 +3768,7 @@ function CardEditor({ card, profiles, onClose, onSave, onDelete }) {
         }))
         .filter((step) => step.title),
     });
-  };
+  });
   const participants = form.ownerId === "shared" ? profiles.map((profile) => profile.id) : [form.ownerId];
   const ownerChoices = [
     { id: "shared", label: "共同" },
@@ -3398,148 +3778,271 @@ function CardEditor({ card, profiles, onClose, onSave, onDelete }) {
     { id: "", label: "共同" },
     ...profiles.map((profile) => ({ id: profile.id, label: profile.displayName })),
   ];
+  const [editorSection, setEditorSection] = useState(isDailyCheckin ? "steps" : "compose");
+  const ownerLabel = ownerChoices.find((choice) => choice.id === form.ownerId)?.label || "共同";
+  const priorityLabel = priorityOptions.find((choice) => choice.id === form.priority)?.label || "普通";
+  const stepCount = formSteps.filter((step) => String(step.title || "").trim()).length || formSteps.length;
+  const editorTabs = [
+    { id: "compose", label: "内容", icon: "edit", meta: itemTypeLabels[form.itemType] || "生活卡" },
+    { id: "plan", label: isDailyCheckin ? "规则" : "时间", icon: "calendar", meta: isDailyCheckin ? "每日" : form.plannedAt ? "已安排" : priorityLabel },
+    { id: "steps", label: isDailyCheckin ? "打卡" : "步骤", icon: "rows", meta: `${stepCount} 项` },
+  ];
+  const stepTemplates = [
+    { id: "starter", icon: "sparkle", label: isDailyCheckin ? "今日打卡" : "先动5分钟" },
+    { id: "three", icon: "rows", label: "三步走" },
+    profiles.length > 1 ? { id: "split", icon: "users", label: "分给两个人" } : null,
+  ].filter(Boolean);
+  const requestClose = useCallback(() => {
+    if (isDirty && !isSubmitting && !window.confirm("还有没保存的改动，要先离开吗？")) return;
+    onClose();
+  }, [isDirty, isSubmitting, onClose]);
   const showDelete = !card.isDraft;
   return (
-    <div className="sheet-backdrop" role="presentation" onClick={onClose}>
-      <form className="edit-sheet" onSubmit={submit} onClick={(event) => event.stopPropagation()}>
-        <span className="sheet-handle" aria-hidden="true" />
-        <div className="sheet-head">
-          <div className="edit-preview" style={{ "--type": "var(--pink)" }}>
-            <AvatarPair profiles={profiles} ids={participants} />
-          </div>
-          <div className="sheet-icon-actions">
-            {showDelete ? <IconButton icon="trash" label="删除" danger onClick={onDelete} /> : null}
-            <IconButton icon="x" label="关闭" onClick={onClose} />
-          </div>
-        </div>
-        <label className="edit-title-field">
-          <textarea
-            rows={2}
-            value={form.title}
-            onChange={(event) => update("title", event.target.value)}
-            autoFocus
-            aria-label="标题"
-            placeholder="标题"
-            readOnly={isDailyCheckin}
-          />
-        </label>
-        <label className="quiet-field edit-detail-field">
-          <span>注意</span>
-          <textarea rows={4} value={form.detail} onChange={(event) => update("detail", event.target.value)} />
-        </label>
-        <div className="edit-grid">
-          <label className="quiet-field">
-            <span>日期</span>
-            <input type="date" value={form.date} onChange={(event) => update("date", event.target.value)} disabled={isDailyCheckin} />
-          </label>
-          <label className="quiet-field">
-            <span>类型</span>
-            <select value={form.itemType} onChange={(event) => update("itemType", event.target.value)} disabled={isDailyCheckin}>
-              {itemTypeOptions.map(([id, label]) => <option key={id} value={id}>{label}</option>)}
-            </select>
-          </label>
-          <label className="quiet-field">
-            <span>归属</span>
-            <select value={form.ownerId} onChange={(event) => update("ownerId", event.target.value)} disabled={card.sourceType === "checkin" || isDailyCheckin}>
-              {ownerChoices.map((choice) => <option key={choice.id} value={choice.id}>{choice.label}</option>)}
-            </select>
-          </label>
-        </div>
-        <details className="planning-fold" open={isDailyCheckin}>
-          <summary>
-            <Icon name="calendar" />
-            <span>{isDailyCheckin ? "打卡项" : "计划"}</span>
-          </summary>
-          {!isDailyCheckin ? (
-            <div className="edit-grid">
-              <label className="quiet-field">
-                <span>开始</span>
-                <input type="datetime-local" value={form.plannedAt} onChange={(event) => update("plannedAt", event.target.value)} />
-              </label>
-              <label className="quiet-field">
-                <span>截止</span>
-                <input type="datetime-local" value={form.dueAt} onChange={(event) => update("dueAt", event.target.value)} />
-              </label>
-              <label className="quiet-field">
-                <span>预计</span>
-                <input type="number" min="0" step="5" value={form.durationMin} onChange={(event) => update("durationMin", event.target.value)} />
-              </label>
+    <Dialog.Root open onOpenChange={(nextOpen) => {
+      if (!nextOpen) requestClose();
+    }}>
+      <Dialog.Portal>
+        <Dialog.Overlay className="sheet-backdrop" />
+        <Dialog.Content className="edit-sheet" aria-describedby={undefined}>
+          <Dialog.Title className="sr-only">{card.isDraft ? "新增生活卡" : "编辑生活卡"}</Dialog.Title>
+          <span className="sheet-handle" aria-hidden="true" />
+          <form className="edit-sheet-form" onSubmit={submit}>
+            <div className="sheet-head">
+              <div className="edit-studio-id">
+                <div className="edit-preview" style={{ "--type": "var(--pink)" }}>
+                  <AvatarPair profiles={profiles} ids={participants} />
+                </div>
+                <span>
+                  <strong>{card.isDraft ? "新增生活卡" : "编辑生活卡"}</strong>
+                  <em>{ownerLabel} · {form.date || "未定日期"}</em>
+                </span>
+                <b className={cx("edit-dirty-badge", !isDirty && "is-clean")}>{isDirty ? "未保存" : "已保存"}</b>
+              </div>
+              <div className="sheet-icon-actions">
+                {showDelete ? <IconButton icon="trash" label="删除" danger onClick={onDelete} /> : null}
+                <IconButton icon="x" label="关闭" onClick={requestClose} />
+              </div>
             </div>
-          ) : null}
-          <section className="step-editor" aria-label="步骤">
-            <div className="step-editor-head">
-              <span>{isDailyCheckin ? "打卡项" : "步骤"}</span>
-              <button type="button" onClick={addStep}>
-                <Icon name="plus" />
-                <em>添加</em>
-              </button>
+
+            <div className="edit-title-block">
+              <label className="edit-title-field">
+                <textarea
+                  rows={2}
+                  {...register("title")}
+                  autoFocus={!isDailyCheckin}
+                  aria-label="标题"
+                  placeholder="标题"
+                  readOnly={isDailyCheckin}
+                />
+              </label>
+              {errors.title ? <p className="form-error inline">{errors.title.message}</p> : null}
             </div>
-            <div className="step-editor-list">
-              {form.steps.length ? form.steps.map((step, index) => (
-                <div
-                  key={step.id}
-                  className={cx("step-editor-row", dragStepId === step.id && "is-dragging")}
-                  style={{ "--step-owner": stepOwnerMeta(step, profiles, participants).color }}
-                  draggable
-                  onDragStart={() => setDragStepId(step.id)}
-                  onDragEnd={() => setDragStepId("")}
-                  onDragOver={(event) => event.preventDefault()}
-                  onDrop={(event) => {
-                    event.preventDefault();
-                    dropStep(step.id);
-                    setDragStepId("");
-                  }}
-                >
-                  <span className="step-drag" title="拖动">
-                    <Icon name="grip" />
-                  </span>
-                  <input
-                    value={step.title}
-                    onChange={(event) => updateStep(step.id, { title: event.target.value })}
-                    placeholder={`第 ${index + 1} 步`}
-                    aria-label={`第 ${index + 1} 步`}
-                  />
-                  <label>
-                    <span>分钟</span>
-                    <input
-                      type="number"
-                      min="0"
-                      step="5"
-                      value={step.estimateMin}
-                      onChange={(event) => updateStep(step.id, { estimateMin: event.target.value })}
-                      aria-label={`${step.title || `第 ${index + 1} 步`} 预计分钟`}
+
+            <Tabs.Root className="edit-tabs-root" value={editorSection} onValueChange={setEditorSection}>
+              <Tabs.List className="edit-section-tabs" aria-label="生活卡编辑区">
+                {editorTabs.map((tabItem) => (
+                  <Tabs.Trigger key={tabItem.id} value={tabItem.id}>
+                    <Icon name={tabItem.icon} />
+                    <span>{tabItem.label}</span>
+                    <em>{tabItem.meta}</em>
+                  </Tabs.Trigger>
+                ))}
+              </Tabs.List>
+
+              <Tabs.Content className="edit-section-panel" value="compose">
+                <label className="edit-line-field edit-note-field">
+                  <span>注意</span>
+                  <textarea rows={4} {...register("detail")} placeholder="补一句需要记住的提醒、背景或关照方式" />
+                </label>
+                <div className="edit-field-grid">
+                  <label className="edit-line-field">
+                    <span>日期</span>
+                    <input type="date" {...register("date")} disabled={isDailyCheckin} />
+                  </label>
+                  <label className="edit-line-field">
+                    <span>类型</span>
+                    <EditorSelect
+                      value={form.itemType}
+                      onValueChange={(value) => setValue("itemType", value, { shouldDirty: true, shouldValidate: true })}
+                      options={itemTypeOptions.map(([id, label]) => ({ id, label }))}
+                      disabled={isDailyCheckin}
+                      ariaLabel="类型"
                     />
                   </label>
-                  <label className="step-owner-field">
-                    <span>谁做</span>
-                    <select
-                      value={step.ownerId || ""}
-                      onChange={(event) => updateStep(step.id, { ownerId: event.target.value })}
-                      aria-label={`${step.title || `第 ${index + 1} 步`} 负责人`}
-                    >
-                      {stepOwnerChoices.map((choice) => <option key={choice.id || "shared"} value={choice.id}>{choice.label}</option>)}
-                    </select>
+                  <label className="edit-line-field">
+                    <span>归属</span>
+                    <EditorSelect
+                      value={form.ownerId}
+                      onValueChange={(value) => setValue("ownerId", value, { shouldDirty: true, shouldValidate: true })}
+                      options={ownerChoices}
+                      disabled={card.sourceType === "checkin" || isDailyCheckin}
+                      ariaLabel="归属"
+                    />
                   </label>
-                  <div className="step-row-actions">
-                    <IconButton icon="chevronUp" label="上移" onClick={() => moveStep(step.id, -1)} disabled={index === 0} />
-                    <IconButton icon="chevronDown" label="下移" onClick={() => moveStep(step.id, 1)} disabled={index === form.steps.length - 1} />
-                    <IconButton icon="trash" label="删除" danger onClick={() => removeStep(step.id)} />
-                  </div>
                 </div>
-              )) : (
-                <button className="step-editor-empty" type="button" onClick={addStep}>
-                  <Icon name="plus" />
-                  <span>添加第一步</span>
-                </button>
-              )}
+                <label className="edit-line-field">
+                  <span>标签</span>
+                  <input {...register("tags")} placeholder="用空格或逗号分开" />
+                  {errors.tags ? <em className="field-error">{errors.tags.message}</em> : null}
+                </label>
+              </Tabs.Content>
+
+              <Tabs.Content className="edit-section-panel" value="plan">
+                {isDailyCheckin ? (
+                  <div className="edit-static-rule">
+                    <Icon name="refresh" />
+                    <span>
+                      <strong>每天 03:00 刷新</strong>
+                      <em>这张卡固定为共同打卡，不需要额外安排时间。</em>
+                    </span>
+                  </div>
+                ) : (
+                  <>
+                    <div className="priority-choice" role="radiogroup" aria-label="优先级">
+                      {priorityOptions.map((option) => (
+                        <button
+                          key={option.id}
+                          type="button"
+                          className={cx(form.priority === option.id && "is-active", `is-${option.id}`)}
+                          onClick={() => setValue("priority", option.id, { shouldDirty: true, shouldValidate: true })}
+                          aria-pressed={form.priority === option.id ? "true" : "false"}
+                        >
+                          <Icon name={option.icon} />
+                          <span>
+                            <strong>{option.label}</strong>
+                            <em>{option.hint}</em>
+                          </span>
+                        </button>
+                      ))}
+                    </div>
+                    <div className="edit-field-grid is-time">
+                      <label className="edit-line-field">
+                        <span>开始</span>
+                        <input type="datetime-local" {...register("plannedAt")} />
+                      </label>
+                      <label className="edit-line-field">
+                        <span>截止</span>
+                        <input type="datetime-local" {...register("dueAt")} />
+                      </label>
+                      <label className="edit-line-field">
+                        <span>预计</span>
+                        <input type="number" min="0" step="5" {...register("durationMin")} placeholder="分钟" />
+                      </label>
+                    </div>
+                  </>
+                )}
+              </Tabs.Content>
+
+              <Tabs.Content className="edit-section-panel" value="steps">
+                <section className="step-editor" aria-label={isDailyCheckin ? "打卡项" : "步骤"}>
+                  <div className="step-editor-head">
+                    <span>{isDailyCheckin ? "打卡项" : "步骤"}</span>
+                    <button type="button" onClick={addStep}>
+                      <Icon name="plus" />
+                      <em>添加</em>
+                    </button>
+                  </div>
+                  <div className="step-template-row" aria-label="步骤模板">
+                    {stepTemplates.map((template) => (
+                      <button key={template.id} type="button" onClick={() => addStepTemplate(template.id)}>
+                        <Icon name={template.icon} />
+                        <span>{template.label}</span>
+                      </button>
+                    ))}
+                  </div>
+                  <div className="step-editor-list">
+                    {formSteps.length ? (
+                      <div className="step-editor-droppable" ref={stepListRef}>
+                        {formSteps.map((step, index) => (
+                          <div
+                            key={fields[index]?.formId || step.id}
+                            data-step-id={step.id}
+                            className={cx("step-editor-row", dragStepId === step.id && "is-dragging")}
+                            style={{ "--step-owner": stepOwnerMeta(step, profiles, participants).color }}
+                          >
+                            <input type="hidden" {...register(`steps.${index}.id`)} />
+                            <input type="hidden" {...register(`steps.${index}.status`)} />
+                            <button
+                              className="step-drag"
+                              type="button"
+                              aria-label={`拖动 ${step.title || `第 ${index + 1} 步`}`}
+                              aria-keyshortcuts="ArrowUp ArrowDown"
+                              onPointerDown={(event) => startStepDrag(event, step.id)}
+                              onMouseDown={(event) => startStepDrag(event, step.id, "mouse")}
+                              onKeyDown={(event) => {
+                                if (event.key === "ArrowUp") {
+                                  event.preventDefault();
+                                  moveStep(step.id, -1);
+                                } else if (event.key === "ArrowDown") {
+                                  event.preventDefault();
+                                  moveStep(step.id, 1);
+                                }
+                              }}
+                            >
+                              <Icon name="grip" />
+                            </button>
+                            <div className="step-editor-main">
+                              <input
+                                className="step-title-input"
+                                {...register(`steps.${index}.title`)}
+                                placeholder={`第 ${index + 1} 步`}
+                                aria-label={`第 ${index + 1} 步`}
+                              />
+                              <div className="step-meta-controls">
+                                <label>
+                                  <Icon name="clock" />
+                                  <input
+                                    type="number"
+                                    min="0"
+                                    step="5"
+                                    {...register(`steps.${index}.estimateMin`)}
+                                    aria-label={`${step.title || `第 ${index + 1} 步`} 预计分钟`}
+                                  />
+                                  <span>分钟</span>
+                                </label>
+                                <label className="step-owner-field">
+                                  <Icon name="users" />
+                                  <EditorSelect
+                                    value={step.ownerId || ""}
+                                    onValueChange={(value) => setValue(`steps.${index}.ownerId`, value, { shouldDirty: true, shouldValidate: true })}
+                                    options={stepOwnerChoices}
+                                    ariaLabel={`${step.title || `第 ${index + 1} 步`} 负责人`}
+                                  />
+                                </label>
+                              </div>
+                            </div>
+                            <div className="step-row-actions">
+                              <IconButton icon="chevronUp" label="上移" onClick={() => moveStep(step.id, -1)} disabled={index === 0} />
+                              <IconButton icon="chevronDown" label="下移" onClick={() => moveStep(step.id, 1)} disabled={index === formSteps.length - 1} />
+                              <IconButton icon="trash" label="删除" danger onClick={() => removeStep(step.id)} />
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    ) : (
+                      <button className="step-editor-empty" type="button" onClick={addStep}>
+                        <Icon name="plus" />
+                        <span>添加第一步</span>
+                      </button>
+                    )}
+                  </div>
+                </section>
+              </Tabs.Content>
+            </Tabs.Root>
+            <div className="sheet-actions">
+              <IconButton
+                icon="check"
+                label={isSubmitting ? "保存中" : isDirty ? "保存修改" : card.isDraft ? "创建生活卡" : "已保存"}
+                type="submit"
+                primary
+                disabled={isSubmitting || (!isDirty && !card.isDraft)}
+                className="save-button"
+              />
             </div>
-          </section>
-        </details>
-        <div className="sheet-actions">
-          <IconButton icon="check" label="保存" type="submit" primary />
-        </div>
-      </form>
-    </div>
+          </form>
+        </Dialog.Content>
+      </Dialog.Portal>
+    </Dialog.Root>
   );
 }
 
@@ -3592,8 +4095,13 @@ function RawCaptureShelf({ data, profiles, currentUser, selectedDate, openDetail
 function DetailDrawer({ detail, profiles, onClose, onAction }) {
   const ownerIds = detail.ownerIds?.length ? detail.ownerIds : profiles.map((profile) => profile.id).slice(0, 2);
   return (
-    <div className="sheet-backdrop detail-backdrop" role="presentation" onClick={onClose}>
-      <aside className="detail-drawer" role="dialog" aria-modal="true" aria-label={detail.title} onClick={(event) => event.stopPropagation()}>
+    <Dialog.Root open onOpenChange={(nextOpen) => {
+      if (!nextOpen) onClose();
+    }}>
+      <Dialog.Portal>
+        <Dialog.Overlay className="sheet-backdrop detail-backdrop" />
+        <Dialog.Content className="detail-drawer" aria-describedby={undefined}>
+          <Dialog.Title className="sr-only">{detail.title}</Dialog.Title>
         <span className="sheet-handle" aria-hidden="true" />
         <div className="detail-head">
           <div className="detail-id">
@@ -3711,8 +4219,9 @@ function DetailDrawer({ detail, profiles, onClose, onAction }) {
             ))}
           </div>
         ) : null}
-      </aside>
-    </div>
+        </Dialog.Content>
+      </Dialog.Portal>
+    </Dialog.Root>
   );
 }
 
@@ -3882,9 +4391,17 @@ function buildDayContextChips(dayContext, fallbackCalendar) {
   const lunar = cleanStoryText(calendar.lunar);
   const weatherLabel = cleanStoryText(weather.label);
   const chips = [];
+  const seen = new Set();
+  const addChip = (chip) => {
+    const text = cleanStoryText(chip?.text);
+    const key = text.toLowerCase();
+    if (!text || seen.has(key)) return;
+    seen.add(key);
+    chips.push({ ...chip, text });
+  };
 
   if (weatherLabel) {
-    chips.push({
+    addChip({
       key: "weather",
       icon: weather.icon || (weather.isSunny ? "sun" : "cloud"),
       text: weatherLabel,
@@ -3892,10 +4409,10 @@ function buildDayContextChips(dayContext, fallbackCalendar) {
     });
   }
   if (weather.isSunny) {
-    chips.push({ key: "sunny", icon: "sun", text: "晴", tone: "sunny" });
+    addChip({ key: "sunny", icon: "sun", text: "晴", tone: "sunny" });
   }
   if (moonLabel) {
-    chips.push({
+    addChip({
       key: "moon",
       icon: "moon",
       text: illumination ? `${moonLabel} ${illumination}%` : moonLabel,
@@ -3903,16 +4420,16 @@ function buildDayContextChips(dayContext, fallbackCalendar) {
     });
   }
   if (solarTerm) {
-    chips.push({ key: "solar", icon: "sparkle", text: solarTerm, tone: "solar" });
+    addChip({ key: "solar", icon: "sparkle", text: solarTerm, tone: "solar" });
   }
   festivals.slice(0, 2).forEach((festival, index) => {
-    chips.push({ key: `festival-${index}`, icon: "star", text: festival, tone: "festival" });
+    addChip({ key: `festival-${index}`, icon: "star", text: festival, tone: "festival" });
   });
   if (lunar && chips.length < 5) {
-    chips.push({ key: "lunar", icon: "calendar", text: lunar, tone: "lunar" });
+    addChip({ key: "lunar", icon: "calendar", text: lunar, tone: "lunar" });
   }
   if (calendar.isRestDay && chips.length < 5) {
-    chips.push({ key: "rest", icon: "moon", text: "休", tone: "rest" });
+    addChip({ key: "rest", icon: "moon", text: "休", tone: "rest" });
   }
 
   return chips.slice(0, 6);
@@ -4020,6 +4537,7 @@ function DailySummaryPage({ data, profiles, currentUser, request, setData, selec
   const reviewDid = reviewEntryOrFallback(dailyReview.did, coreContributionItems, "小小推进");
   const reviewShortcoming = reviewEntryOrFallback(dailyReview.shortcoming, shortcomingFallbackItems, "还差一点");
   const reviewTomorrow = reviewEntryOrFallback(dailyReview.tomorrow, carryForwardItems, "明天带上");
+  const completionTimeline = (summary?.completionTimeline || []).slice(0, 12);
   const visibleCardTotal = Math.max(selectedCards.length, completedRows.length + missedRows.length);
   const sourceStats = [
     { key: "done", icon: "check", label: "完成", value: visibleCardTotal ? `${completedRows.length}/${visibleCardTotal}` : "0" },
@@ -4114,6 +4632,7 @@ function DailySummaryPage({ data, profiles, currentUser, request, setData, selec
               <p>{visibleDiary}</p>
             </section>
           ) : null}
+          <CompletionTimeline rows={completionTimeline} profiles={profiles} selectedDate={selectedDate} />
           {hasReviewLines ? (
             <div className="story-journal-lines">
               <JournalLine icon="star" label="最开心" entry={keyMoment} profiles={profiles} />
@@ -4216,6 +4735,41 @@ function JournalStats({ stats }) {
         </span>
       ))}
     </div>
+  );
+}
+
+function CompletionTimeline({ rows, profiles, selectedDate }) {
+  if (!rows?.length) return null;
+  return (
+    <section className="completion-timeline" aria-label="完成时间轴">
+      <div className="completion-timeline-head">
+        <Icon name="clock" />
+        <strong>完成时间轴</strong>
+      </div>
+      <div className="completion-timeline-list">
+        {rows.map((row) => {
+          const actor = userDisplayName(row.actorId, profiles, "有人");
+          const target = userDisplayName(row.targetUserId || row.actorId, profiles, actor);
+          const proxy = row.actorId && row.targetUserId && row.actorId !== row.targetUserId;
+          const taskDate = taskDateLabel(row.taskDate, selectedDate);
+          const stepTitle = cleanCardText(row.stepTitle || "");
+          return (
+            <article key={row.id || `${row.completedAt}-${row.title}`}>
+              <time>{completionTimeLabel(row.completedAt, selectedDate)}</time>
+              <span>
+                <strong>{row.title}</strong>
+                {stepTitle ? <b>{stepTitle}</b> : null}
+                <em>
+                  {taskDate ? `${taskDate}的任务` : "任务"}
+                  {" · "}
+                  {proxy ? `${actor}帮${target}完成` : `${target}完成`}
+                </em>
+              </span>
+            </article>
+          );
+        })}
+      </div>
+    </section>
   );
 }
 
@@ -4410,7 +4964,16 @@ function StoryList({ title, rows, profiles, onOpen, muted, accent }) {
 
 function MemoryPage({ data, profiles, currentUser, request, setData, selectedDate, openDetail }) {
   const page = data.personalPages?.[currentUser?.id] || {};
-  const [form, setForm] = useState(page);
+  const {
+    register,
+    handleSubmit,
+    reset,
+    formState: { errors, isSubmitting, isDirty },
+  } = useForm({
+    resolver: zodResolver(personalPageSchema),
+    defaultValues: page,
+    mode: "onBlur",
+  });
   const [activeSurface, setActiveSurface] = useState("");
   const memoryItems = data.memoryItems || [];
   const memorySurfaces = useMemo(() => {
@@ -4428,16 +4991,19 @@ function MemoryPage({ data, profiles, currentUser, request, setData, selectedDat
   const selectedSurface = memorySurfaces.find((surface) => surface.key === activeSurface) || firstFilledSurface;
   const featuredMemory = selectedSurface?.items?.[0] || null;
   const listedMemories = (selectedSurface?.items || []).slice(featuredMemory ? 1 : 0, featuredMemory ? 9 : 8);
-  useEffect(() => setForm(page), [page.userId, page.updatedAt]);
+  useEffect(() => reset(page), [page.userId, page.updatedAt, reset]);
 
-  async function save(event) {
-    event.preventDefault();
+  const save = handleSubmit(async (values) => {
     const result = await request("/api/couple/personal-page", {
       method: "POST",
-      body: { date: selectedDate, ...form },
+      body: { date: selectedDate, ...values },
     });
-    if (result) setData(result.state);
-  }
+    if (result) {
+      setData(result.state);
+      reset(values);
+      toast.success("长期记忆已保存");
+    }
+  });
 
   return (
     <section className="memory-page">
@@ -4499,11 +5065,12 @@ function MemoryPage({ data, profiles, currentUser, request, setData, selectedDat
           ].map(([key, label]) => (
             <label key={key} className="memory-block">
               <span>{label}</span>
-              <textarea rows={4} value={form[key] || ""} onChange={(event) => setForm({ ...form, [key]: event.target.value })} />
+              <textarea rows={4} {...register(key)} />
+              {errors[key] ? <em className="field-error">{errors[key].message}</em> : null}
             </label>
           ))}
           <div className="memory-save-row">
-            <IconButton icon="check" label="保存长期记忆" type="submit" primary />
+            <IconButton icon="check" label={isSubmitting ? "保存中" : isDirty ? "保存长期记忆" : "已保存"} type="submit" primary disabled={isSubmitting || !isDirty} />
           </div>
         </form>
       </details>
@@ -4514,6 +5081,7 @@ function MemoryPage({ data, profiles, currentUser, request, setData, selectedDat
 function MemoryItemCard({ item, profiles, currentUser, onOpen, featured = false }) {
   const ids = memoryOwnerIds(item, profiles, currentUser);
   const surface = memorySurfaceDef(memorySurfaceKey(item));
+  const dateLabel = item.source === "profile" ? "" : item.suggestedDate;
   return (
     <button className={cx("memory-card", `memory-${item.group || "care"}`, `is-${surface.key}`, featured && "is-featured")} type="button" onClick={onOpen}>
       <div className="memory-card-head">
@@ -4523,8 +5091,8 @@ function MemoryItemCard({ item, profiles, currentUser, onOpen, featured = false 
       </div>
       <strong>{item.title}</strong>
       {item.detail ? <p>{item.detail}</p> : null}
-      {item.suggestedDate ? (
-        <em>{item.suggestedDate}</em>
+      {dateLabel ? (
+        <em>{dateLabel}</em>
       ) : null}
     </button>
   );
@@ -4532,40 +5100,51 @@ function MemoryItemCard({ item, profiles, currentUser, onOpen, featured = false 
 
 function SettingsPage({ currentUser, profiles, request, setData, selectedDate }) {
   const [avatarPreviewUrl, setAvatarPreviewUrl] = useState("");
-  const [form, setForm] = useState(() => ({
+  const defaultValues = useMemo(() => ({
     displayName: currentUser?.displayName || "",
     initials: currentUser?.initials || "",
     color: currentUser?.color || "#ff6fa8",
     avatar: currentUser?.avatar || "pink-cat",
-  }));
+  }), [currentUser]);
+  const {
+    register,
+    handleSubmit,
+    reset,
+    setValue,
+    watch,
+    formState: { errors, isDirty, isSubmitting },
+  } = useForm({
+    resolver: zodResolver(profileFormSchema),
+    defaultValues,
+    mode: "onBlur",
+  });
+  const form = watch();
   const fileRef = useRef(null);
   useEffect(() => {
-    setForm({
-      displayName: currentUser?.displayName || "",
-      initials: currentUser?.initials || "",
-      color: currentUser?.color || "#ff6fa8",
-      avatar: currentUser?.avatar || "pink-cat",
-    });
+    reset(defaultValues);
     setAvatarPreviewUrl("");
-  }, [currentUser]);
+  }, [defaultValues, reset]);
 
   async function chooseAvatarFile(event) {
     const file = event.target.files?.[0] || null;
     if (!file) return;
-    setForm((current) => ({ ...current, avatar: "custom" }));
+    setValue("avatar", "custom", { shouldDirty: true, shouldValidate: true });
     setAvatarPreviewUrl(await readFileAsDataUrl(file));
   }
 
-  async function save(event) {
-    event.preventDefault();
+  const save = handleSubmit(async (values) => {
     const file = fileRef.current?.files?.[0] || null;
     const avatarAsset = file ? { name: file.name, dataUrl: await readFileAsDataUrl(file) } : null;
     const result = await request("/api/couple/profile", {
       method: "POST",
-      body: { date: selectedDate, ...form, avatarAsset },
+      body: { date: selectedDate, ...values, avatarAsset },
     });
-    if (result) setData(result.state);
-  }
+    if (result) {
+      setData(result.state);
+      reset(values);
+      toast.success("设置已保存");
+    }
+  });
 
   const preview = {
     ...currentUser,
@@ -4586,27 +5165,30 @@ function SettingsPage({ currentUser, profiles, request, setData, selectedDate })
             <CatAvatar profile={preview} className="is-hero" />
             <strong>{form.displayName}</strong>
           </span>
-          <IconButton icon="check" label="保存设置" type="submit" primary />
+          <IconButton icon="check" label={isSubmitting ? "保存中" : isDirty ? "保存设置" : "已保存"} type="submit" primary disabled={isSubmitting || !isDirty} />
         </div>
         <label className="quiet-field">
           <span>昵称</span>
-          <input value={form.displayName} onChange={(event) => setForm({ ...form, displayName: event.target.value })} />
+          <input {...register("displayName")} />
+          {errors.displayName ? <em className="field-error">{errors.displayName.message}</em> : null}
         </label>
         <label className="quiet-field">
           <span>短标记</span>
-          <input maxLength={2} value={form.initials} onChange={(event) => setForm({ ...form, initials: event.target.value })} />
+          <input maxLength={2} {...register("initials")} />
+          {errors.initials ? <em className="field-error">{errors.initials.message}</em> : null}
         </label>
         <label className="quiet-field">
           <span>颜色</span>
-          <input type="color" value={form.color} onChange={(event) => setForm({ ...form, color: event.target.value })} />
+          <input type="color" {...register("color")} />
+          {errors.color ? <em className="field-error">{errors.color.message}</em> : null}
         </label>
         <label className="quiet-field">
           <span>头像</span>
           <select
-            value={form.avatar}
+            {...register("avatar")}
             onChange={(event) => {
               const avatar = event.target.value;
-              setForm({ ...form, avatar });
+              setValue("avatar", avatar, { shouldDirty: true, shouldValidate: true });
               if (avatar !== "custom") {
                 setAvatarPreviewUrl("");
                 if (fileRef.current) fileRef.current.value = "";
@@ -4619,6 +5201,7 @@ function SettingsPage({ currentUser, profiles, request, setData, selectedDate })
             <option value="yellow-cat">奶黄小猫</option>
             <option value="custom">自定义头像</option>
           </select>
+          {errors.avatar ? <em className="field-error">{errors.avatar.message}</em> : null}
         </label>
         <label className="upload-row">
           <Icon name="camera" />

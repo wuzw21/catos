@@ -26,7 +26,7 @@ function writeIfMissing(targetPath, content) {
 
 function copyIfMissing(fromPath, toPath) {
   ensureDir(path.dirname(toPath));
-  if (!fs.existsSync(toPath)) {
+  if (!fs.existsSync(toPath) && fs.existsSync(fromPath)) {
     fs.copyFileSync(fromPath, toPath);
   }
 }

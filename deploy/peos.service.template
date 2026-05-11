@@ -1,0 +1,28 @@
+[Unit]
+Description=PEOS private couple web service
+After=network-online.target tailscaled.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User={{PEOS_SERVICE_USER}}
+Group={{PEOS_SERVICE_GROUP}}
+WorkingDirectory={{PEOS_APP_DIR}}
+EnvironmentFile={{PEOS_ENV_FILE}}
+Environment=NODE_ENV=production
+Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+ExecStart=/usr/bin/env npm run serve
+Restart=always
+RestartSec=5
+TimeoutStopSec=20
+KillSignal=SIGTERM
+
+# Keep the service constrained while still allowing PEOS content writes and Codex auth reads.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=false
+ReadWritePaths={{PEOS_ROOT_DIR}} /tmp /var/tmp
+
+[Install]
+WantedBy=multi-user.target

@@ -938,6 +938,12 @@ function normalizeDurationMin(value, fallback = 0) {
   return Math.max(5, Math.min(1440, Math.round(parsed)));
 }
 
+function normalizeManualOrder(value, fallback = 0) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.max(-1000000, Math.min(1000000, Math.round(parsed)));
+}
+
 function normalizeDateTime(value) {
   const raw = sanitizeText(value, 40).replace(" ", "T");
   if (!raw) return "";
@@ -1614,12 +1620,8 @@ function normalizeParticipants(store, ownerId, participants, userId) {
 }
 
 function resolveStatusTargetUserId(store, userId, targetUserId) {
-  if (process.env.PEOS_COUPLE_ALLOW_CROSS_USER_STATUS === "1") {
-    const profileIds = getProfileIds(store);
-    return profileIds.includes(targetUserId) ? targetUserId : userId;
-  }
-
-  return userId;
+  const profileIds = getProfileIds(store);
+  return profileIds.includes(targetUserId) ? targetUserId : userId;
 }
 
 function lifeCardStatusByUserFromSteps(item, steps = normalizeLifeCardSteps(item.steps, item.participants, item.title)) {
@@ -1684,6 +1686,24 @@ function markCheckinStatusOperation(item, date, targetUserId, userId, timestamp 
   };
 }
 
+function assertUserCanCompleteItem(item, userId) {
+  if (!item || !userId) {
+    throw new Error("cannot complete this item");
+  }
+  const participants = Array.isArray(item.participants) ? item.participants : [];
+  if (item.ownerId === "shared" || item.ownerId === userId || participants.includes(userId)) return;
+  throw new Error("cannot complete another user's item");
+}
+
+function assertStatusTargetAllowed(item, userId, targetUserId, payload = {}) {
+  if (targetUserId === userId) {
+    assertUserCanCompleteItem(item, userId);
+    return;
+  }
+  if (payload.proxyConfirmed === true) return;
+  throw new Error("proxy completion requires confirmation");
+}
+
 function applyStepAwareStatusToggle(item, targetUserId, userId, payload = {}) {
   const currentStatus = validStatuses.has(item.statusByUser?.[targetUserId])
     ? item.statusByUser[targetUserId]
@@ -1745,6 +1765,38 @@ function publicSourceItem(store, item, sourceType, userId) {
   return publicScheduleItemCard(store, item, sourceType, userId);
 }
 
+function reorderLifeCards(userId, payload = {}) {
+  return mutateStore((store) => {
+    const date = normalizeDate(payload.date || businessDate());
+    const order = Array.isArray(payload.order) ? payload.order : [];
+    const timestamp = nowIso();
+    const updated = [];
+
+    order.forEach((entry, index) => {
+      const sourceType = sanitizeText(entry?.sourceType, 40);
+      const sourceId = sanitizeText(entry?.sourceId || entry?.id, 80);
+      const item = findLifeCardSourceItem(store, sourceType, sourceId);
+      if (!item) return;
+      item.manualOrder = normalizeManualOrder(entry.manualOrder, (index + 1) * 1000);
+      item.updatedBy = userId;
+      item.updatedAt = timestamp;
+      updated.push({ sourceType, sourceId: item.id, manualOrder: item.manualOrder });
+    });
+
+    if (!updated.length) {
+      throw new Error("life card order is empty");
+    }
+
+    recordOperation(store, userId, "reorder", "life-card", date, {
+      date,
+      sourceType: "life-card",
+      title: `${updated.length} cards`,
+    });
+
+    return updated;
+  });
+}
+
 function toggleLifeCardStep(userId, payload = {}) {
   return mutateStore((store) => {
     const sourceType = sanitizeText(payload.sourceType, 40);
@@ -1753,17 +1805,20 @@ function toggleLifeCardStep(userId, payload = {}) {
       throw new Error("life card item not found");
     }
 
-    const profileIds = getProfileIds(store);
-    const targetUserId = profileIds.includes(payload.targetUserId) ? payload.targetUserId : userId;
-    if (!item.participants.includes(targetUserId)) {
-      item.participants.push(targetUserId);
-    }
-
+    const requestedTargetUserId = resolveStatusTargetUserId(store, userId, payload.targetUserId);
     const steps = normalizeLifeCardSteps(item.steps, item.participants, item.title);
     const stepId = sanitizeText(payload.stepId, 80);
     const stepIndex = steps.findIndex((step) => step.id === stepId);
     if (stepIndex === -1) {
       throw new Error("life card step not found");
+    }
+    const stepOwnerId = sanitizeText(steps[stepIndex].ownerId, 80);
+    const targetUserId = stepOwnerId || requestedTargetUserId;
+    if (targetUserId !== userId && payload.proxyConfirmed !== true) {
+      throw new Error("proxy completion requires confirmation");
+    }
+    if (!item.participants.includes(targetUserId)) {
+      item.participants.push(targetUserId);
     }
 
     const currentStatus = steps[stepIndex].status === "done" ? "done" : "todo";
@@ -1787,6 +1842,7 @@ function toggleLifeCardStep(userId, payload = {}) {
       title: item.title,
       stepId,
       stepTitle: steps[stepIndex].title,
+      targetUserId,
       status: nextStatus,
       sourceType,
     });
@@ -1936,6 +1992,7 @@ function createScheduleItem(store, payload, userId) {
     memoryKinds: normalizeLifeCardMemoryKinds(payload.memoryKinds || payload.memoryKind, { ...payload, itemType }),
     repeatRule: sanitizeText(payload.repeatRule, 120),
     priority: normalizePriority(payload.priority),
+    manualOrder: normalizeManualOrder(payload.manualOrder, 0),
     ownerId,
     participants: normalizedParticipants,
     statusByUser: Object.fromEntries(normalizedParticipants.map((id) => [id, "todo"])),
@@ -1980,6 +2037,7 @@ function createTodoItem(store, payload, userId) {
     memoryKinds: normalizeLifeCardMemoryKinds(payload.memoryKinds || payload.memoryKind, { ...payload, itemType }),
     repeatRule: sanitizeText(payload.repeatRule, 120),
     priority: normalizePriority(payload.priority),
+    manualOrder: normalizeManualOrder(payload.manualOrder, 0),
     ownerId,
     participants,
     statusByUser: Object.fromEntries(participants.map((id) => [id, "todo"])),
@@ -2085,6 +2143,7 @@ function ensureDailyCheckinCard(store, date = businessDate(), userId = "system")
     memoryKinds: [],
     repeatRule: "daily@03:00",
     priority: "normal",
+    manualOrder: normalizeManualOrder(existing?.manualOrder, 0),
     ownerId: "shared",
     participants: profileIds,
     statusByUser: Object.fromEntries(profileIds.map((id) => [id, "todo"])),
@@ -2124,6 +2183,7 @@ function createCheckinItem(store, payload, userId) {
     tags: normalizeLifeCardTags(payload.tags, { ...payload, itemType }),
     memoryKinds: normalizeLifeCardMemoryKinds(payload.memoryKinds || payload.memoryKind, { ...payload, itemType }),
     repeatRule: sanitizeText(payload.repeatRule || "daily", 120),
+    manualOrder: normalizeManualOrder(payload.manualOrder, 0),
     ownerId: "shared",
     participants,
     statusByDate: {},
@@ -2161,6 +2221,7 @@ function createDeadlineItem(store, payload, userId) {
     memoryKinds: normalizeLifeCardMemoryKinds(payload.memoryKinds || payload.memoryKind, { ...payload, itemType }),
     repeatRule: sanitizeText(payload.repeatRule, 120),
     priority: normalizePriority(payload.priority),
+    manualOrder: normalizeManualOrder(payload.manualOrder, 0),
     ownerId,
     participants,
     statusByUser: Object.fromEntries(participants.map((id) => [id, "todo"])),
@@ -2270,6 +2331,7 @@ function ensureStoreShape(store) {
       linkedMemoryIds: normalizeIdList(item.linkedMemoryIds, 12),
       tags: normalizeLifeCardTags(item.tags, item),
       memoryKinds: normalizeLifeCardMemoryKinds(item.memoryKinds || item.memoryKind, item),
+      manualOrder: normalizeManualOrder(item.manualOrder, 0),
       timeEntries: normalizeLifeCardTimeEntries(item.timeEntries),
     }));
   });
@@ -2386,6 +2448,7 @@ function recordOperation(store, userId, action, entityType, entityId, meta = {})
     meta: {
       sourceType: sanitizeText(meta.sourceType, 80),
       title: sanitizeText(meta.title, 180),
+      stepTitle: sanitizeText(meta.stepTitle, 180),
       status: sanitizeText(meta.status, 40),
     },
   });
@@ -2600,6 +2663,22 @@ function publicSummaryThing(item) {
   };
 }
 
+function publicCompletionTimelineItem(item = {}) {
+  return {
+    id: sanitizeText(item.id, 120),
+    action: sanitizeText(item.action, 80),
+    entityType: sanitizeText(item.entityType, 80),
+    entityId: sanitizeText(item.entityId, 120),
+    taskDate: normalizeDate(item.taskDate || item.date, ""),
+    completedAt: sanitizeText(item.completedAt || item.createdAt, 40),
+    actorId: sanitizeText(item.actorId, 80),
+    targetUserId: sanitizeText(item.targetUserId, 80),
+    title: sanitizeText(item.title, 180),
+    stepTitle: sanitizeText(item.stepTitle, 180),
+    status: sanitizeText(item.status, 40),
+  };
+}
+
 function timelineSideForItem(item, userId) {
   if (item.ownerId && item.ownerId !== "shared") {
     return item.ownerId === userId ? "self" : "other";
@@ -2677,10 +2756,16 @@ function buildTimelineDays(store, userId, selectedDate) {
   return weekDays.map((day) => grouped.get(day.id));
 }
 
-function publicDailySummary(summary) {
+function publicDailySummary(summary, options = {}) {
   if (!summary || typeof summary !== "object") {
     return null;
   }
+  const liveCompletionTimeline = Array.isArray(options.completionTimeline)
+    ? options.completionTimeline.map(publicCompletionTimelineItem).filter((item) => item.title && item.completedAt)
+    : [];
+  const storedCompletionTimeline = Array.isArray(summary.completionTimeline)
+    ? summary.completionTimeline.map(publicCompletionTimelineItem).filter((item) => item.title && item.completedAt)
+    : [];
 
   return {
     date: summary.date || "",
@@ -2697,6 +2782,7 @@ function publicDailySummary(summary) {
     completed: Array.isArray(summary.completed) ? summary.completed.map(publicSummaryThing) : [],
     missed: Array.isArray(summary.missed) ? summary.missed.map(publicSummaryThing) : [],
     moments: Array.isArray(summary.moments) ? summary.moments : [],
+    completionTimeline: liveCompletionTimeline.length ? liveCompletionTimeline : storedCompletionTimeline,
     memoryHooks: Array.isArray(summary.memoryHooks) ? summary.memoryHooks.map(publicRelationshipInsight) : [],
     locations: sanitizeList(summary.locations, 8, 80),
     weather: summary.weather && typeof summary.weather === "object" ? normalizeDayContext({ date: summary.date, weather: summary.weather }).weather : null,
@@ -2730,6 +2816,7 @@ function publicScheduleItem(item, profileIds) {
     memoryKinds: normalizeLifeCardMemoryKinds(item.memoryKinds || item.memoryKind, item),
     repeatRule: item.repeatRule || "",
     priority: normalizePriority(item.priority),
+    manualOrder: normalizeManualOrder(item.manualOrder, 0),
     ownerId: item.ownerId || "shared",
     participants: normalizedParticipants,
     statusByUser: Object.fromEntries(
@@ -2769,6 +2856,7 @@ function publicTodoItem(item, profileIds) {
     memoryKinds: normalizeLifeCardMemoryKinds(item.memoryKinds || item.memoryKind, item),
     repeatRule: item.repeatRule || "",
     priority: normalizePriority(item.priority),
+    manualOrder: normalizeManualOrder(item.manualOrder, 0),
     bucket: normalizeTodoBucket(item.bucket),
     ownerId: item.ownerId || "shared",
     participants: normalizedParticipants,
@@ -2811,6 +2899,7 @@ function publicCheckinItem(item, profileIds, date) {
     tags: normalizeLifeCardTags(item.tags, item),
     memoryKinds: normalizeLifeCardMemoryKinds(item.memoryKinds || item.memoryKind, item),
     repeatRule: item.repeatRule || "daily",
+    manualOrder: normalizeManualOrder(item.manualOrder, 0),
     ownerId: "shared",
     participants: normalizedParticipants,
     statusByUser: Object.fromEntries(
@@ -2858,6 +2947,7 @@ function publicDeadlineItem(item, profileIds) {
     memoryKinds: normalizeLifeCardMemoryKinds(item.memoryKinds || item.memoryKind, item),
     repeatRule: item.repeatRule || "",
     priority: normalizePriority(item.priority),
+    manualOrder: normalizeManualOrder(item.manualOrder, 0),
     ownerId: item.ownerId || "shared",
     participants: normalizedParticipants,
     statusByUser: Object.fromEntries(
@@ -4361,6 +4451,7 @@ function buildMemoryItems(store, userId, selectedDate, relationshipInsights) {
         source: "profile",
         actionable: false,
         score: profile.id === userId ? 54 : 50,
+        suggestedDate: "",
         updatedAt: page.updatedAt || "",
       }));
     });
@@ -4430,6 +4521,7 @@ function publicScheduleItemCard(store, publicItem, sourceType, userId, options =
       currentUserDone: steps.length ? !currentUserHasTodoStep : publicItem.statusByUser?.[userId] === "done",
     },
     priority: publicItem.priority || "",
+    manualOrder: normalizeManualOrder(publicItem.manualOrder, 0),
     bucket: publicItem.bucket || "",
     slot: publicItem.slot || "",
     sourceCaptureId: publicItem.sourceCaptureId || "",
@@ -4537,6 +4629,11 @@ function buildScheduleItemCards(store, userId, selectedDate, relationshipInsight
       const doneSort = Number(Boolean(a.archivedAt || a.completion?.allDone || a.completion?.currentUserDone)) -
         Number(Boolean(b.archivedAt || b.completion?.allDone || b.completion?.currentUserDone));
       if (doneSort !== 0) return doneSort;
+      if (a.date === b.date) {
+        const manualA = normalizeManualOrder(a.manualOrder, 0);
+        const manualB = normalizeManualOrder(b.manualOrder, 0);
+        if (manualA || manualB) return (manualA || 1000000) - (manualB || 1000000);
+      }
       const rankSort = Number(b.rankScore || 0) - Number(a.rankScore || 0);
       if (rankSort !== 0) return rankSort;
       const dateSort = a.date.localeCompare(b.date);
@@ -5193,6 +5290,29 @@ function isDailySummaryContentOperation(operation) {
   return true;
 }
 
+function buildCompletionTimeline(store, date) {
+  return (Array.isArray(store.operations) ? store.operations : [])
+    .filter((operation) => ["toggle-status", "toggle-step"].includes(operation.action))
+    .filter((operation) => operation.meta?.status === "done")
+    .filter((operation) => operation.date === date || String(operation.createdAt || "").slice(0, 10) === date)
+    .sort((a, b) => String(a.createdAt).localeCompare(String(b.createdAt)))
+    .slice(-80)
+    .map((operation) => publicCompletionTimelineItem({
+      id: operation.id,
+      action: operation.action,
+      entityType: operation.entityType,
+      entityId: operation.entityId,
+      taskDate: operation.date,
+      completedAt: operation.createdAt,
+      actorId: operation.actorId,
+      targetUserId: operation.targetUserId || operation.actorId,
+      title: operation.meta?.title || "",
+      stepTitle: operation.meta?.stepTitle || "",
+      status: operation.meta?.status || "done",
+    }))
+    .filter((item) => item.title && item.completedAt);
+}
+
 function qualityLabel(percent) {
   if (percent >= 90) return "高质量完成";
   if (percent >= 75) return "稳定推进";
@@ -5681,6 +5801,7 @@ function getDailySummaryFacts(store, date, options = {}) {
     weather,
     dayContext,
     photos: photos.map(publicDiaryAsset).filter(Boolean),
+    completionTimeline: buildCompletionTimeline(store, date),
     status_by_user: people,
     source_counts: {
       todos: todoThings.length,
@@ -5770,6 +5891,7 @@ function buildDailySummary(store, date, userId, options = {}) {
     weather: facts.weather,
     dayContext: facts.dayContext,
     photos: photos.slice(0, 8),
+    completionTimeline: facts.completionTimeline.slice(0, 80),
     stats: facts.completion,
     sourceCounts: facts.source_counts,
     generatedBy: userId,
@@ -5852,7 +5974,9 @@ function getState(userId, options = {}) {
       .map((item) => publicDeadlineItem(item, profileIds))
       .sort((a, b) => a.date.localeCompare(b.date) || String(a.createdAt).localeCompare(String(b.createdAt))),
     diaryDay: getDiaryDaySnapshot(store, selectedDate),
-    dailySummary: publicDailySummary(store.dailySummaries[selectedDate]),
+    dailySummary: publicDailySummary(store.dailySummaries[selectedDate], {
+      completionTimeline: buildCompletionTimeline(store, selectedDate),
+    }),
     scheduleItemCards,
     relationshipInsights,
     memoryHints: buildMemoryHints(store, relationshipInsights),
@@ -5916,6 +6040,7 @@ function upsertScheduleItem(userId, payload) {
     existing.memoryKinds = normalizeLifeCardMemoryKinds(payload.memoryKinds ?? payload.memoryKind ?? existing.memoryKinds, { ...existing, ...payload });
     existing.repeatRule = sanitizeText(payload.repeatRule ?? existing.repeatRule, 120);
     existing.priority = normalizePriority(payload.priority || existing.priority);
+    existing.manualOrder = normalizeManualOrder(payload.manualOrder, existing.manualOrder);
     existing.ownerId = nextOwnerId;
     existing.participants = [...new Set(nextParticipants.length ? nextParticipants : [userId])];
     existing.statusByUser = Object.fromEntries(
@@ -5946,6 +6071,7 @@ function toggleScheduleItem(userId, payload) {
     }
 
     const targetUserId = resolveStatusTargetUserId(store, userId, payload.targetUserId);
+    assertStatusTargetAllowed(item, userId, targetUserId, payload);
     if (!item.participants.includes(targetUserId)) {
       item.participants.push(targetUserId);
     }
@@ -6035,6 +6161,7 @@ function upsertTodoItem(userId, payload) {
     existing.memoryKinds = normalizeLifeCardMemoryKinds(payload.memoryKinds ?? payload.memoryKind ?? existing.memoryKinds, { ...existing, ...payload });
     existing.repeatRule = sanitizeText(payload.repeatRule ?? existing.repeatRule, 120);
     existing.priority = normalizePriority(payload.priority || existing.priority);
+    existing.manualOrder = normalizeManualOrder(payload.manualOrder, existing.manualOrder);
     existing.ownerId = ownerId;
     existing.participants = participants;
     existing.statusByUser = Object.fromEntries(
@@ -6075,6 +6202,7 @@ function toggleTodoItem(userId, payload) {
     }
 
     const targetUserId = resolveStatusTargetUserId(store, userId, payload.targetUserId);
+    assertStatusTargetAllowed(item, userId, targetUserId, payload);
     if (!item.participants.includes(targetUserId)) {
       item.participants.push(targetUserId);
     }
@@ -6158,6 +6286,7 @@ function upsertCheckinItem(userId, payload) {
     existing.tags = normalizeLifeCardTags(payload.tags ?? existing.tags, { ...existing, ...payload });
     existing.memoryKinds = normalizeLifeCardMemoryKinds(payload.memoryKinds ?? payload.memoryKind ?? existing.memoryKinds, { ...existing, ...payload });
     existing.repeatRule = sanitizeText(payload.repeatRule ?? existing.repeatRule ?? "daily", 120);
+    existing.manualOrder = normalizeManualOrder(payload.manualOrder, existing.manualOrder);
     existing.ownerId = "shared";
     existing.participants = profileIds;
     existing.statusByDate = existing.statusByDate || {};
@@ -6183,6 +6312,7 @@ function toggleCheckinItem(userId, payload) {
     }
 
     const targetUserId = resolveStatusTargetUserId(store, userId, payload.targetUserId);
+    assertStatusTargetAllowed(item, userId, targetUserId, payload);
     if (!item.participants.includes(targetUserId)) {
       item.participants.push(targetUserId);
     }
@@ -6255,6 +6385,7 @@ function upsertDeadlineItem(userId, payload) {
     existing.memoryKinds = normalizeLifeCardMemoryKinds(payload.memoryKinds ?? payload.memoryKind ?? existing.memoryKinds, { ...existing, ...payload });
     existing.repeatRule = sanitizeText(payload.repeatRule ?? existing.repeatRule, 120);
     existing.priority = normalizePriority(payload.priority || existing.priority);
+    existing.manualOrder = normalizeManualOrder(payload.manualOrder, existing.manualOrder);
     existing.ownerId = ownerId;
     existing.participants = participants;
     existing.statusByUser = Object.fromEntries(
@@ -6284,6 +6415,7 @@ function toggleDeadlineItem(userId, payload) {
     }
 
     const targetUserId = resolveStatusTargetUserId(store, userId, payload.targetUserId);
+    assertStatusTargetAllowed(item, userId, targetUserId, payload);
     if (!item.participants.includes(targetUserId)) {
       item.participants.push(targetUserId);
     }
@@ -6619,6 +6751,7 @@ module.exports = {
   readRevision,
   rememberLifeCard,
   refreshDailySummary,
+  reorderLifeCards,
   segmentDefinitions,
   toggleCheckinItem,
   toggleDeadlineItem,

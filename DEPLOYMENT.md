@@ -1,6 +1,199 @@
-# 云端部署、域名和移动端最小配置
+# 云端部署、域名和移动端私用配置
 
 当前实现是“云端 Backend + Web 前端同源部署 + 本地 JSON 数据文件”。没有单独数据库服务；云端必须给 `PEOS_CONTENT_ROOT` 配一个持久化目录，否则容器重启后数据会丢。
+
+本仓库的 Codex/Agent 能力不是单独的公网服务。后端会在服务器本机按需执行 `codex exec`，所以生产服务器必须安装 Codex CLI，并且运行 Web 服务的同一个 Linux 用户要完成 Codex 登录。
+
+## 推荐拓扑：两人私用，有域名
+
+当前域名可以直接使用：
+
+- `catandcat.cn` 和 `www.catandcat.cn` 的公网 DNS 指向 `39.106.104.33`。
+- 公网 IP `39.106.104.33` 对外只需要开放 SSH、80、443。
+- 私有 IP `172.24.60.250` 只适合云内网或管理网络访问，不作为手机入口。
+- Node 后端由 systemd 常驻运行在服务器 `2333`。
+- Caddy 监听 80/443，自动签发 HTTPS 证书，并反代到 `127.0.0.1:2333`。
+
+手机访问：
+
+```text
+https://catandcat.cn/web/index.html
+```
+
+域名 HTTPS 模式下生产环境变量使用：
+
+```bash
+PEOS_COOKIE_SECURE=1
+PEOS_REQUIRE_HTTPS=1
+```
+
+如果将来不用域名、只走 Tailscale 私有 HTTP，再切回 `PEOS_COOKIE_SECURE=0`、`PEOS_REQUIRE_HTTPS=0`。
+
+## IP / 域名对应关系
+
+```text
+catandcat.cn        -> 39.106.104.33 -> Caddy :443 -> 127.0.0.1:2333
+www.catandcat.cn    -> 39.106.104.33 -> Caddy :443 -> 127.0.0.1:2333
+39.106.104.33       -> 公网管理入口，只开放 SSH/80/443
+172.24.60.250       -> 阿里云私网地址，只在对应私网/VPC 场景使用
+127.0.0.1:2333      -> 服务器本机 Node 服务入口，不给手机直接访问
+```
+
+实时守护：
+
+```bash
+sudo systemctl status peos
+sudo systemctl restart peos
+sudo systemctl status caddy
+sudo systemctl reload caddy
+```
+
+## 一键服务器安装脚本
+
+仓库内提供了服务器安装脚本和 systemd 模板：
+
+- `scripts/deploy/setup-tailscale-server.sh`
+- `scripts/deploy/check-server.sh`
+- `deploy/peos.env.example`
+- `deploy/peos.service.template`
+
+服务器默认目录：
+
+```text
+/srv/peos/app       # 仓库代码
+/srv/peos/content   # 持久私有数据
+/etc/peos/peos.env  # 生产环境变量
+```
+
+在服务器上执行：
+
+```bash
+sudo bash scripts/deploy/setup-tailscale-server.sh
+```
+
+如果服务器上还没有仓库，可以先 clone：
+
+```bash
+sudo mkdir -p /srv/peos
+sudo git clone https://github.com/wuzw21/catos.git /srv/peos/app
+cd /srv/peos/app
+sudo bash scripts/deploy/setup-tailscale-server.sh
+```
+
+如果要指定仓库或分支：
+
+```bash
+sudo PEOS_REPO_URL=https://github.com/wuzw21/catos.git \
+  PEOS_BRANCH=master \
+  bash scripts/deploy/setup-tailscale-server.sh
+```
+
+脚本会安装 Node 22、git、Codex CLI、Tailscale，创建 `peos` 服务用户，安装 npm 依赖，构建 Web 前端，初始化 `/srv/peos/content`，并安装 `peos.service`。
+
+域名部署还需要安装 Caddy 并配置反代：
+
+```bash
+sudo dnf install -y caddy
+sudo tee /etc/caddy/Caddyfile >/dev/null <<'EOF'
+{
+  email admin@catandcat.cn
+}
+
+catandcat.cn, www.catandcat.cn {
+  encode gzip zstd
+
+  header {
+    X-Robots-Tag "noindex, nofollow, noarchive"
+    Strict-Transport-Security "max-age=31536000; includeSubDomains"
+    X-Content-Type-Options "nosniff"
+    Referrer-Policy "same-origin"
+  }
+
+  reverse_proxy 127.0.0.1:2333
+}
+EOF
+sudo systemctl enable --now caddy
+```
+
+第一次运行后必须编辑生产环境变量，把占位符换成真实值：
+
+```bash
+sudo nano /etc/peos/peos.env
+sudo systemctl restart peos
+```
+
+至少替换：
+
+```bash
+PEOS_COUPLE_SESSION_SECRET=一段很长的随机字符串
+PEOS_COUPLE_YOU_NAME=你的昵称
+PEOS_COUPLE_PARTNER_NAME=小猫的昵称
+PEOS_COUPLE_YOU_PASSWORD=你的强访问码
+PEOS_COUPLE_PARTNER_PASSWORD=小猫的强访问码
+```
+
+可以用这条命令生成 session secret：
+
+```bash
+node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
+```
+
+## Codex 登录和验证
+
+Web 服务由 `peos` 用户运行，所以 Codex 也要用 `peos` 用户登录：
+
+```bash
+sudo -u peos -H codex login
+```
+
+登录后验证非交互执行：
+
+```bash
+sudo -u peos -H codex exec --ephemeral --skip-git-repo-check -C /srv/peos/app "Return exactly: pong"
+```
+
+如果这一步失败，日总结 Agent、随手记 Agent 分析等功能会报 `codex exec failed` 或退回本地规则。
+
+完整部署检查：
+
+```bash
+sudo bash /srv/peos/app/scripts/deploy/check-server.sh --with-codex
+```
+
+不检查 Codex，仅检查 Web 服务：
+
+```bash
+sudo bash /srv/peos/app/scripts/deploy/check-server.sh
+```
+
+## Tailscale 和防火墙
+
+脚本会安装并启用 `tailscaled`。如果没有通过 `TAILSCALE_AUTHKEY` 自动加入 Tailnet，手动执行：
+
+```bash
+sudo tailscale up --hostname=peos-couple
+```
+
+查看服务器 Tailnet 地址：
+
+```bash
+tailscale ip -4
+tailscale status
+```
+
+防火墙原则：
+
+- 云安全组不要开放公网 `2333`。
+- 只开放 SSH 管理端口。
+- 服务器本机如果启用了 UFW，只允许 `tailscale0` 访问 `2333`。
+
+UFW 手动规则示例：
+
+```bash
+sudo ufw allow OpenSSH
+sudo ufw allow in on tailscale0 to any port 2333 proto tcp
+sudo ufw deny in to any port 2333 proto tcp
+```
 
 ## 后端环境变量
 
@@ -9,7 +202,7 @@
 ```bash
 HOST=0.0.0.0
 PORT=2333
-PEOS_CONTENT_ROOT=/data/peos-content
+PEOS_CONTENT_ROOT=/srv/peos/content
 PEOS_COOKIE_SECURE=1
 PEOS_REQUIRE_HTTPS=1
 PEOS_COUPLE_SESSION_SECRET=换成一段很长的随机字符串
@@ -27,18 +220,19 @@ PEOS_COUPLE_DAILY_SUMMARY_HOUR=4
 PEOS_COUPLE_DAILY_SUMMARY_CRON_TARGET=yesterday
 # 可选：让日总结调用 Codex/Agent；不配置时使用本地规则生成
 PEOS_COUPLE_DAILY_SUMMARY_AGENT=1
+CODEX_HOME=/home/peos/.codex
 ```
 
 数据文件会写到：
 
 ```text
-/data/peos-content/private/couple-workspace.json
+/srv/peos/content/private/couple-workspace.json
 ```
 
 随手记照片和自动总结引用图片会写到：
 
 ```text
-/data/peos-content/private/couple-assets/
+/srv/peos/content/private/couple-assets/
 ```
 
 登录说明：
@@ -54,7 +248,7 @@ PEOS_COUPLE_DAILY_SUMMARY_AGENT=1
 如果还要保留原有 Markdown 系统的页面和回写能力，第一次部署前先初始化内容目录：
 
 ```bash
-node scripts/init-content-root.js /data/peos-content
+PEOS_CONTENT_ROOT=/srv/peos/content node scripts/init-content-root.js /srv/peos/content
 ```
 
 后续如果换成 Postgres / Supabase，前端可以继续调用 `/api/couple/*`，只替换 `scripts/couple-store.js` 的存储实现。
@@ -84,6 +278,8 @@ docker run -d \
   -e PEOS_COUPLE_PARTNER_PASSWORD='partner-password' \
   peos-couple
 ```
+
+注意：Docker 方式要额外处理容器内 Codex CLI 登录和持久化 `CODEX_HOME`。当前两人私用部署优先推荐 systemd 方式，因为 Codex CLI、数据目录和服务用户权限更直接。
 
 ## 域名
 

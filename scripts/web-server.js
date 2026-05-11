@@ -36,6 +36,7 @@ const {
   readRevision: readCoupleRevision,
   rememberLifeCard: rememberCoupleLifeCard,
   refreshDailySummary: refreshCoupleDailySummary,
+  reorderLifeCards: reorderCoupleLifeCards,
   toggleCheckinItem: toggleCoupleCheckinItem,
   toggleDeadlineItem: toggleCoupleDeadlineItem,
   toggleLifeCardStep: toggleCoupleLifeCardStep,
@@ -1135,6 +1136,28 @@ async function handleApi(req, res, url) {
       sendJson(res, 200, {
         ok: true,
         item: result,
+        state: getCoupleState(session.userId, { date: body.date }),
+      });
+    } catch (error) {
+      sendJson(res, 400, { ok: false, error: error.message });
+    }
+    return true;
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/couple/life-cards/reorder") {
+    const session = getCoupleSession(req);
+    if (!session) {
+      sendCoupleAuthRequired(res);
+      return true;
+    }
+
+    try {
+      const bodyText = await readBody(req);
+      const body = bodyText ? JSON.parse(bodyText) : {};
+      const { result } = reorderCoupleLifeCards(session.userId, body);
+      sendJson(res, 200, {
+        ok: true,
+        order: result,
         state: getCoupleState(session.userId, { date: body.date }),
       });
     } catch (error) {
