@@ -1308,7 +1308,7 @@ function lifeCardTiming(card, selectedDate) {
   const plannedDate = normalizeDate(String(card.plannedAt || "").slice(0, 10), "");
   const relevantDate = dueDate || plannedDate || cardDate;
   const days = relevantDate ? daysBetween(anchorDate, relevantDate) : 0;
-  const overdue = Boolean(dueDate && dueDate < anchorDate && !card.completion?.allDone && !card.completion?.currentUserDone && !card.archivedAt);
+  const overdue = Boolean(dueDate && dueDate < anchorDate && !card.completion?.allDone && !card.archivedAt);
   return {
     date: relevantDate,
     days,
@@ -1344,7 +1344,7 @@ function lifeCardActionSummary(card, selectedDate) {
 
 function rankScheduleItemCard(card, selectedDate) {
   const anchorDate = normalizeDate(selectedDate);
-  const completed = Boolean(card.archivedAt || card.completion?.allDone || card.completion?.currentUserDone);
+  const completed = Boolean(card.archivedAt || card.completion?.allDone);
   if (completed) {
     return {
       rankScore: -1000,
@@ -1365,6 +1365,11 @@ function rankScheduleItemCard(card, selectedDate) {
     reasons.push("重要");
   } else if (card.priority === "low") {
     score -= 8;
+  }
+
+  if (card.completion?.currentUserDone && !card.completion?.allDone) {
+    score -= 16;
+    reasons.push("等对方");
   }
 
   if (plannedDate === anchorDate) {
@@ -4789,8 +4794,8 @@ function buildScheduleItemCards(store, userId, selectedDate, relationshipInsight
 
   return [...scheduleCards, ...todoCards, ...checkinCards, ...deadlineCards, ...insightCards]
     .sort((a, b) => {
-      const doneSort = Number(Boolean(a.archivedAt || a.completion?.allDone || a.completion?.currentUserDone)) -
-        Number(Boolean(b.archivedAt || b.completion?.allDone || b.completion?.currentUserDone));
+      const doneSort = Number(Boolean(a.archivedAt || a.completion?.allDone)) -
+        Number(Boolean(b.archivedAt || b.completion?.allDone));
       if (doneSort !== 0) return doneSort;
       if (a.date === b.date) {
         const manualA = normalizeManualOrder(a.manualOrder, 0);
@@ -4812,7 +4817,7 @@ function buildScheduleItemCards(store, userId, selectedDate, relationshipInsight
 }
 
 function isCompletedPublicLifeCard(card) {
-  return Boolean(card?.archivedAt || card?.completion?.allDone || card?.completion?.currentUserDone);
+  return Boolean(card?.archivedAt || card?.completion?.allDone);
 }
 
 function homeFocusText(value, maxLength = 88) {

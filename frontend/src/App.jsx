@@ -907,16 +907,16 @@ function proxyActionMeta(card, currentUser, profiles) {
   return { targetUserId, isProxy, targetName };
 }
 
-function statusRowsForCard(card, profiles) {
+function statusRowsForCard(card, profiles, currentUser = null) {
   const participants = Array.isArray(card?.participants) ? card.participants : [];
   const statusByUser = card?.statusByUser || {};
   const updatedBy = card?.statusUpdatedBy || {};
   return participants
     .map((id) => {
-      const name = userDisplayName(id, profiles, id);
+      const name = participantShortName(id, profiles, currentUser, id);
       const done = statusByUser[id] === "done";
       const actor = updatedBy[id] && updatedBy[id] !== id ? userDisplayName(updatedBy[id], profiles, updatedBy[id]) : "";
-      return `${name}${done ? "已完成" : "待完成"}${actor ? `（${actor}代点）` : ""}`;
+      return `${name}：${done ? "已完成" : "待完成"}${actor ? `（${actor}代点）` : ""}`;
     })
     .filter(Boolean);
 }
@@ -924,6 +924,11 @@ function statusRowsForCard(card, profiles) {
 function stepOwnerIds(step, participants = []) {
   if (step?.ownerId) return [step.ownerId].filter(Boolean);
   return participants.length ? participants : [];
+}
+
+function participantShortName(id, profiles, currentUser = null, fallback = "对方") {
+  if (id && id === currentUser?.id) return "我";
+  return userDisplayName(id, profiles, fallback);
 }
 
 function stepOwnerLabel(step, profiles, participants = [], currentUser = null) {
@@ -937,7 +942,9 @@ function stepOwnerLabel(step, profiles, participants = [], currentUser = null) {
 function stepStateLabel(step, profiles, participants = [], currentUser = null) {
   if (step?.status === "done") return "已完成";
   const ids = stepOwnerIds(step, participants);
-  if (!step?.ownerId && ids.length > 1) return "待共同完成";
+  if (!step?.ownerId && ids.length > 1) {
+    return `待${ids.map((id) => participantShortName(id, profiles, currentUser)).join("、")}完成`;
+  }
   const id = ids[0] || "";
   if (!id || id === currentUser?.id) return "待我完成";
   return `待${userDisplayName(id, profiles, "对方")}完成`;
@@ -1222,7 +1229,7 @@ const detailBuilders = {
     const tagLine = (Array.isArray(card.tags) ? card.tags : []).slice(0, 8).join(" · ");
     const memoryLine = memoryKindText(card.memoryKinds);
     const hasMemory = Boolean(memoryLine || card.memoryLinks?.length);
-    const statusLine = statusRowsForCard(card, profiles).join(" · ");
+    const statusLine = statusRowsForCard(card, profiles, currentUser).join(" · ");
     return {
       type: "lifeCard",
       label: itemTypeLabels[itemType],
@@ -2445,7 +2452,19 @@ function Composer({ text, setText, saveRawCapture, profiles, currentUser, busy, 
   const [selectedAssets, setSelectedAssets] = useState([]);
   const fileInputRef = useRef(null);
   useEffect(() => {
-    setRouteDraft(confirmation ? { ...confirmation } : null);
+    if (!confirmation) {
+      setRouteDraft(null);
+      return;
+    }
+    setRouteDraft({
+      ...confirmation,
+      _enabled: confirmation._enabled !== false,
+      relatedItems: (Array.isArray(confirmation.relatedItems) ? confirmation.relatedItems : []).map((item, index) => ({
+        ...item,
+        _uiId: item._uiId || `${item.title || item.detail || "item"}-${index}`,
+        _enabled: item._enabled !== false,
+      })),
+    });
   }, [confirmation]);
 
   async function submit(mode) {
@@ -2496,27 +2515,76 @@ function Composer({ text, setText, saveRawCapture, profiles, currentUser, busy, 
   const ownerText = draft?.decision === "schedule"
     ? (ownerOptions.find((option) => option.id === (draft.ownerId || currentUser?.id || ""))?.label || "我")
     : "";
+  const participantsForOwner = (ownerId) => ownerId === "shared" ? profiles.map((profile) => profile.id) : [ownerId].filter(Boolean);
   const updateDraft = (patch) => setRouteDraft((current) => current ? { ...current, ...patch } : current);
+  const updatePrimaryOwner = (ownerId) => updateDraft({ ownerId, participants: participantsForOwner(ownerId) });
+  const updateRelatedItem = (index, patch) => {
+    setRouteDraft((current) => {
+      if (!current) return current;
+      const relatedItems = (Array.isArray(current.relatedItems) ? current.relatedItems : []).map((item, itemIndex) => (
+        itemIndex === index ? { ...item, ...patch } : item
+      ));
+      return { ...current, relatedItems };
+    });
+  };
+  const updateRelatedOwner = (index, ownerId) => {
+    updateRelatedItem(index, {
+      ownerId,
+      participants: participantsForOwner(ownerId),
+    });
+  };
   const updateDestination = (decision) => {
     setRouteDraft((current) => {
       if (!current) return current;
       if (decision === "schedule") {
-                return {
-                  ...current,
-                  decision: "schedule",
-                  itemType: current.itemType || "thing",
-                  date: current.date || today(),
-                  segment: current.segment || "allDay",
-                  priority: current.priority || "normal",
-                  ownerId: current.ownerId || currentUser?.id || "",
-                };
+        return {
+          ...current,
+          decision: "schedule",
+          itemType: current.itemType || "thing",
+          date: current.date || today(),
+          segment: current.segment || "allDay",
+          priority: current.priority || "normal",
+          ownerId: current.ownerId || currentUser?.id || "",
+          _enabled: current._enabled !== false,
+        };
       }
       return { ...current, decision: "capture" };
     });
   };
+  const stripRelatedUiFields = (item) => {
+    const { _enabled, _uiId, ...rest } = item || {};
+    return rest;
+  };
   const normalizeRouteForSubmit = (route) => {
     if (!route) return route;
-    if (route.decision === "schedule") return route;
+    const { _enabled, _uiId, relatedItems, ...routeBase } = route;
+    if (route.decision === "schedule") {
+      const enabledRelatedItems = (Array.isArray(relatedItems) ? relatedItems : [])
+        .filter((item) => item?._enabled !== false)
+        .map(stripRelatedUiFields);
+      if (_enabled !== false) {
+        return { ...routeBase, relatedItems: enabledRelatedItems };
+      }
+      if (enabledRelatedItems.length) {
+        const [promoted, ...remaining] = enabledRelatedItems;
+        return {
+          ...routeBase,
+          ...promoted,
+          captureId: route.captureId,
+          sourceCaptureId: route.sourceCaptureId,
+          text: route.text,
+          decision: "schedule",
+          analysisMode: route.analysisMode,
+          analyzer: route.analyzer,
+          routeDestinations: route.routeDestinations,
+          confirmationText: route.confirmationText,
+          reason: route.reason,
+          confidence: route.confidence,
+          relatedItems: remaining,
+        };
+      }
+      return { ...routeBase, decision: "capture", relatedItems: [] };
+    }
     if (["memory", "dailyStory"].includes(route.decision)) return route;
     return { ...route, decision: "capture" };
   };
@@ -2526,6 +2594,26 @@ function Composer({ text, setText, saveRawCapture, profiles, currentUser, busy, 
   };
   const agentRunning = agentJob?.status === "running";
   const agentFailed = agentJob?.status === "failed";
+  const relatedDraftItems = Array.isArray(draft?.relatedItems) ? draft.relatedItems : [];
+  const confirmRows = draft?.decision === "schedule" && relatedDraftItems.length
+    ? [
+        {
+          id: "primary",
+          primary: true,
+          enabled: draft._enabled !== false,
+          item: draft,
+        },
+        ...relatedDraftItems.map((item, index) => ({
+          id: item._uiId || `${item.title || item.detail || "item"}-${index}`,
+          primary: false,
+          index,
+          enabled: item._enabled !== false,
+          item,
+        })),
+      ]
+    : [];
+  const enabledRelatedCount = relatedDraftItems.filter((item) => item._enabled !== false).length;
+  const enabledConfirmCount = (draft?._enabled !== false ? 1 : 0) + enabledRelatedCount;
 
   return (
     <section className="composer-band">
@@ -2594,7 +2682,7 @@ function Composer({ text, setText, saveRawCapture, profiles, currentUser, busy, 
               {draft.analysisMode === "agent" ? "Agent" : "默认"}
               {" · "}
               保存到 {confirmationType}
-              {draft.relatedItems?.length ? ` · +${draft.relatedItems.length}` : ""}
+              {relatedDraftItems.length ? ` · ${enabledConfirmCount}/${confirmRows.length} 条` : ""}
             </strong>
             {draft.title ? <span>{draft.title}</span> : null}
             <span className={cx("confirm-destination", `is-${draft.decision || "capture"}`)}>
@@ -2633,7 +2721,7 @@ function Composer({ text, setText, saveRawCapture, profiles, currentUser, busy, 
                   <select value={draft.segment || "allDay"} onChange={(event) => updateDraft({ segment: event.target.value })} aria-label="时段">
                     {Object.entries(segmentLabels).map(([id, label]) => <option key={id} value={id}>{label}</option>)}
                   </select>
-                  <select value={draft.ownerId || currentUser?.id || ""} onChange={(event) => updateDraft({ ownerId: event.target.value })} aria-label="归属">
+                  <select value={draft.ownerId || currentUser?.id || ""} onChange={(event) => updatePrimaryOwner(event.target.value)} aria-label="归属">
                     {ownerOptions.map((option) => <option key={option.id} value={option.id}>{option.label}</option>)}
                   </select>
                   <select value={draft.priority || "normal"} onChange={(event) => updateDraft({ priority: event.target.value })} aria-label="优先级">
@@ -2650,21 +2738,54 @@ function Composer({ text, setText, saveRawCapture, profiles, currentUser, busy, 
                     key={option.id}
                     className={cx((draft.ownerId || currentUser?.id || "") === option.id && "is-active")}
                     type="button"
-                    onClick={() => updateDraft({ ownerId: option.id })}
+                    onClick={() => updatePrimaryOwner(option.id)}
                   >
                     {option.label}
                   </button>
                 ))}
               </div>
             ) : null}
-            {draft.relatedItems?.length ? (
-              <div className="confirm-related" aria-label="子生活卡">
-                {draft.relatedItems.slice(0, 4).map((item, index) => (
-                  <span key={`${item.title || "item"}-${index}`}>
-                    <Icon name="circle" />
-                    {shortText(item.title || item.detail || "子项", 18)}
-                  </span>
-                ))}
+            {confirmRows.length ? (
+              <div className="confirm-item-list" aria-label="识别出的生活卡">
+                {confirmRows.slice(0, 5).map((row) => {
+                  const item = row.item || {};
+                  const rowOwnerId = item.ownerId || draft.ownerId || currentUser?.id || "";
+                  const updateRow = (patch) => row.primary ? updateDraft(patch) : updateRelatedItem(row.index, patch);
+                  const toggleRow = () => updateRow({ _enabled: !row.enabled });
+                  return (
+                    <div className={cx("confirm-item-row", !row.enabled && "is-muted")} key={row.id}>
+                      <label className="confirm-item-check">
+                        <input type="checkbox" checked={row.enabled} onChange={toggleRow} />
+                        <span>
+                          <Icon name={row.enabled ? "check" : "circle"} />
+                        </span>
+                      </label>
+                      <input
+                        className="confirm-item-title"
+                        value={item.title || ""}
+                        disabled={!row.enabled}
+                        onChange={(event) => updateRow({ title: event.target.value })}
+                        aria-label={row.primary ? "主生活卡标题" : "子生活卡标题"}
+                      />
+                      <input
+                        className="confirm-item-date"
+                        type="date"
+                        value={item.date || draft.date || today()}
+                        disabled={!row.enabled}
+                        onChange={(event) => updateRow({ date: event.target.value })}
+                        aria-label={`${item.title || "生活卡"}日期`}
+                      />
+                      <select
+                        value={rowOwnerId}
+                        disabled={!row.enabled}
+                        onChange={(event) => row.primary ? updatePrimaryOwner(event.target.value) : updateRelatedOwner(row.index, event.target.value)}
+                        aria-label={`${item.title || "生活卡"}归属`}
+                      >
+                        {ownerOptions.map((option) => <option key={option.id} value={option.id}>{option.label}</option>)}
+                      </select>
+                    </div>
+                  );
+                })}
               </div>
             ) : null}
           </div>
@@ -3355,6 +3476,7 @@ function LifeCardTimeline({ cards, profiles, currentUser, selectedDate, filter, 
                         card={card}
                         profiles={profiles}
                         currentUser={currentUser}
+                        compact={isCompactCard}
                       toggleCard={toggleCard}
                       archiveCard={archiveCard}
                       toggleStep={toggleStep}
@@ -3401,7 +3523,7 @@ function LifeCardTimeline({ cards, profiles, currentUser, selectedDate, filter, 
   );
 }
 
-function LifeCard({ card, profiles, currentUser, toggleCard, archiveCard, toggleStep, toggleTimer, setEditingCard, openDetail }) {
+function LifeCard({ card, profiles, currentUser, compact = false, toggleCard, archiveCard, toggleStep, toggleTimer, setEditingCard, openDetail }) {
   if (isDefaultPromptCard(card)) return null;
   const itemType = card.itemType && itemTypeLabels[card.itemType] ? card.itemType : "thing";
   const participants = cardParticipantIds(card, profiles, currentUser);
@@ -3510,6 +3632,21 @@ function LifeCard({ card, profiles, currentUser, toggleCard, archiveCard, toggle
   const { isProxy, targetName } = proxyActionMeta(card, currentUser, profiles);
   const completeLabel = isProxy ? `帮${targetName}完成` : "完成";
   const undoLabel = isProxy ? `取消${targetName}` : "取消";
+  const targetDone = completionTarget ? isCardDoneForUser(card, completionTarget) : isDone;
+  const participantStates = !isLegacyCheckin && isGroupCard
+    ? participants.map((id) => {
+        const profile = profileById.get(id);
+        const done = isCardDoneForUser(card, id);
+        return {
+          id,
+          done,
+          label: participantShortName(id, profiles, currentUser, profile?.displayName || "对方"),
+          initials: profile?.initials || (profile?.displayName || participantShortName(id, profiles, currentUser)).slice(0, 1),
+          color: profileColor(profiles, id, id === currentUser?.id ? avatarColor(currentUser) : "#24b99a"),
+          state: done ? "已完成" : id === currentUser?.id ? "等我" : "待完成",
+        };
+      })
+    : [];
   const completeCard = (event) => {
     stopAction(event);
     toggleCard(card);
@@ -3550,7 +3687,7 @@ function LifeCard({ card, profiles, currentUser, toggleCard, archiveCard, toggle
             <strong>{title}</strong>
           </div>
         </button>
-        {isLegacyCheckin && checkinPeople.length ? (
+        {!compact && isLegacyCheckin && checkinPeople.length ? (
           <div className="card-checkin-board" aria-label="共同打卡完成情况">
             {checkinPeople.map((person) => {
               const disabled = readOnly || (person.id !== currentUser?.id && person.id !== completionTarget);
@@ -3573,12 +3710,28 @@ function LifeCard({ card, profiles, currentUser, toggleCard, archiveCard, toggle
             })}
           </div>
         ) : null}
-        {isLegacyCheckin && checkinPeople.length ? (
+        {!compact && isLegacyCheckin && checkinPeople.length ? (
           <div className="checkin-meter" aria-label={`共同打卡 ${checkinDoneCount}/${checkinPeople.length}`}>
             <span style={{ width: `${Math.round((checkinDoneCount / checkinPeople.length) * 100)}%` }} />
           </div>
         ) : null}
-        {!isLegacyCheckin && stepTotal ? (
+        {!compact && !isLegacyCheckin && participantStates.length ? (
+          <div className="card-collab-board" aria-label="双人完成情况">
+            {participantStates.map((person) => (
+              <span
+                key={person.id}
+                className={cx("collab-person", person.done && "is-done", person.id === currentUser?.id && "is-me")}
+                style={{ "--person-color": person.color }}
+                title={`${person.label} ${person.state}`}
+              >
+                <em>{person.initials}</em>
+                <b>{person.label}</b>
+                <i>{person.state}</i>
+              </span>
+            ))}
+          </div>
+        ) : null}
+        {!compact && !isLegacyCheckin && stepTotal ? (
           <button
             className={cx("next-step-row", !pendingStep && "is-done")}
             type="button"
@@ -3596,7 +3749,7 @@ function LifeCard({ card, profiles, currentUser, toggleCard, archiveCard, toggle
             <b>{`${stepDone}/${stepTotal}`}</b>
           </button>
         ) : null}
-        {!isLegacyCheckin && card.stepProgress?.total ? (
+        {!compact && !isLegacyCheckin && card.stepProgress?.total ? (
           <div className="step-meter" aria-label={`步骤 ${card.stepProgress.done}/${card.stepProgress.total}`}>
             <span style={{ width: `${card.stepProgress.percent || 0}%` }} />
           </div>
@@ -3604,20 +3757,20 @@ function LifeCard({ card, profiles, currentUser, toggleCard, archiveCard, toggle
       </div>
       {!readOnly && !isDraft ? (
         <div className="card-actions">
-          {!isArchived && isLegacyCheckin && completionTarget ? (
+          {compact && !isArchived && completionTarget ? (
             <button
-              className={cx("action-chip compact-only-action", isCardDoneForUser(card, completionTarget) ? "done-mark" : "complete-toggle")}
+              className={cx("action-chip compact-only-action", targetDone ? "done-mark" : "complete-toggle")}
               type="button"
-              aria-label={isCardDoneForUser(card, completionTarget) ? undoLabel : completeLabel}
-              aria-pressed={isCardDoneForUser(card, completionTarget) ? "true" : "false"}
-              title={isCardDoneForUser(card, completionTarget) ? undoLabel : completeLabel}
+              aria-label={targetDone ? undoLabel : completeLabel}
+              aria-pressed={targetDone ? "true" : "false"}
+              title={targetDone ? undoLabel : completeLabel}
               onClick={completeCard}
             >
-              <Icon name={isCardDoneForUser(card, completionTarget) ? "check" : "circle"} />
-              <span>{isCardDoneForUser(card, completionTarget) ? undoLabel : completeLabel}</span>
+              <Icon name={targetDone ? "check" : "circle"} />
+              <span>{targetDone ? undoLabel : completeLabel}</span>
             </button>
           ) : null}
-          {!isArchived && !isLegacyCheckin && completionTarget && isCardDoneForUser(card, completionTarget) ? (
+          {!compact && !isArchived && !isLegacyCheckin && completionTarget && targetDone ? (
             <button
               className="action-chip done-mark"
               type="button"
@@ -3629,7 +3782,7 @@ function LifeCard({ card, profiles, currentUser, toggleCard, archiveCard, toggle
               <Icon name="check" />
               <span>{undoLabel}</span>
             </button>
-          ) : !isArchived && !isLegacyCheckin && completionTarget ? (
+          ) : !compact && !isArchived && !isLegacyCheckin && completionTarget ? (
             <button
               className="action-chip complete-toggle"
               type="button"
@@ -3642,7 +3795,7 @@ function LifeCard({ card, profiles, currentUser, toggleCard, archiveCard, toggle
               <span>{completeLabel}</span>
             </button>
           ) : null}
-          {!isArchived && !isLegacyCheckin ? (
+          {!compact && !isArchived && !isLegacyCheckin ? (
             <button
               className={cx("action-chip timer-toggle", timerActive && "is-active")}
               type="button"
@@ -3658,7 +3811,7 @@ function LifeCard({ card, profiles, currentUser, toggleCard, archiveCard, toggle
               <span>{timerActive ? "停止" : "计时"}</span>
             </button>
           ) : null}
-          {isArchived && ["schedule", "todo"].includes(card.sourceType) ? (
+          {!compact && isArchived && ["schedule", "todo"].includes(card.sourceType) ? (
             <button
               className="action-chip archive-toggle"
               type="button"
@@ -3673,19 +3826,21 @@ function LifeCard({ card, profiles, currentUser, toggleCard, archiveCard, toggle
               <span>恢复</span>
             </button>
           ) : null}
-          <button
-            className="action-chip detail-toggle"
-            type="button"
-            aria-label="详情"
-            title="详情"
-            onClick={(event) => {
-              stopAction(event);
-              openCard();
-            }}
-          >
-            <Icon name="more" />
-            <span>详情</span>
-          </button>
+          {!compact ? (
+            <button
+              className="action-chip detail-toggle"
+              type="button"
+              aria-label="详情"
+              title="详情"
+              onClick={(event) => {
+                stopAction(event);
+                openCard();
+              }}
+            >
+              <Icon name="more" />
+              <span>详情</span>
+            </button>
+          ) : null}
         </div>
       ) : isDraft ? (
         <div className="card-actions">

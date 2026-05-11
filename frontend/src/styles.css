@@ -1242,6 +1242,88 @@ button.cat-word-mini:hover {
   color: #38262c;
 }
 
+.confirm-item-list {
+  display: grid;
+  gap: 6px;
+  padding-top: 4px;
+}
+
+.confirm-item-row {
+  display: grid;
+  grid-template-columns: 30px minmax(120px, 1fr) 126px 92px;
+  gap: 6px;
+  align-items: center;
+  min-width: 0;
+  padding: 5px;
+  border: 1px solid rgba(46, 38, 48, 0.07);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.56);
+}
+
+.confirm-item-row.is-muted {
+  opacity: 0.58;
+}
+
+.confirm-item-check {
+  display: inline-flex;
+  position: relative;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  cursor: pointer;
+}
+
+.confirm-item-check input {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+
+.confirm-item-check span {
+  display: inline-flex;
+  width: 26px;
+  height: 26px;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid rgba(219, 67, 129, 0.18);
+  border-radius: 9px;
+  background: rgba(255, 255, 255, 0.72);
+  color: var(--pink-deep);
+}
+
+.confirm-item-check svg {
+  width: 15px;
+  height: 15px;
+}
+
+.confirm-item-row input,
+.confirm-item-row select {
+  min-width: 0;
+  min-height: 30px;
+  border: 0;
+  border-radius: 9px;
+  background: rgba(255, 255, 255, 0.72);
+  color: var(--ink);
+  font-size: 0.76rem;
+  font-weight: 900;
+  box-shadow: inset 0 0 0 1px rgba(46, 38, 48, 0.06);
+}
+
+.confirm-item-row input {
+  padding: 0 8px;
+}
+
+.confirm-item-row select {
+  padding: 0 7px;
+}
+
+.confirm-item-row input:disabled,
+.confirm-item-row select:disabled {
+  color: rgba(46, 38, 48, 0.42);
+}
+
 .confirm-related {
   display: flex;
   flex-wrap: wrap;
@@ -2670,18 +2752,21 @@ button.cat-word-mini:hover {
 .timeline-card-slot.is-compact .step-meter,
 .timeline-card-slot.is-compact .card-detail,
 .timeline-card-slot.is-compact .checkin-meter,
+.timeline-card-slot.is-compact .card-collab-board,
 .timeline-list.is-card-scrubbing .timeline-card-slot:not(.is-scrub-target) .card-meta,
 .timeline-list.is-card-scrubbing .timeline-card-slot:not(.is-scrub-target) .card-audit,
 .timeline-list.is-card-scrubbing .timeline-card-slot:not(.is-scrub-target) .card-plan,
 .timeline-list.is-card-scrubbing .timeline-card-slot:not(.is-scrub-target) .step-meter,
 .timeline-list.is-card-scrubbing .timeline-card-slot:not(.is-scrub-target) .card-detail,
 .timeline-list.is-card-scrubbing .timeline-card-slot:not(.is-scrub-target) .checkin-meter,
+.timeline-list.is-card-scrubbing .timeline-card-slot:not(.is-scrub-target) .card-collab-board,
 .timeline-list.is-card-focused .timeline-card-slot:not(.is-scrub-target) .card-meta,
 .timeline-list.is-card-focused .timeline-card-slot:not(.is-scrub-target) .card-audit,
 .timeline-list.is-card-focused .timeline-card-slot:not(.is-scrub-target) .card-plan,
 .timeline-list.is-card-focused .timeline-card-slot:not(.is-scrub-target) .step-meter,
 .timeline-list.is-card-focused .timeline-card-slot:not(.is-scrub-target) .card-detail,
-.timeline-list.is-card-focused .timeline-card-slot:not(.is-scrub-target) .checkin-meter {
+.timeline-list.is-card-focused .timeline-card-slot:not(.is-scrub-target) .checkin-meter,
+.timeline-list.is-card-focused .timeline-card-slot:not(.is-scrub-target) .card-collab-board {
   display: none;
 }
 
@@ -3212,6 +3297,70 @@ button.cat-word-mini:hover {
   color: #167d68;
 }
 
+.card-collab-board {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 7px;
+  min-width: 0;
+}
+
+.collab-person {
+  --person-color: var(--type);
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 6px;
+  align-items: center;
+  min-width: 0;
+  min-height: 32px;
+  padding: 0 9px 0 7px;
+  border: 1px solid color-mix(in srgb, var(--person-color) 14%, rgba(46, 38, 48, 0.08));
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.52);
+  color: var(--muted);
+}
+
+.collab-person em {
+  display: inline-grid;
+  width: 21px;
+  height: 21px;
+  place-items: center;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--person-color) 17%, #fff);
+  color: color-mix(in srgb, var(--person-color) 76%, #2e2630);
+  font-size: 0.66rem;
+  font-style: normal;
+  font-weight: 950;
+}
+
+.collab-person b,
+.collab-person i {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.collab-person b {
+  color: var(--ink);
+  font-size: 0.76rem;
+  font-weight: 950;
+}
+
+.collab-person i {
+  color: rgba(46, 38, 48, 0.52);
+  font-size: 0.68rem;
+  font-style: normal;
+  font-weight: 900;
+}
+
+.collab-person.is-done {
+  border-color: rgba(36, 185, 154, 0.18);
+  background: rgba(36, 185, 154, 0.08);
+}
+
+.collab-person.is-done i {
+  color: #167d68;
+}
+
 .checkin-meter {
   height: 5px;
   overflow: hidden;
@@ -3582,7 +3731,8 @@ button.cat-word-mini:hover {
     text-overflow: ellipsis;
   }
 
-  .card-checkin-board {
+  .card-checkin-board,
+  .card-collab-board {
     grid-template-columns: 1fr;
     gap: 5px;
   }
@@ -7569,6 +7719,16 @@ button.detail-step:hover {
   .dashboard .confirm-strip {
     max-height: 44svh;
     overflow: auto;
+  }
+
+  .dashboard .confirm-item-row {
+    grid-template-columns: 30px minmax(0, 1fr);
+  }
+
+  .dashboard .confirm-item-date,
+  .dashboard .confirm-item-row select {
+    grid-column: 2;
+    width: 100%;
   }
 
   .settings-grid {
