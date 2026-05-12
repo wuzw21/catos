@@ -7961,6 +7961,20 @@ button.home-focus-note:hover {
   font-weight: 950;
 }
 
+.step-editor-head > span {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 7px;
+  min-width: 0;
+}
+
+.step-editor-head > span em {
+  color: rgba(46, 38, 48, 0.46);
+  font-size: 0.72rem;
+  font-style: normal;
+  font-weight: 900;
+}
+
 .step-editor-head button,
 .step-editor-empty {
   display: inline-flex;
@@ -8039,6 +8053,65 @@ button.home-focus-note:hover {
 .step-template-row svg {
   width: 13px;
   height: 13px;
+}
+
+.step-bulk-box {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 7px;
+  align-items: stretch;
+  min-width: 0;
+  padding: 7px;
+  border: 1px dashed rgba(46, 38, 48, 0.1);
+  border-radius: 14px;
+  background: rgba(255, 253, 249, 0.56);
+}
+
+.step-bulk-box textarea {
+  width: 100%;
+  min-width: 0;
+  min-height: 72px;
+  padding: 9px 10px;
+  border: 0;
+  border-radius: 11px;
+  background: rgba(255, 255, 255, 0.68);
+  color: var(--ink);
+  font-size: 0.86rem;
+  font-weight: 820;
+  line-height: 1.45;
+  outline: 0;
+  resize: vertical;
+  box-shadow: inset 0 0 0 1px rgba(46, 38, 48, 0.05);
+}
+
+.step-bulk-box textarea:focus {
+  background: #fff;
+  box-shadow: inset 0 0 0 1px rgba(219, 67, 129, 0.18), 0 0 0 3px rgba(255, 111, 168, 0.08);
+}
+
+.step-bulk-box button {
+  display: inline-flex;
+  min-width: 92px;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  border: 1px solid rgba(219, 67, 129, 0.14);
+  border-radius: 12px;
+  background: rgba(255, 231, 243, 0.62);
+  color: var(--pink-deep);
+  cursor: pointer;
+  font-size: 0.78rem;
+  font-weight: 950;
+}
+
+.step-bulk-box button:disabled {
+  cursor: not-allowed;
+  opacity: 0.48;
+}
+
+.step-bulk-box svg {
+  width: 14px;
+  height: 14px;
 }
 
 .step-editor-list {
@@ -8224,6 +8297,31 @@ button.home-focus-note:hover {
   color: rgba(46, 38, 48, 0.46);
   font-size: 0.68rem;
   font-weight: 950;
+}
+
+.step-owner-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  min-width: 0;
+}
+
+.step-owner-chips button {
+  min-height: 28px;
+  padding: 0 8px;
+  border: 1px solid rgba(46, 38, 48, 0.07);
+  border-radius: 999px;
+  background: rgba(255, 253, 249, 0.62);
+  color: rgba(46, 38, 48, 0.54);
+  cursor: pointer;
+  font-size: 0.7rem;
+  font-weight: 950;
+}
+
+.step-owner-chips button.is-active {
+  border-color: color-mix(in srgb, var(--step-owner, var(--pink)) 24%, rgba(46, 38, 48, 0.08));
+  background: color-mix(in srgb, var(--step-owner, var(--pink)) 12%, #fff);
+  color: color-mix(in srgb, var(--step-owner, var(--pink)) 74%, var(--ink));
 }
 
 .step-editor-row label {
@@ -8549,6 +8647,68 @@ button.home-focus-note:hover {
 
 .detail-more .detail-card-groups.is-secondary {
   gap: 8px;
+}
+
+.detail-step-section {
+  display: grid;
+  gap: 7px;
+}
+
+.detail-step-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
+}
+
+.detail-step-head > span {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 7px;
+  min-width: 0;
+}
+
+.detail-step-head b {
+  color: var(--ink);
+  font-size: 0.86rem;
+  font-weight: 950;
+}
+
+.detail-step-head em {
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-style: normal;
+  font-weight: 900;
+}
+
+.detail-step-head button,
+.detail-steps-empty {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: 34px;
+  padding: 0 10px;
+  border: 1px solid rgba(219, 67, 129, 0.14);
+  border-radius: 999px;
+  background: rgba(255, 246, 250, 0.72);
+  color: var(--pink-deep);
+  cursor: pointer;
+  font-size: 0.76rem;
+  font-weight: 950;
+}
+
+.detail-step-head svg,
+.detail-steps-empty svg {
+  width: 14px;
+  height: 14px;
+}
+
+.detail-steps-empty {
+  min-height: 44px;
+  border-style: dashed;
+  background: rgba(255, 253, 249, 0.56);
 }
 
 .detail-steps {
@@ -10543,6 +10703,14 @@ button.detail-step:hover {
     gap: 6px;
   }
 
+  .step-bulk-box {
+    grid-template-columns: 1fr;
+  }
+
+  .step-bulk-box button {
+    min-height: 38px;
+  }
+
   .step-meta-controls label {
     grid-template-columns: auto minmax(38px, 58px) auto;
   }
@@ -10555,6 +10723,11 @@ button.detail-step:hover {
     grid-column: 3 / 4;
     grid-row: 1 / 2;
     flex-direction: column;
+  }
+
+  .step-owner-chips button {
+    min-height: 32px;
+    padding: 0 9px;
   }
 
   .detail-title-block h2 {

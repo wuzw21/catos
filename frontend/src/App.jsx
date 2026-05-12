@@ -6018,6 +6018,7 @@ function DetailDrawer({ detail, profiles, onClose, onAction }) {
   const moreActions = detail.moreActions || [];
   const moreRows = detail.moreRows || [];
   const moreSections = detail.moreSections || [];
+  const stepsAction = detail.stepsAction || null;
   const hasMore = moreActions.length || moreRows.length || moreSections.length;
   return (
     <Dialog.Root open onOpenChange={(nextOpen) => {
@@ -6066,6 +6067,19 @@ function DetailDrawer({ detail, profiles, onClose, onAction }) {
         ) : null}
         <DetailRows rows={detail.rows || []} />
         {detail.steps?.length ? (
+          <section className="detail-step-section">
+            <div className="detail-step-head">
+              <span>
+                <b>{detail.stepsLabel || "步骤"}</b>
+                <em>{detail.steps.length} 项</em>
+              </span>
+              {stepsAction ? (
+                <button type="button" onClick={() => onAction(stepsAction)}>
+                  <Icon name={stepsAction.icon || "rows"} />
+                  <span>{stepsAction.label || "编辑"}</span>
+                </button>
+              ) : null}
+            </div>
           <div className="detail-steps" aria-label={detail.stepsLabel || "步骤"}>
             {detail.steps.map((step) => {
               const content = (
@@ -6112,6 +6126,12 @@ function DetailDrawer({ detail, profiles, onClose, onAction }) {
               );
             })}
           </div>
+          </section>
+        ) : stepsAction ? (
+          <button className="detail-steps-empty" type="button" onClick={() => onAction(stepsAction)}>
+            <Icon name="plus" />
+            <span>加几个步骤</span>
+          </button>
         ) : null}
         <DetailSectionGroups sections={detail.sections || []} profiles={profiles} onAction={onAction} />
         {hasMore ? (
