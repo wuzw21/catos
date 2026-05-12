@@ -64,6 +64,14 @@ const priorityOptions = [
   { id: "normal", label: "普通", hint: "按时间排", icon: "circle" },
   { id: "low", label: "轻松", hint: "不催", icon: "cloud" },
 ];
+const repeatEditorOptions = [
+  { id: "", label: "一次", hint: "只做这次" },
+  { id: "daily", label: "每天", hint: "每天出现" },
+  { id: "workday", label: "工作日", hint: "周一到周五" },
+  { id: "weekly", label: "每周", hint: "每周一次" },
+  { id: "monthly", label: "每月", hint: "每月一次" },
+  { id: "yearly", label: "每年", hint: "纪念日" },
+];
 const avatarOptions = ["pink-cat", "violet-cat", "mint-cat", "yellow-cat", "custom"];
 const editorStepSchema = z.object({
   id: z.string().optional().default(""),
@@ -400,6 +408,24 @@ function addDays(value, offset) {
   const date = parseDate(value) || new Date();
   date.setDate(date.getDate() + offset);
   return formatDate(date);
+}
+
+function nextWeekendDate(value) {
+  const date = parseDate(value) || new Date();
+  const day = date.getDay();
+  const offset = day === 0 || day === 6 ? 0 : 6 - day;
+  date.setDate(date.getDate() + offset);
+  return formatDate(date);
+}
+
+function localDateTimeValue(date, time = "09:00") {
+  return `${date || today()}T${time}`;
+}
+
+function redateDateTime(value, date) {
+  const raw = dateTimeLocalValue(value);
+  const match = raw.match(/^\d{4}-\d{2}-\d{2}T(\d{2}):(\d{2})$/);
+  return match ? `${date}T${match[1]}:${match[2]}` : "";
 }
 
 function daysBetween(startValue, endValue) {
@@ -1138,6 +1164,66 @@ function nextUpPeopleLabel(card, profiles, currentUser = null) {
     .join(" · ");
 }
 
+function lifeCardUpsertEndpoint(card) {
+  return {
+    schedule: "/api/couple/schedule/upsert",
+    todo: "/api/couple/todos/upsert",
+    deadline: "/api/couple/deadlines/upsert",
+  }[card?.sourceType] || "";
+}
+
+function canPatchLifeCard(card) {
+  return Boolean(card && !card.readOnly && !card.isDraft && lifeCardUpsertEndpoint(card));
+}
+
+function lifeCardPatchPayload(card, profiles, patch = {}) {
+  const nextDate = patch.date || card.date || today();
+  const ownerId = patch.ownerId || card.ownerId || "shared";
+  const fallbackParticipants = ownerId === "shared"
+    ? (Array.isArray(card.participants) && card.participants.length ? card.participants : profiles.map((profile) => profile.id))
+    : [ownerId];
+  const participants = Array.isArray(patch.participants) && patch.participants.length
+    ? patch.participants
+    : fallbackParticipants;
+  const plannedAt = patch.plannedAt !== undefined
+    ? patch.plannedAt
+    : patch.date && card.plannedAt
+      ? redateDateTime(card.plannedAt, nextDate)
+      : card.plannedAt || "";
+  const dueAt = patch.dueAt !== undefined
+    ? patch.dueAt
+    : patch.date && card.dueAt
+      ? redateDateTime(card.dueAt, nextDate)
+      : card.dueAt || "";
+  return {
+    id: card.sourceId,
+    date: nextDate,
+    title: patch.title ?? card.title ?? "",
+    detail: patch.detail ?? card.detail ?? card.slot ?? "",
+    slot: patch.slot ?? card.slot ?? card.detail ?? "",
+    itemType: patch.itemType || card.itemType || "thing",
+    segment: patch.segment || card.segment || "allDay",
+    ownerId,
+    participants,
+    sourceCaptureId: card.sourceCaptureId || "",
+    relatedGroupId: card.relatedGroupId || "",
+    parentItemId: card.parentItemId || "",
+    relationIds: card.relationIds || [],
+    linkedMemoryIds: card.linkedMemoryIds || [],
+    repeatRule: patch.repeatRule ?? card.repeatRule ?? "",
+    plannedAt,
+    dueAt,
+    durationMin: patch.durationMin ?? card.durationMin ?? 0,
+    tags: normalizeEditableTags(patch.tags ?? card.tags ?? []),
+    memoryKinds: card.memoryKinds || [],
+    steps: patch.steps || card.steps || [],
+    timeBlocks: patch.timeBlocks || card.timeBlocks || [],
+    bucket: patch.bucket || card.bucket || (nextDate > today() ? "future" : "today"),
+    priority: patch.priority || card.priority || "normal",
+    manualOrder: patch.manualOrder ?? card.manualOrder ?? 0,
+  };
+}
+
 function compactLifeCardRow(card, context, activeId = "") {
   const itemType = card.itemType && itemTypeLabels[card.itemType] ? card.itemType : "thing";
   return {
@@ -1243,6 +1329,7 @@ const detailBuilders = {
     const { targetUserId, isProxy, targetName } = proxyActionMeta(card, currentUser, profiles);
     const targetDone = targetUserId ? isCardDoneForUser(card, targetUserId) : isDone;
     const timerActive = Boolean(card.timeTracking?.currentUserActive);
+    const isDailyCheckin = isDailyCheckinCard(card);
     const peerCheckinCards = card.sourceType === "checkin"
       ? (Array.isArray(context.cards) ? context.cards : [])
           .filter((item) => item.sourceType === "checkin" && item.date === card.date)
@@ -1268,7 +1355,7 @@ const detailBuilders = {
           owner,
           state,
           hint: durationLabel(step.estimateMin),
-          action: !readOnly && card.sourceType !== "checkin" && (!step.ownerId || step.ownerId === currentUser?.id || step.ownerId === targetUserId)
+          action: !isDailyCheckin && !readOnly && card.sourceType !== "checkin" && (!step.ownerId || step.ownerId === currentUser?.id || step.ownerId === targetUserId)
             ? { type: "toggle-step", card, step }
             : null,
         };
@@ -1277,6 +1364,12 @@ const detailBuilders = {
     const hasMemory = Boolean(memoryKindText(card.memoryKinds) || card.memoryLinks?.length);
     const participantLine = namesForIds(participants, profiles);
     const completionLine = completionSummaryForCard(card, profiles, currentUser);
+    const canQuickPatch = canPatchLifeCard(card) && !isArchived && !isDailyCheckin;
+    const quickMoveDate = card.date === today() ? addDays(card.date, 1) : today();
+    const quickMoveLabel = card.date === today() ? "明天" : "今天";
+    const primaryActionLabel = isDailyCheckin || itemType === "checkin"
+      ? (targetDone ? "取消打卡" : isProxy ? `帮${targetName}打卡` : "打卡")
+      : (targetDone ? "取消" : isProxy ? `帮${targetName}完成` : "完成");
     return {
       type: "lifeCard",
       label: itemTypeLabels[itemType],
@@ -1304,9 +1397,11 @@ const detailBuilders = {
       sections: lifeCardDetailSections(card, context),
       images: [],
       actions: [
-        !readOnly && !isArchived && targetUserId ? { type: "toggle-card", icon: targetDone ? "undo" : "check", label: targetDone ? "取消" : isProxy ? `帮${targetName}完成` : "完成", card } : null,
-        !readOnly && !isArchived && !card.isDraft && card.sourceType !== "checkin" ? { type: "timer-card", icon: timerActive ? "stop" : "clock", label: timerActive ? "停止" : "计时", card } : null,
-        !readOnly && ["schedule", "todo"].includes(card.sourceType) ? { type: "archive-card", icon: isArchived ? "undo" : "archive", label: isArchived ? "恢复" : "归档", card } : null,
+        !readOnly && !isArchived && targetUserId ? { type: "toggle-card", icon: targetDone ? "undo" : "check", label: primaryActionLabel, card } : null,
+        !readOnly && !isArchived && !card.isDraft && card.sourceType !== "checkin" && !isDailyCheckin ? { type: "timer-card", icon: timerActive ? "stop" : "clock", label: timerActive ? "停止" : "计时", card } : null,
+        canQuickPatch ? { type: "move-card-date", icon: "calendar", label: quickMoveLabel, card, date: quickMoveDate } : null,
+        canQuickPatch ? { type: "set-card-priority", icon: "star", label: card.priority === "high" ? "普通" : "重要", card, priority: card.priority === "high" ? "normal" : "high" } : null,
+        !isDailyCheckin && !readOnly && ["schedule", "todo"].includes(card.sourceType) ? { type: "archive-card", icon: isArchived ? "undo" : "archive", label: isArchived ? "恢复" : "归档", card } : null,
         !readOnly && !card.isDraft ? { type: "remember-card", icon: "bookmark", label: hasMemory ? "已记" : "记忆", card } : null,
         !readOnly ? { type: "edit-card", icon: "edit", label: "编辑", card } : null,
         card.date ? { type: "go-date", icon: "calendar", label: "月历", date: card.date, page: "month" } : null,
@@ -1613,7 +1708,9 @@ export function App() {
   const [expanded, setExpanded] = useState(() => new Set());
   const [editingCard, setEditingCard] = useState(null);
   const [detailRequest, setDetailRequest] = useState(null);
+  const [confirmRequest, setConfirmRequest] = useState(null);
   const composingRef = useRef(false);
+  const confirmResolverRef = useRef(null);
 
   const request = useCallback(async (path, options = {}) => {
     const response = await fetch(path, {
@@ -1701,6 +1798,30 @@ export function App() {
     setPage(nextPage);
     window.location.hash = nextPage;
   }
+
+  const resolveConfirm = useCallback((accepted) => {
+    const resolver = confirmResolverRef.current;
+    confirmResolverRef.current = null;
+    setConfirmRequest(null);
+    resolver?.(accepted);
+  }, []);
+
+  const askConfirmation = useCallback((options = {}) => new Promise((resolve) => {
+    if (confirmResolverRef.current) confirmResolverRef.current(false);
+    confirmResolverRef.current = resolve;
+    setConfirmRequest({
+      title: options.title || "确认操作？",
+      body: options.body || "",
+      confirmLabel: options.confirmLabel || "确认",
+      cancelLabel: options.cancelLabel || "取消",
+      tone: options.tone || "default",
+      icon: options.icon || "check",
+    });
+  }), []);
+
+  useEffect(() => () => {
+    if (confirmResolverRef.current) confirmResolverRef.current(false);
+  }, []);
 
   async function handleLogin(event) {
     event.preventDefault();
@@ -1840,6 +1961,14 @@ export function App() {
       await archiveCard(action.card);
       return;
     }
+    if (action.type === "move-card-date" && action.card && action.date) {
+      await moveCardDate(action.card, action.date);
+      return;
+    }
+    if (action.type === "set-card-priority" && action.card && action.priority) {
+      await setCardPriority(action.card, action.priority);
+      return;
+    }
     if (action.type === "timer-card" && action.card) {
       await toggleCardTimer(action.card);
       return;
@@ -1968,7 +2097,15 @@ export function App() {
     if (isProxy) {
       const targetName = actorName(targetUserId, profiles, "对方");
       const actionText = step.status === "done" ? "取消完成" : "完成";
-      if (!window.confirm(`确认帮 ${targetName} ${actionText}这一步吗？`)) return;
+      const accepted = await askConfirmation({
+        title: `帮 ${targetName} ${actionText}这一步？`,
+        body: `这会把 ${targetName} 的这一步记为由 ${currentUser?.displayName || "你"} 操作。`,
+        confirmLabel: `确认${actionText}`,
+        cancelLabel: "先不动",
+        tone: "proxy",
+        icon: "users",
+      });
+      if (!accepted) return;
     }
     const result = await request("/api/couple/life-cards/step-toggle", {
       method: "POST",
@@ -2014,7 +2151,15 @@ export function App() {
     if (isProxy) {
       const targetName = actorName(targetUserId, profiles, "对方");
       const actionText = wasCompleted ? "取消完成" : "完成";
-      if (!window.confirm(`确认帮 ${targetName} ${actionText}这张卡吗？`)) return;
+      const accepted = await askConfirmation({
+        title: `帮 ${targetName} ${actionText}这张卡？`,
+        body: `这会把 ${targetName} 的完成状态记为由 ${currentUser?.displayName || "你"} 操作。`,
+        confirmLabel: `确认${actionText}`,
+        cancelLabel: "先不动",
+        tone: "proxy",
+        icon: "users",
+      });
+      if (!accepted) return;
     }
     const endpoint = {
       schedule: "/api/couple/schedule/toggle",
@@ -2035,7 +2180,54 @@ export function App() {
     }
   }
 
-  async function archiveCard(card) {
+  async function saveLifeCardPatch(card, patch = {}, options = {}) {
+    const endpoint = lifeCardUpsertEndpoint(card);
+    if (!endpoint) return null;
+    const body = lifeCardPatchPayload(card, profiles, patch);
+    const result = await request(endpoint, { method: "POST", body });
+    if (result) {
+      setData(result.state);
+      refreshDetailCardFromState(result.state, card);
+      if (options.selectDate) setSelectedDate(body.date);
+      if (options.message) toast.success(options.message);
+    }
+    return result;
+  }
+
+  async function moveCardDate(card, date, options = {}) {
+    if (!canPatchLifeCard(card) || !date) return;
+    const label = date === today() ? "今天" : date === addDays(today(), 1) ? "明天" : shortDate(date);
+    const result = await saveLifeCardPatch(card, { date }, {
+      selectDate: options.selectDate,
+      message: options.silent ? "" : `已移到${label}`,
+    });
+    if (result && options.selectDate) setTimelineScope("today");
+  }
+
+  async function moveCardsDate(cards, date) {
+    const movable = (cards || []).filter(canPatchLifeCard);
+    if (!movable.length || !date) return;
+    let moved = 0;
+    for (const card of movable) {
+      // Keep the local state synced after each backend write; the card list is small here.
+      const result = await saveLifeCardPatch(card, { date }, { silent: true, selectDate: moved === movable.length - 1 });
+      if (result) moved += 1;
+    }
+    if (moved) {
+      setTimelineScope("today");
+      setFilter("all");
+      toast.success(`已顺延 ${moved} 张生活卡`);
+    }
+  }
+
+  async function setCardPriority(card, priority) {
+    if (!canPatchLifeCard(card)) return;
+    await saveLifeCardPatch(card, { priority }, {
+      message: priority === "high" ? "已设为重要" : "已恢复普通",
+    });
+  }
+
+  async function archiveCard(card, options = {}) {
     if (!card || card.readOnly || card.sourceType === "insight" || card.isDraft) return;
     const endpoint = {
       schedule: "/api/couple/schedule/archive",
@@ -2050,8 +2242,19 @@ export function App() {
       setData(result.state);
       refreshDetailCardFromState(result.state, card);
       if (isArchivedCard(card)) setFilter("all");
-      toast.success(isArchivedCard(card) ? "已恢复归档" : "已归档");
+      if (!options.silent) toast.success(isArchivedCard(card) ? "已恢复归档" : "已归档");
     }
+  }
+
+  async function archiveCards(cards) {
+    const archivable = (cards || []).filter((card) => ["schedule", "todo"].includes(card.sourceType) && !isArchivedCard(card));
+    if (!archivable.length) return;
+    let archived = 0;
+    for (const card of archivable) {
+      await archiveCard(card, { silent: true });
+      archived += 1;
+    }
+    toast.success(`已归档 ${archived} 张生活卡`);
   }
 
   async function rememberCard(card) {
@@ -2077,6 +2280,15 @@ export function App() {
       setEditingCard(null);
       return;
     }
+    const accepted = await askConfirmation({
+      title: "删除这张生活卡？",
+      body: lifeCardDisplayTitle(card, "这张卡"),
+      confirmLabel: "删除",
+      cancelLabel: "保留",
+      tone: "danger",
+      icon: "trash",
+    });
+    if (!accepted) return;
     const endpoint = {
       schedule: "/api/couple/schedule/delete",
       todo: "/api/couple/todos/delete",
@@ -2210,6 +2422,8 @@ export function App() {
               archiveCard={archiveCard}
               toggleStep={toggleCardStep}
               toggleTimer={toggleCardTimer}
+              moveCardsDate={moveCardsDate}
+              archiveCards={archiveCards}
               setEditingCard={setEditingCard}
               openDetail={openDetail}
               reorderCards={reorderCards}
@@ -2245,6 +2459,14 @@ export function App() {
             onClose={() => setEditingCard(null)}
             onSave={saveCardEdit}
             onDelete={() => deleteCard(editingCard)}
+            confirmLeave={() => askConfirmation({
+              title: "放弃未保存修改？",
+              body: "当前编辑内容还没有保存。",
+              confirmLabel: "离开",
+              cancelLabel: "继续编辑",
+              tone: "danger",
+              icon: "x",
+            })}
           />
         )}
         {activeDetail ? (
@@ -2255,6 +2477,7 @@ export function App() {
             onAction={handleDetailAction}
           />
         ) : null}
+        <ConfirmDialog request={confirmRequest} onCancel={() => resolveConfirm(false)} onConfirm={() => resolveConfirm(true)} />
       </div>
       <Toaster position="top-center" richColors closeButton toastOptions={{ className: "peos-toast" }} />
     </>
@@ -2393,6 +2616,8 @@ function Dashboard(props) {
     archiveCard,
     toggleStep,
     toggleTimer,
+    moveCardsDate,
+    archiveCards,
     setEditingCard,
     openDetail,
     reorderCards,
@@ -2445,6 +2670,8 @@ function Dashboard(props) {
         archiveCard={archiveCard}
         toggleStep={toggleStep}
         toggleTimer={toggleTimer}
+        moveCardsDate={moveCardsDate}
+        archiveCards={archiveCards}
         setEditingCard={setEditingCard}
         openDetail={openDetail}
         reorderCards={reorderCards}
@@ -2736,9 +2963,16 @@ function Composer({ text, setText, saveRawCapture, profiles, currentUser, busy, 
     : [];
   const enabledRelatedCount = relatedDraftItems.filter((item) => item._enabled !== false).length;
   const enabledConfirmCount = (draft?._enabled !== false ? 1 : 0) + enabledRelatedCount;
+  const confirmSubmitLabel = draft?.decision === "schedule" && enabledConfirmCount === 0
+    ? "只留原文"
+    : draft?.decision === "memory"
+      ? "保存记忆"
+      : draft?.decision === "dailyStory"
+        ? "进日总结"
+        : "确认";
 
   return (
-    <section className="composer-band">
+    <section className={cx("composer-band", draft && "has-confirmation", selectedAssets.length && "has-assets")}>
       <form className="composer" onSubmit={(event) => event.preventDefault()}>
         <textarea
           value={text}
@@ -2869,7 +3103,7 @@ function Composer({ text, setText, saveRawCapture, profiles, currentUser, busy, 
             ) : null}
             {confirmRows.length ? (
               <div className="confirm-item-list" aria-label="识别出的生活卡">
-                {confirmRows.slice(0, 5).map((row) => {
+                {confirmRows.map((row) => {
                   const item = row.item || {};
                   const rowOwnerId = item.ownerId || draft.ownerId || currentUser?.id || "";
                   const updateRow = (patch) => row.primary ? updateDraft(patch) : updateRelatedItem(row.index, patch);
@@ -2912,8 +3146,14 @@ function Composer({ text, setText, saveRawCapture, profiles, currentUser, busy, 
             ) : null}
           </div>
           <div className="confirm-actions">
-            <IconButton icon="check" label="确认" type="submit" primary />
-            <IconButton icon="x" label="取消" onClick={dismissConfirmation} />
+            <button className="confirm-action-button" type="button" onClick={dismissConfirmation}>
+              <Icon name="x" />
+              <span>先不加入</span>
+            </button>
+            <button className="confirm-action-button is-primary" type="submit">
+              <Icon name="check" />
+              <span>{confirmSubmitLabel}</span>
+            </button>
           </div>
         </form>
       ) : null}
@@ -3154,9 +3394,10 @@ function MonthPage({ data, selectedDate, chooseDate, setPage }) {
   );
 }
 
-function LifeCardTimeline({ cards, profiles, currentUser, selectedDate, filter, setFilter, timelineScope = "today", setTimelineScope, expanded, setExpanded, toggleCard, archiveCard, toggleStep, toggleTimer, setEditingCard, openDetail, chooseDate, reorderCards }) {
+function LifeCardTimeline({ cards, profiles, currentUser, selectedDate, filter, setFilter, timelineScope = "today", setTimelineScope, expanded, setExpanded, toggleCard, archiveCard, toggleStep, toggleTimer, moveCardsDate, archiveCards, setEditingCard, openDetail, chooseDate, reorderCards }) {
   const [isScrollDragging, setIsScrollDragging] = useState(false);
   const [isCardScrubbing, setIsCardScrubbing] = useState(false);
+  const [rolloverBusy, setRolloverBusy] = useState(false);
   const [scrubTargetId, setScrubTargetId] = useState("");
   const [axisFocusId, setAxisFocusId] = useState("");
   const [compactDates, setCompactDates] = useState(() => new Set());
@@ -3222,6 +3463,14 @@ function LifeCardTimeline({ cards, profiles, currentUser, selectedDate, filter, 
   )[0] || null, [visibleCards, selectedDate, todayKey]);
   const nextUpTime = nextUpCard ? primaryTimeLabel(nextUpCard) : "";
   const nextUpPeople = nextUpCard ? nextUpPeopleLabel(nextUpCard, profiles, currentUser) : "";
+  const rolloverAllCards = useMemo(() => sortCards(visibleCards
+    .filter((card) => String(card.date || todayKey) < selectedDate)
+    .filter((card) => !isArchivedCard(card) && !isCompletedCard(card))
+    .filter(canPatchLifeCard)
+  ), [visibleCards, selectedDate, todayKey]);
+  const rolloverCards = rolloverAllCards.slice(0, 4);
+  const rolloverHiddenCount = Math.max(0, rolloverAllCards.length - rolloverCards.length);
+  const rolloverTargetLabel = selectedDate === todayKey ? "今天" : shortDate(selectedDate);
   const summary = useMemo(() => {
     const activeCards = lifeCards.filter((card) => !isArchivedCard(card));
     const openCards = activeCards.filter((card) => !isCompletedCard(card));
@@ -3246,6 +3495,12 @@ function LifeCardTimeline({ cards, profiles, currentUser, selectedDate, filter, 
   const scopes = [
     ["today", "focus", "今天"],
     ["future", "calendar", "未来"],
+  ];
+  const futureJumps = [
+    { label: "明天", date: addDays(todayKey, 1) },
+    { label: "三天后", date: addDays(todayKey, 3) },
+    { label: "周末", date: nextWeekendDate(todayKey) },
+    { label: "下周", date: addDays(todayKey, 7) },
   ];
   useEffect(() => () => {
     if (scrubFrame.current) window.cancelAnimationFrame(scrubFrame.current);
@@ -3488,6 +3743,24 @@ function LifeCardTimeline({ cards, profiles, currentUser, selectedDate, filter, 
     });
   };
   const selectedCompact = compactDates.has(selectedDate);
+  const moveRolloverCards = async () => {
+    if (!rolloverAllCards.length || rolloverBusy) return;
+    setRolloverBusy(true);
+    try {
+      await moveCardsDate?.(rolloverAllCards, selectedDate);
+    } finally {
+      setRolloverBusy(false);
+    }
+  };
+  const archiveRolloverCards = async () => {
+    if (!rolloverAllCards.length || rolloverBusy) return;
+    setRolloverBusy(true);
+    try {
+      await archiveCards?.(rolloverAllCards);
+    } finally {
+      setRolloverBusy(false);
+    }
+  };
 
   return (
     <section className="life-section">
@@ -3549,6 +3822,21 @@ function LifeCardTimeline({ cards, profiles, currentUser, selectedDate, filter, 
           </div>
         </div>
       </div>
+      {timelineScope === "future" ? (
+        <div className="future-jump-row" aria-label="未来日期">
+          {futureJumps.map((jump) => (
+            <button
+              key={`${jump.label}-${jump.date}`}
+              className={cx(selectedDate === jump.date && "is-active")}
+              type="button"
+              onClick={() => selectDate(jump.date)}
+            >
+              <span>{jump.label}</span>
+              <em>{shortDate(jump.date)}</em>
+            </button>
+          ))}
+        </div>
+      ) : null}
       {nextUpCard ? (
         <button
           className={cx("next-up-strip", nextUpCard.priority === "high" && "is-important")}
@@ -3566,6 +3854,37 @@ function LifeCardTimeline({ cards, profiles, currentUser, selectedDate, filter, 
           </span>
           {nextUpPeople ? <span className="next-up-people">{nextUpPeople}</span> : null}
         </button>
+      ) : null}
+      {rolloverAllCards.length ? (
+        <section className="rollover-strip" aria-label="旧生活卡处理">
+          <span className="rollover-head">
+            <Icon name="refresh" />
+            <b>待处理</b>
+            <em>{rolloverAllCards.length}</em>
+          </span>
+          <div className="rollover-items">
+            {rolloverCards.map((card) => (
+              <button
+                key={card.id}
+                type="button"
+                onClick={() => openDetail?.("lifeCard", card)}
+                title={lifeCardDisplayTitle(card, "生活卡")}
+              >
+                <strong>{lifeCardDisplayTitle(card, "生活卡")}</strong>
+                <em>{shortDate(card.date)}</em>
+              </button>
+            ))}
+            {rolloverHiddenCount ? <span>还有 {rolloverHiddenCount} 张</span> : null}
+          </div>
+          <div className="rollover-actions">
+            <button type="button" onClick={moveRolloverCards} disabled={rolloverBusy}>
+              {rolloverBusy ? "处理中" : `顺延到${rolloverTargetLabel}`}
+            </button>
+            <button type="button" onClick={archiveRolloverCards} disabled={rolloverBusy}>
+              归档
+            </button>
+          </div>
+        </section>
       ) : null}
       {pinnedCards.length ? (
         <section className="priority-strip" aria-label="置顶生活卡">
@@ -3797,8 +4116,10 @@ function LifeCard({ card, profiles, currentUser, compact = false, toggleCard, ar
     : isDone
       ? (isGroupCard || card.completion?.allDone ? "已完成" : "我已完成")
     : waitLabel || progressStatus;
+  const repeatNote = repeatRuleLabel(card.repeatRule);
   const contextBits = [
     timeNote,
+    repeatNote && repeatNote !== timeNote ? repeatNote : "",
     displayedStatus,
     card.priority === "high" ? "重要" : "",
   ].filter(Boolean);
@@ -3814,8 +4135,8 @@ function LifeCard({ card, profiles, currentUser, compact = false, toggleCard, ar
     event.stopPropagation();
   };
   const { isProxy, targetName } = proxyActionMeta(card, currentUser, profiles);
-  const completeLabel = isProxy ? `帮${targetName}完成` : "完成";
-  const undoLabel = isProxy ? `取消${targetName}` : "取消";
+  const completeLabel = isDailyCheckin || itemType === "checkin" ? (isProxy ? `帮${targetName}打卡` : "打卡") : isProxy ? `帮${targetName}完成` : "完成";
+  const undoLabel = isDailyCheckin || itemType === "checkin" ? (isProxy ? `取消${targetName}打卡` : "取消打卡") : isProxy ? `取消${targetName}` : "取消";
   const targetDone = completionTarget ? isCardDoneForUser(card, completionTarget) : isDone;
   const participantStates = !isLegacyCheckin && !isDailyCheckin && isGroupCard
     ? participants.map((id) => {
@@ -3837,7 +4158,7 @@ function LifeCard({ card, profiles, currentUser, compact = false, toggleCard, ar
   };
   const toggleStepAction = (event, step) => {
     stopAction(event);
-    if (isLegacyCheckin) {
+    if (isLegacyCheckin || isDailyCheckin) {
       if (step.ownerId === currentUser?.id || step.ownerId === completionTarget) toggleCard?.(card);
       return;
     }
@@ -3874,7 +4195,7 @@ function LifeCard({ card, profiles, currentUser, compact = false, toggleCard, ar
         {!compact && checkinPeople.length ? (
           <div className="card-checkin-board" aria-label="共同打卡完成情况">
             {checkinPeople.map((person) => {
-              const disabled = readOnly || isDailyCheckin || (person.id !== currentUser?.id && person.id !== completionTarget);
+              const disabled = readOnly || (person.id !== currentUser?.id && person.id !== completionTarget);
               return (
                 <button
                   key={person.id}
@@ -3978,7 +4299,7 @@ function LifeCard({ card, profiles, currentUser, compact = false, toggleCard, ar
               <span>{completeLabel}</span>
             </button>
           ) : null}
-          {!compact && !isArchived && !isLegacyCheckin ? (
+          {!compact && !isArchived && !isLegacyCheckin && !isDailyCheckin ? (
             <button
               className={cx("action-chip timer-toggle", timerActive && "is-active")}
               type="button"
@@ -4075,7 +4396,7 @@ function buildCardEditorDefaults(card) {
   };
 }
 
-function CardEditor({ card, profiles, onClose, onSave, onDelete }) {
+function CardEditor({ card, profiles, onClose, onSave, onDelete, confirmLeave }) {
   const isDailyCheckin = card.title === "一起打卡！" || card.repeatRule === "daily@03:00";
   const defaultValues = useMemo(() => buildCardEditorDefaults(card), [card]);
   const {
@@ -4205,7 +4526,7 @@ function CardEditor({ card, profiles, onClose, onSave, onDelete }) {
       itemType: isDailyCheckin ? "checkin" : values.itemType,
       ownerId: isDailyCheckin ? "shared" : values.ownerId,
       priority: isDailyCheckin ? "normal" : values.priority,
-      repeatRule: isDailyCheckin ? "daily@03:00" : values.repeatRule,
+      repeatRule: isDailyCheckin ? "daily@03:00" : values.repeatRule || (values.itemType === "habit" ? "daily" : ""),
       durationMin: Number(values.durationMin) || 0,
       tags: normalizeEditableTags(values.tags),
       steps: (values.steps || [])
@@ -4232,10 +4553,11 @@ function CardEditor({ card, profiles, onClose, onSave, onDelete }) {
   const [editorSection, setEditorSection] = useState(isDailyCheckin ? "steps" : "compose");
   const ownerLabel = ownerChoices.find((choice) => choice.id === form.ownerId)?.label || "共同";
   const priorityLabel = priorityOptions.find((choice) => choice.id === form.priority)?.label || "普通";
+  const repeatLabel = repeatRuleLabel(form.repeatRule) || "一次";
   const stepCount = formSteps.filter((step) => String(step.title || "").trim()).length || formSteps.length;
   const editorTabs = [
     { id: "compose", label: "内容", icon: "edit", meta: itemTypeLabels[form.itemType] || "生活卡" },
-    { id: "plan", label: isDailyCheckin ? "规则" : "时间", icon: "calendar", meta: isDailyCheckin ? "每日" : form.plannedAt ? "已安排" : priorityLabel },
+    { id: "plan", label: isDailyCheckin ? "规则" : "时间", icon: "calendar", meta: isDailyCheckin ? "每日" : form.plannedAt ? "已安排" : repeatLabel || priorityLabel },
     { id: "steps", label: isDailyCheckin ? "打卡" : "步骤", icon: "rows", meta: `${stepCount} 项` },
   ];
   const stepTemplates = [
@@ -4243,10 +4565,39 @@ function CardEditor({ card, profiles, onClose, onSave, onDelete }) {
     { id: "three", icon: "rows", label: "三步走" },
     profiles.length > 1 ? { id: "split", icon: "users", label: "分给两个人" } : null,
   ].filter(Boolean);
-  const requestClose = useCallback(() => {
-    if (isDirty && !isSubmitting && !window.confirm("还有没保存的改动，要先离开吗？")) return;
+  const setEditorDate = useCallback((date) => {
+    if (!date || isDailyCheckin) return;
+    const plannedAt = getValues("plannedAt");
+    const dueAt = getValues("dueAt");
+    setValue("date", date, { shouldDirty: true, shouldValidate: true });
+    if (plannedAt) setValue("plannedAt", redateDateTime(plannedAt, date), { shouldDirty: true, shouldValidate: true });
+    if (dueAt) setValue("dueAt", redateDateTime(dueAt, date), { shouldDirty: true, shouldValidate: true });
+  }, [getValues, isDailyCheckin, setValue]);
+  const setEditorTime = useCallback((time, segment) => {
+    if (isDailyCheckin) return;
+    const date = getValues("date") || today();
+    setValue("plannedAt", localDateTimeValue(date, time), { shouldDirty: true, shouldValidate: true });
+    setValue("segment", segment, { shouldDirty: true, shouldValidate: true });
+  }, [getValues, isDailyCheckin, setValue]);
+  const editorDateShortcuts = [
+    { label: "今天", value: today() },
+    { label: "明天", value: addDays(today(), 1) },
+    { label: "周末", value: nextWeekendDate(form.date || today()) },
+  ];
+  const editorTimeShortcuts = [
+    { label: "早上", time: "09:00", segment: "morning" },
+    { label: "下午", time: "15:00", segment: "afternoon" },
+    { label: "晚上", time: "20:00", segment: "evening" },
+  ];
+  const requestClose = useCallback(async () => {
+    if (isDirty && !isSubmitting) {
+      const accepted = confirmLeave
+        ? await confirmLeave()
+        : window.confirm("还有没保存的改动，要先离开吗？");
+      if (!accepted) return;
+    }
     onClose();
-  }, [isDirty, isSubmitting, onClose]);
+  }, [confirmLeave, isDirty, isSubmitting, onClose]);
   const showDelete = !card.isDraft;
   return (
     <Dialog.Root open onOpenChange={(nextOpen) => {
@@ -4306,10 +4657,24 @@ function CardEditor({ card, profiles, onClose, onSave, onDelete }) {
                   <textarea rows={4} {...register("detail")} placeholder="补一句需要记住的提醒、背景或关照方式" />
                 </label>
                 <div className="edit-field-grid">
-                  <label className="edit-line-field">
+                  <div className="edit-line-field edit-date-field">
                     <span>日期</span>
-                    <input type="date" {...register("date")} disabled={isDailyCheckin} />
-                  </label>
+                    <input type="date" {...register("date")} disabled={isDailyCheckin} aria-label="日期" />
+                    {!isDailyCheckin ? (
+                      <div className="date-shortcut-row" aria-label="日期快捷">
+                        {editorDateShortcuts.map((shortcut) => (
+                          <button
+                            key={`${shortcut.label}-${shortcut.value}`}
+                            type="button"
+                            className={cx(form.date === shortcut.value && "is-active")}
+                            onClick={() => setEditorDate(shortcut.value)}
+                          >
+                            {shortcut.label}
+                          </button>
+                        ))}
+                      </div>
+                    ) : null}
+                  </div>
                   <label className="edit-line-field">
                     <span>类型</span>
                     <EditorSelect
@@ -4379,6 +4744,30 @@ function CardEditor({ card, profiles, onClose, onSave, onDelete }) {
                         <span>预计</span>
                         <input type="number" min="0" step="5" {...register("durationMin")} placeholder="分钟" />
                       </label>
+                    </div>
+                    <div className="date-shortcut-row is-time" aria-label="时间快捷">
+                      {editorTimeShortcuts.map((shortcut) => (
+                        <button key={shortcut.label} type="button" onClick={() => setEditorTime(shortcut.time, shortcut.segment)}>
+                          <Icon name="clock" />
+                          <span>{shortcut.label}</span>
+                          <em>{shortcut.time}</em>
+                        </button>
+                      ))}
+                    </div>
+                    <input type="hidden" {...register("repeatRule")} />
+                    <div className="repeat-choice" role="radiogroup" aria-label="周期">
+                      {repeatEditorOptions.map((option) => (
+                        <button
+                          key={option.id || "once"}
+                          type="button"
+                          className={cx(form.repeatRule === option.id && "is-active")}
+                          onClick={() => setValue("repeatRule", option.id, { shouldDirty: true, shouldValidate: true })}
+                          aria-pressed={form.repeatRule === option.id ? "true" : "false"}
+                        >
+                          <span>{option.label}</span>
+                          <em>{option.hint}</em>
+                        </button>
+                      ))}
                     </div>
                   </>
                 )}
@@ -4543,6 +4932,32 @@ function RawCaptureShelf({ data, profiles, currentUser, selectedDate, openDetail
   );
 }
 
+function ConfirmDialog({ request, onCancel, onConfirm }) {
+  if (!request) return null;
+  return (
+    <Dialog.Root open onOpenChange={(nextOpen) => {
+      if (!nextOpen) onCancel();
+    }}>
+      <Dialog.Portal>
+        <Dialog.Overlay className="confirm-dialog-backdrop" />
+        <Dialog.Content className={cx("confirm-dialog", request.tone && `is-${request.tone}`)} aria-describedby={request.body ? "confirm-dialog-body" : undefined}>
+          <Dialog.Title className="confirm-dialog-title">
+            <span>
+              <Icon name={request.icon || "check"} />
+            </span>
+            <strong>{request.title}</strong>
+          </Dialog.Title>
+          {request.body ? <p id="confirm-dialog-body">{request.body}</p> : null}
+          <div className="confirm-dialog-actions">
+            <button type="button" onClick={onCancel}>{request.cancelLabel || "取消"}</button>
+            <button className="is-primary" type="button" onClick={onConfirm}>{request.confirmLabel || "确认"}</button>
+          </div>
+        </Dialog.Content>
+      </Dialog.Portal>
+    </Dialog.Root>
+  );
+}
+
 function DetailDrawer({ detail, profiles, onClose, onAction }) {
   const ownerIds = detail.ownerIds?.length ? detail.ownerIds : profiles.map((profile) => profile.id).slice(0, 2);
   return (
@@ -4570,10 +4985,10 @@ function DetailDrawer({ detail, profiles, onClose, onAction }) {
         </div>
         {detail.actions?.length ? (
           <div className="detail-action-row" aria-label="操作">
-            {detail.actions.slice(0, 6).map((action) => (
+            {detail.actions.slice(0, 8).map((action) => (
               <button
                 key={`${action.type}-${action.label}`}
-                className={cx(action.type === "toggle-card" && "is-primary", action.type === "timer-card" && "is-tool")}
+                className={cx(action.type === "toggle-card" && "is-primary", action.type === "timer-card" && "is-tool", action.type === "set-card-priority" && "is-warm")}
                 type="button"
                 onClick={() => onAction(action)}
               >
