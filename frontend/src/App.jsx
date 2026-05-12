@@ -3201,8 +3201,10 @@ function DateRail({ selectedDate, chooseDate }) {
 function Composer({ text, setText, saveRawCapture, profiles, currentUser, busy, agentJob, confirmation, submitConfirmation, dismissConfirmation, retryAgentJob, clearAgentJob, composingRef }) {
   const [routeDraft, setRouteDraft] = useState(null);
   const [selectedAssets, setSelectedAssets] = useState([]);
+  const [confirmItemsExpanded, setConfirmItemsExpanded] = useState(false);
   const fileInputRef = useRef(null);
   useEffect(() => {
+    setConfirmItemsExpanded(false);
     if (!confirmation) {
       setRouteDraft(null);
       return;
@@ -3368,6 +3370,11 @@ function Composer({ text, setText, saveRawCapture, profiles, currentUser, busy, 
     : [];
   const enabledRelatedCount = relatedDraftItems.filter((item) => item._enabled !== false).length;
   const enabledConfirmCount = (draft?._enabled !== false ? 1 : 0) + enabledRelatedCount;
+  const confirmItemPreview = confirmRows
+    .map((row) => cleanStoryText(row.item?.title || row.item?.detail || ""))
+    .filter(Boolean)
+    .slice(0, 3)
+    .join("、");
   const confirmSubmitLabel = draft?.decision === "schedule" && enabledConfirmCount === 0
     ? "只留原文"
     : draft?.decision === "memory"
@@ -3509,46 +3516,62 @@ function Composer({ text, setText, saveRawCapture, profiles, currentUser, busy, 
               </div>
             ) : null}
             {confirmRows.length ? (
-              <div className="confirm-item-list" aria-label="识别出的生活卡">
-                {confirmRows.map((row) => {
-                  const item = row.item || {};
-                  const rowOwnerId = item.ownerId || draft.ownerId || currentUser?.id || "";
-                  const updateRow = (patch) => row.primary ? updateDraft(patch) : updateRelatedItem(row.index, patch);
-                  const toggleRow = () => updateRow({ _enabled: !row.enabled });
-                  return (
-                    <div className={cx("confirm-item-row", !row.enabled && "is-muted")} key={row.id}>
-                      <label className="confirm-item-check">
-                        <input type="checkbox" checked={row.enabled} onChange={toggleRow} />
-                        <span>
-                          <Icon name={row.enabled ? "check" : "circle"} />
-                        </span>
-                      </label>
-                      <input
-                        className="confirm-item-title"
-                        value={item.title || ""}
-                        disabled={!row.enabled}
-                        onChange={(event) => updateRow({ title: event.target.value })}
-                        aria-label={row.primary ? "主生活卡标题" : "子生活卡标题"}
-                      />
-                      <input
-                        className="confirm-item-date"
-                        type="date"
-                        value={item.date || draft.date || today()}
-                        disabled={!row.enabled}
-                        onChange={(event) => updateRow({ date: event.target.value })}
-                        aria-label={`${item.title || "生活卡"}日期`}
-                      />
-                      <select
-                        value={rowOwnerId}
-                        disabled={!row.enabled}
-                        onChange={(event) => row.primary ? updatePrimaryOwner(event.target.value) : updateRelatedOwner(row.index, event.target.value)}
-                        aria-label={`${item.title || "生活卡"}归属`}
-                      >
-                        {ownerOptions.map((option) => <option key={option.id} value={option.id}>{option.label}</option>)}
-                      </select>
-                    </div>
-                  );
-                })}
+              <div className={cx("confirm-items-fold", confirmItemsExpanded && "is-expanded")}>
+                <button
+                  className="confirm-items-toggle"
+                  type="button"
+                  aria-expanded={confirmItemsExpanded}
+                  aria-controls="confirm-item-list"
+                  onClick={() => setConfirmItemsExpanded((value) => !value)}
+                >
+                  <span>
+                    <Icon name="rows" />
+                    <b>识别到 {confirmRows.length} 条</b>
+                  </span>
+                  <em>{shortText(confirmItemPreview || "点开编辑标题、日期和归属", 52)}</em>
+                  <Icon name={confirmItemsExpanded ? "chevronUp" : "chevronDown"} />
+                </button>
+                <div className="confirm-item-list" id="confirm-item-list" aria-label="识别出的生活卡">
+                  {confirmRows.map((row) => {
+                    const item = row.item || {};
+                    const rowOwnerId = item.ownerId || draft.ownerId || currentUser?.id || "";
+                    const updateRow = (patch) => row.primary ? updateDraft(patch) : updateRelatedItem(row.index, patch);
+                    const toggleRow = () => updateRow({ _enabled: !row.enabled });
+                    return (
+                      <div className={cx("confirm-item-row", !row.enabled && "is-muted")} key={row.id}>
+                        <label className="confirm-item-check">
+                          <input type="checkbox" checked={row.enabled} onChange={toggleRow} />
+                          <span>
+                            <Icon name={row.enabled ? "check" : "circle"} />
+                          </span>
+                        </label>
+                        <input
+                          className="confirm-item-title"
+                          value={item.title || ""}
+                          disabled={!row.enabled}
+                          onChange={(event) => updateRow({ title: event.target.value })}
+                          aria-label={row.primary ? "主生活卡标题" : "子生活卡标题"}
+                        />
+                        <input
+                          className="confirm-item-date"
+                          type="date"
+                          value={item.date || draft.date || today()}
+                          disabled={!row.enabled}
+                          onChange={(event) => updateRow({ date: event.target.value })}
+                          aria-label={`${item.title || "生活卡"}日期`}
+                        />
+                        <select
+                          value={rowOwnerId}
+                          disabled={!row.enabled}
+                          onChange={(event) => row.primary ? updatePrimaryOwner(event.target.value) : updateRelatedOwner(row.index, event.target.value)}
+                          aria-label={`${item.title || "生活卡"}归属`}
+                        >
+                          {ownerOptions.map((option) => <option key={option.id} value={option.id}>{option.label}</option>)}
+                        </select>
+                      </div>
+                    );
+                  })}
+                </div>
               </div>
             ) : null}
           </div>
