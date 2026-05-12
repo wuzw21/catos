@@ -1239,6 +1239,78 @@ function dailyCheckinProgress(card, profiles, currentUser = null) {
   return { rows, done, total };
 }
 
+function sortPeopleProgress(people, profiles = []) {
+  const indexById = new Map((profiles || []).map((profile, index) => [profile.id, index]));
+  return [...people].sort((a, b) => {
+    const ai = indexById.has(a.id) ? indexById.get(a.id) : 999;
+    const bi = indexById.has(b.id) ? indexById.get(b.id) : 999;
+    return ai - bi || String(a.label || a.id).localeCompare(String(b.label || b.id));
+  });
+}
+
+function peopleProgressText(people) {
+  return people
+    .filter((person) => person.total)
+    .map((person) => `${person.label} ${person.done}/${person.total}`)
+    .join(" · ");
+}
+
+function dailyCheckinPeopleProgress(card, profiles, currentUser = null) {
+  const rows = dailyCheckinRows(card, profiles, currentUser);
+  const byId = new Map();
+  rows.forEach((row) => {
+    row.people.forEach((person) => {
+      const current = byId.get(person.id) || { ...person, done: 0, total: 0 };
+      current.done += person.done ? 1 : 0;
+      current.total += 1;
+      byId.set(person.id, current);
+    });
+  });
+  return sortPeopleProgress([...byId.values()], profiles);
+}
+
+function dailyCheckinPeopleProgressText(card, profiles, currentUser = null) {
+  return peopleProgressText(dailyCheckinPeopleProgress(card, profiles, currentUser));
+}
+
+function dailyCheckinRowStatusText(row) {
+  return (row?.people || [])
+    .map((person) => `${person.label}${person.done ? "已打卡" : "未打卡"}`)
+    .join(" · ");
+}
+
+function checkinLanePeopleProgress(cards = [], profiles, currentUser = null) {
+  const byId = new Map();
+  const addPerson = (person, doneIncrement, totalIncrement) => {
+    if (!person?.id || !totalIncrement) return;
+    const current = byId.get(person.id) || { ...person, done: 0, total: 0 };
+    current.done += doneIncrement;
+    current.total += totalIncrement;
+    byId.set(person.id, current);
+  };
+  cards.forEach((card) => {
+    if (isDailyCheckinCard(card)) {
+      dailyCheckinPeopleProgress(card, profiles, currentUser).forEach((person) => {
+        addPerson(person, person.done, person.total);
+      });
+      return;
+    }
+    cardParticipantIds(card, profiles, currentUser).forEach((id) => {
+      const profile = profiles.find((item) => item.id === id);
+      addPerson({
+        id,
+        label: profile?.displayName || ownerLabel(id, currentUser),
+        color: profileColor(profiles, id, id === currentUser?.id ? avatarColor(currentUser) : "#24b99a"),
+      }, isCardDoneForUser(card, id) ? 1 : 0, 1);
+    });
+  });
+  return sortPeopleProgress([...byId.values()], profiles);
+}
+
+function checkinLaneProgressText(cards, profiles, currentUser = null) {
+  return peopleProgressText(checkinLanePeopleProgress(cards, profiles, currentUser));
+}
+
 function dailyCheckinSummary(card, fallback = "打卡") {
   const items = dailyCheckinItems(card);
   if (!items.length) return fallback;
@@ -1246,24 +1318,16 @@ function dailyCheckinSummary(card, fallback = "打卡") {
   return `${visible.join(" · ")}${items.length > visible.length ? ` +${items.length - visible.length}` : ""}`;
 }
 
-function dailyCheckinProgressText(card) {
-  const participants = Array.isArray(card?.participants) ? card.participants : [];
-  if (!participants.length) return statusText(card) || "";
-  const steps = (Array.isArray(card?.steps) ? card.steps : []).filter((step) => cleanCardText(step?.title || ""));
-  const total = steps.length ? participants.length * steps.length : participants.length;
-  const done = steps.length
-    ? steps.reduce((sum, step) => sum + participants.filter((id) => dailyCheckinStepDone(step, card, id)).length, 0)
-    : participants.filter((id) => isCardDoneForUser(card, id)).length;
-  if (done === total) return "都打卡了";
-  if (!done) return "还没打卡";
-  return `${done}/${total} 已打卡`;
+function dailyCheckinProgressText(card, profiles = [], currentUser = null) {
+  return dailyCheckinPeopleProgressText(card, profiles, currentUser) || statusText(card) || "";
 }
 
 function completionSummaryForCard(card, profiles, currentUser = null) {
   const participants = Array.isArray(card?.participants) ? card.participants : [];
   if (!participants.length) return statusText(card) || card?.statusLabel || "";
+  if (isDailyCheckinCard(card)) return dailyCheckinPeopleProgressText(card, profiles, currentUser) || statusText(card) || card?.statusLabel || "";
   const updatedBy = card?.statusUpdatedBy || {};
-  const isCheckin = isDailyCheckinCard(card) || card?.itemType === "checkin";
+  const isCheckin = card?.itemType === "checkin";
   return participants
     .map((id) => {
       const name = userDisplayName(id, profiles, participantShortName(id, profiles, currentUser, id));
@@ -1499,9 +1563,8 @@ const detailBuilders = {
       .map((step) => {
         const ownerIds = stepOwnerIds(step, participants);
         const checkinRow = isDailyCheckin ? checkinRowsById.get(step.id || step.title) : null;
-        const checkinDone = checkinRow ? checkinRow.people.filter((person) => person.done).length : 0;
         const state = isDailyCheckin
-          ? (checkinRow?.people.length ? `${checkinDone}/${checkinRow.people.length} 已打卡` : "打卡项")
+          ? (checkinRow?.people.length ? dailyCheckinRowStatusText(checkinRow) : "打卡项")
           : stepStateLabel(step, profiles, participants, currentUser);
         const owner = isDailyCheckin ? "" : stepOwnerLabel(step, profiles, participants, currentUser);
         return {
@@ -1538,7 +1601,11 @@ const detailBuilders = {
     const hasMemory = Boolean(memoryKindText(card.memoryKinds) || card.memoryLinks?.length);
     const participantLine = namesForIds(participants, profiles);
     const completionLine = completionSummaryForCard(card, profiles, currentUser);
-    const statusValue = isDailyCheckin ? dailyCheckinProgressText(card) : stepStatus || statusText(card) || card.statusLabel;
+    const statusValue = isDailyCheckin
+      ? dailyCheckinProgressText(card, profiles, currentUser)
+      : participants.length && completionLine
+        ? completionLine
+        : stepStatus || statusText(card) || card.statusLabel;
     const timeValue = primaryTimeLabel(card);
     const repeatValue = card.repeatRule ? repeatRuleLabel(card.repeatRule) : "";
     const canQuickPatch = canPatchLifeCard(card) && !isArchived && !isDailyCheckin;
@@ -2920,16 +2987,45 @@ function Dashboard(props) {
 }
 
 function CheckinLane({ cards = [], profiles, currentUser, selectedDate, toggleCard, archiveCard, toggleStep, toggleTimer, setCardPriority, openDetail, setEditingCard }) {
+  const storageKey = `peos:checkin-lane-collapsed-v2:${currentUser?.id || "guest"}`;
+  const [collapsed, setCollapsed] = useState(() => {
+    try {
+      const stored = window.localStorage.getItem(storageKey);
+      if (stored === "1" || stored === "0") return stored === "1";
+      return window.matchMedia?.("(max-width: 560px)")?.matches || false;
+    } catch {
+      return false;
+    }
+  });
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(storageKey, collapsed ? "1" : "0");
+    } catch {
+      // Collapsing checkin is a convenience preference; losing persistence is harmless.
+    }
+  }, [collapsed, storageKey]);
   if (!cards.length) return null;
-  const doneCount = cards.reduce((sum, card) => {
-    if (isDailyCheckinCard(card)) return sum + dailyCheckinProgress(card, profiles, currentUser).done;
-    const participants = cardParticipantIds(card, profiles, currentUser);
-    return sum + participants.filter((id) => isCardDoneForUser(card, id)).length;
-  }, 0);
-  const totalCount = cards.reduce((sum, card) => {
-    if (isDailyCheckinCard(card)) return sum + dailyCheckinProgress(card, profiles, currentUser).total;
-    return sum + cardParticipantIds(card, profiles, currentUser).length;
-  }, 0);
+  const progressText = checkinLaneProgressText(cards, profiles, currentUser);
+  const progressLabel = progressText || shortDate(selectedDate);
+  const collapsedSummary = cards
+    .map((card) => isDailyCheckinCard(card) ? dailyCheckinSummary(card) : lifeCardDisplayTitle(card))
+    .filter(Boolean)
+    .slice(0, 2)
+    .join(" · ");
+  if (collapsed) {
+    return (
+      <section className="checkin-lane is-hidden" aria-label="打卡">
+        <button className="checkin-lane-collapsed" type="button" onClick={() => setCollapsed(false)} aria-expanded="false">
+          <span className="checkin-mini-badge"><Icon name="check" />打卡</span>
+          <span className="checkin-mini-copy">
+            <strong>{progressLabel}</strong>
+            <em>{collapsedSummary || "展开今日打卡"}</em>
+          </span>
+          <Icon name="chevronDown" />
+        </button>
+      </section>
+    );
+  }
   return (
     <section className="checkin-lane" aria-label="打卡">
       <div className="checkin-lane-head">
@@ -2937,7 +3033,20 @@ function CheckinLane({ cards = [], profiles, currentUser, selectedDate, toggleCa
           <span><Icon name="check" />日常</span>
           <strong>打卡</strong>
         </div>
-        <em>{selectedDate === today() ? "今天" : shortDate(selectedDate)} · {doneCount}/{totalCount || 0}</em>
+        <div className="checkin-lane-actions">
+          <em>{progressLabel}</em>
+          <button
+            className="checkin-hide-toggle"
+            type="button"
+            aria-expanded="true"
+            aria-label="收起打卡"
+            title="收起打卡"
+            onClick={() => setCollapsed(true)}
+          >
+            <Icon name="chevronUp" />
+            <span>收起</span>
+          </button>
+        </div>
       </div>
       <div className="checkin-lane-cards">
         {cards.map((card) => {
@@ -4416,14 +4525,17 @@ function LifeCard({ card, profiles, currentUser, compact = false, toggleCard, ar
   const waitLabel = !isDone && !isArchived && isGroupCard
     ? (currentUserPending ? "等我" : pendingOwnerIds.length ? "等对方" : "")
     : "";
+  const participantCompletionLine = participants.length ? completionSummaryForCard(card, profiles, currentUser) : "";
   const displayedStatus = isArchived
     ? "已归档"
+    : participantCompletionLine
+      ? participantCompletionLine
     : isDone
       ? (isGroupCard || card.completion?.allDone ? "已完成" : "我已完成")
     : waitLabel || progressStatus;
   const repeatNote = repeatRuleLabel(card.repeatRule);
   const checkinSummary = isDailyCheckin ? dailyCheckinSummary(card) : "";
-  const checkinProgress = isDailyCheckin ? dailyCheckinProgressText(card) : "";
+  const checkinProgress = isDailyCheckin ? dailyCheckinProgressText(card, profiles, currentUser) : "";
   const contextBits = isDailyCheckin
     ? [checkinSummary, checkinProgress].filter(Boolean)
     : [
@@ -4497,9 +4609,9 @@ function LifeCard({ card, profiles, currentUser, compact = false, toggleCard, ar
     }
     if (!readOnly && (!step.ownerId || step.ownerId === currentUser?.id || step.ownerId === completionTarget)) toggleStep?.(card, step);
   };
-  const checkinBoardLabel = isDailyCheckin
-    ? (dailyProgressInfo.total ? `${dailyProgressInfo.done}/${dailyProgressInfo.total}` : "")
-    : (checkinPeople.length ? `${checkinDoneCount}/${checkinPeople.length}` : "");
+  const legacyCheckinProgressLabel = checkinPeople
+    .map((person) => `${person.label}${person.done ? "已打卡" : "未打卡"}`)
+    .join(" · ");
   return (
     <article
       className={cx("life-card", `type-${itemType}`, card.priority === "high" && "is-important", isLegacyCheckin && "is-checkin", isDailyCheckin && "is-daily-checkin", isDone && "is-done", isArchived && "is-archived", ageNotice && "is-aged", ageNotice?.level === "strong" && "is-aged-strong", readOnly && "is-readonly", isInsight && "is-insight", isDraft && "is-draft")}
@@ -4589,7 +4701,7 @@ function LifeCard({ card, profiles, currentUser, compact = false, toggleCard, ar
           </div>
         ) : null}
         {!compact && isLegacyCheckin && checkinPeople.length ? (
-          <div className="checkin-meter" aria-label={`共同打卡 ${checkinDoneCount}/${checkinPeople.length}`}>
+          <div className="checkin-meter" aria-label={`共同打卡 ${legacyCheckinProgressLabel}`}>
             <span style={{ width: `${Math.round((checkinDoneCount / checkinPeople.length) * 100)}%` }} />
           </div>
         ) : null}
