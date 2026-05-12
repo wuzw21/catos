@@ -13,6 +13,9 @@ function titles(steps) {
 }
 
 try {
+  assert.equal(store.verifyLogin("you", "damao").id, "you");
+  assert.equal(store.verifyLogin("partner", "xiaomao").id, "partner");
+
   const homework = store.analyzeCapture("you", {
     date: "2026-05-10",
     text: "今天下午写完作业，分三步：列提纲，写正文，检查",
@@ -98,6 +101,29 @@ try {
   assert.equal(noise.decision, "capture");
   assert.equal(noise.isDefaultDraft, true);
 
+  const secretDraft = store.analyzeCapture("you", {
+    date: "2026-05-12",
+    text: "小秘密：明天买礼物，不准被对方看到",
+    analysisMode: "template",
+  });
+  assert.equal(secretDraft.decision, "schedule");
+  assert.equal(secretDraft.visibility, "private");
+  assert.equal(secretDraft.ownerId, "you");
+  assert.deepEqual(secretDraft.participants, ["you"]);
+  assert.equal(secretDraft.title, "买礼物");
+  assert(!titles(secretDraft.steps).includes("不准被对方看到"));
+
+  const secretCapture = store.addCapture("you", {
+    date: "2026-05-12",
+    text: "小秘密：明天买礼物，不准被对方看到",
+    mode: "analysis",
+  }).result;
+  assert.equal(secretCapture.visibility, "private");
+  const secretCaptureOwnerState = store.getState("you", { date: "2026-05-12" });
+  assert(secretCaptureOwnerState.captures.some((capture) => capture.id === secretCapture.id && capture.visibility === "private"));
+  const secretCapturePartnerState = store.getState("partner", { date: "2026-05-12" });
+  assert(!secretCapturePartnerState.captures.some((capture) => capture.id === secretCapture.id));
+
   const imageOnlyCapture = store.addCapture("you", {
     date: "2026-05-10",
     text: "",
@@ -113,6 +139,15 @@ try {
   assert.equal(imageOnlyCapture.text, "图片随手记");
   assert.equal(imageOnlyCapture.rawFormat, "markdown+photo");
   assert.equal(imageOnlyCapture.assets.length, 1);
+  const archivedCapture = store.archiveCaptureItem("you", { id: imageOnlyCapture.id }).result;
+  assert(archivedCapture.archivedAt);
+  const restoredCapture = store.archiveCaptureItem("you", {
+    date: imageOnlyCapture.date,
+    text: imageOnlyCapture.text,
+    createdAt: imageOnlyCapture.createdAt,
+    createdBy: imageOnlyCapture.createdBy,
+  }).result;
+  assert.equal(restoredCapture.archivedAt, "");
 
   const capture = store.addCapture("you", {
     date: "2026-05-10",
@@ -211,6 +246,22 @@ try {
   assert(restored.steps.every((step) => step.status === "todo"));
   assert.deepEqual(restored.statusByUser, { you: "todo", partner: "todo" });
   assert.deepEqual(restored.statusUpdatedBy, {});
+
+  const secretTodo = store.upsertTodoItem("you", {
+    date: "2026-05-12",
+    title: "小秘密测试",
+    ownerId: "shared",
+    participants: ["you", "partner"],
+    visibility: "private",
+  }).result;
+  assert.equal(secretTodo.visibility, "private");
+  assert.equal(secretTodo.ownerId, "you");
+  assert.deepEqual(secretTodo.participants, ["you"]);
+  const secretOwnerState = store.getState("you", { date: "2026-05-12" });
+  assert(secretOwnerState.scheduleItemCards.some((card) => card.sourceId === secretTodo.id && card.visibility === "private"));
+  const secretPartnerState = store.getState("partner", { date: "2026-05-12" });
+  assert(!secretPartnerState.scheduleItemCards.some((card) => card.sourceId === secretTodo.id));
+  assert.throws(() => store.toggleTodoItem("partner", { id: secretTodo.id, targetUserId: "partner" }), /not found/);
 
   const steppedTodo = store.upsertTodoItem("you", {
     date: "2026-05-12",

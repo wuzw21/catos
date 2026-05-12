@@ -30,6 +30,7 @@ import {
   LayoutGrid,
   List,
   LogOut,
+  Lock,
   Moon,
   Pencil,
   Plus,
@@ -93,6 +94,7 @@ const cardEditorSchema = z.object({
   priority: z.enum(["high", "normal", "low"]).default("normal"),
   segment: z.string().optional().default("allDay"),
   repeatRule: z.string().optional().default(""),
+  visibility: z.enum(["shared", "private"]).optional().default("shared"),
   plannedAt: z.string().optional().default(""),
   dueAt: z.string().optional().default(""),
   durationMin: z.coerce.number().min(0, "预计不能小于 0").optional().default(0),
@@ -365,8 +367,9 @@ function buildCatNoticeCandidates(data, dateKey) {
     })
     .filter(Boolean)
     .slice(0, 10);
+  const convertedCaptureIds = sourceCaptureIdSet(data?.scheduleItemCards || []);
   const captures = (data?.captures || [])
-    .filter(isActiveTimelineCapture)
+    .filter((capture) => isActiveTimelineCapture(capture, convertedCaptureIds))
     .map((capture) => {
       const text = cleanNoticeBit(capture.text);
       return text ? { id: capture.id, kind: "fragment", text, detail: "随手记" } : null;
@@ -539,6 +542,7 @@ const icons = {
   grip: GripVertical,
   image: Image,
   logout: LogOut,
+  lock: Lock,
   moon: Moon,
   more: Ellipsis,
   plus: Plus,
@@ -942,8 +946,20 @@ function isArchivedCard(card) {
   return Boolean(card?.archivedAt);
 }
 
+function isPrivateLifeCard(card) {
+  return card?.visibility === "private";
+}
+
+function isSecretCaptureText(text) {
+  return /小秘密|私密|仅我可见|不要给对方看|不准给对方看|不要被对方看到|不准被对方看到|别给对方看|别让对方看到/.test(String(text || ""));
+}
+
 function isArchivedCapture(capture) {
   return Boolean(capture?.archivedAt);
+}
+
+function sourceCaptureIdSet(cards = []) {
+  return new Set((cards || []).map((card) => card?.sourceCaptureId).filter(Boolean));
 }
 
 function captureHasAcceptedOutput(capture) {
@@ -957,8 +973,9 @@ function captureHasAcceptedOutput(capture) {
   return capture?.mode === "analysis" && ["schedule", "memory", "dailyStory"].includes(capture?.analysisIntent);
 }
 
-function isActiveTimelineCapture(capture) {
+function isActiveTimelineCapture(capture, convertedCaptureIds = null) {
   if (!capture || capture.rawKind === "cat-word" || isArchivedCapture(capture)) return false;
+  if (convertedCaptureIds instanceof Set && convertedCaptureIds.has(capture.id)) return false;
   if (captureHasAcceptedOutput(capture)) return false;
   return Boolean(cleanStoryText(capture.text || "") || capture.assets?.length);
 }
@@ -1121,6 +1138,7 @@ function makeDefaultLifeCard(date, currentUser) {
       currentUserDone: false,
     },
     priority: "normal",
+    visibility: "shared",
     bucket: date > today() ? "future" : "today",
     slot: "",
     sourceCaptureId: "",
@@ -1506,6 +1524,7 @@ function lifeCardPatchPayload(card, profiles, patch = {}) {
     relationIds: card.relationIds || [],
     linkedMemoryIds: card.linkedMemoryIds || [],
     repeatRule: patch.repeatRule ?? card.repeatRule ?? "",
+    visibility: patch.visibility ?? card.visibility ?? "shared",
     plannedAt,
     dueAt,
     durationMin: patch.durationMin ?? card.durationMin ?? 0,
@@ -1690,6 +1709,7 @@ const detailBuilders = {
         : stepStatus || statusText(card) || card.statusLabel;
     const timeValue = primaryTimeLabel(card);
     const repeatValue = card.repeatRule ? repeatRuleLabel(card.repeatRule) : "";
+    const privateCard = isPrivateLifeCard(card);
     const canQuickPatch = canPatchLifeCard(card) && !isArchived && !isDailyCheckin;
     const quickMoveDate = card.date === today() ? addDays(card.date, 1) : today();
     const quickMoveLabel = card.date === today() ? "明天" : "本日";
@@ -1714,6 +1734,7 @@ const detailBuilders = {
           ]
         : [
             { label: "时间", value: timeValue },
+            privateCard ? { label: "可见", value: "小秘密" } : null,
             { label: "状态", value: statusValue },
             repeatValue ? { label: "周期", value: repeatValue } : null,
             card.priority === "high" ? { label: "重要", value: "已标记" } : null,
@@ -1723,6 +1744,7 @@ const detailBuilders = {
       ]),
       moreRows: detailRows([
         { label: "类型", value: itemTypeLabels[itemType] },
+        privateCard ? { label: "可见", value: "仅我可见" } : null,
         { label: "参与", value: participantLine || ownerLabel(card.ownerId, currentUser) },
         isDailyCheckin ? { label: "刷新", value: repeatValue || timeValue } : null,
         card.plannedAt ? { label: "开始", value: lifeCardDateTimeLabel(card.plannedAt, card.date) } : null,
@@ -1781,6 +1803,7 @@ const detailBuilders = {
     };
   },
   capture(capture, context) {
+    if (!capture) return null;
     const ownerIds = [capture.createdBy].filter(Boolean);
     const text = cleanCardText(capture.text || "");
     const isCatWord = capture.rawKind === "cat-word";
@@ -1797,7 +1820,7 @@ const detailBuilders = {
         { label: "格式", value: capture.rawFormat || "markdown" },
         { label: "照片", value: capture.assets?.length ? `${capture.assets.length}` : "" },
         { label: "位置", value: capture.location },
-      ].filter((part) => part.value),
+      ].filter((part) => part && part.value),
       rows: detailRows([
         { label: "保存时间", value: capture.createdAt ? String(capture.createdAt).replace("T", " ").slice(0, 16) : "" },
       ]),
@@ -2026,6 +2049,12 @@ function minutesLabel(minutes) {
   const hour = Math.floor(value / 60);
   const minute = value % 60;
   return `${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}`;
+}
+
+function clockTimeLabel(value = new Date()) {
+  const date = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  return minutesLabel(date.getHours() * 60 + date.getMinutes());
 }
 
 function hasExplicitAllDay(card) {
@@ -2468,7 +2497,7 @@ export function App() {
           date: selectedDate,
           text,
           mode: "save",
-          visibility: "shared",
+          visibility: isSecretCaptureText(text) ? "private" : "shared",
           assets,
           rawKind: options.rawKind || "raw",
           rawFormat: options.rawFormat || (assets.length ? "markdown+photo" : "markdown"),
@@ -2800,22 +2829,34 @@ export function App() {
   }
 
   async function archiveCapture(capture, options = {}) {
-    if (!capture?.id || capture.rawKind === "cat-word") return;
+    if (!capture?.id || capture.rawKind === "cat-word") return false;
     const wasArchived = isArchivedCapture(capture);
-    const result = await request("/api/couple/capture/archive", {
-      method: "POST",
-      body: { id: capture.id, date: capture.date || selectedDate },
-    });
-    if (result) {
-      setData(result.state);
-      refreshDetailCaptureFromState(result.state, capture);
-      if (wasArchived) {
-        setFilter("all");
-      } else {
-        setDetailRequest(null);
+    try {
+      const result = await request("/api/couple/capture/archive", {
+        method: "POST",
+        body: {
+          id: capture.id,
+          date: capture.date || selectedDate,
+          text: capture.text || "",
+          createdAt: capture.createdAt || "",
+          createdBy: capture.createdBy || "",
+        },
+      });
+      if (result) {
+        setData(result.state);
+        refreshDetailCaptureFromState(result.state, capture);
+        if (wasArchived) {
+          setFilter("all");
+        } else {
+          setDetailRequest(null);
+        }
+        if (!options.silent) toast.success(wasArchived ? "已恢复随手记" : "已归档随手记");
+        return true;
       }
-      if (!options.silent) toast.success(wasArchived ? "已恢复随手记" : "已归档随手记");
+    } catch (err) {
+      if (!options.silent) toast.error(errorMessage(err, "归档随手记失败"));
     }
+    return false;
   }
 
   async function archiveCards(cards) {
@@ -2889,7 +2930,8 @@ export function App() {
       deadline: "/api/couple/deadlines/upsert",
     }[card.sourceType];
     if (!endpoint) return;
-    const ownerId = card.sourceType === "checkin" ? "shared" : payload.ownerId;
+    const visibility = card.sourceType === "checkin" ? "shared" : payload.visibility || "shared";
+    const ownerId = card.sourceType === "checkin" ? "shared" : visibility === "private" ? currentUser?.id || payload.ownerId : payload.ownerId;
     const body = {
       id: card.sourceId,
       date: payload.date,
@@ -2899,7 +2941,8 @@ export function App() {
       itemType: payload.itemType,
       segment: payload.segment || card.segment || "allDay",
       ownerId,
-      participants: ownerId === "shared" ? profiles.map((profile) => profile.id) : [ownerId],
+      participants: visibility === "private" ? [ownerId].filter(Boolean) : ownerId === "shared" ? profiles.map((profile) => profile.id) : [ownerId],
+      visibility,
       sourceCaptureId: card.sourceCaptureId || "",
       repeatRule: payload.repeatRule || "",
       plannedAt: payload.plannedAt || "",
@@ -2997,6 +3040,7 @@ export function App() {
               toggleStep={toggleCardStep}
               toggleTimer={toggleCardTimer}
               moveCardsDate={moveCardsDate}
+              archiveCapture={archiveCapture}
               archiveCards={archiveCards}
               setCardPriority={setCardPriority}
               setEditingCard={setEditingCard}
@@ -3031,6 +3075,7 @@ export function App() {
           <CardEditor
             card={editingCard}
             profiles={profiles}
+            currentUser={currentUser}
             initialSection={editingInitialSection}
             onClose={() => {
               setEditingCard(null);
@@ -3197,6 +3242,7 @@ function Dashboard(props) {
     toggleStep,
     toggleTimer,
     moveCardsDate,
+    archiveCapture,
     archiveCards,
     setCardPriority,
     setEditingCard,
@@ -3268,6 +3314,7 @@ function Dashboard(props) {
         toggleStep={toggleStep}
         toggleTimer={toggleTimer}
         moveCardsDate={moveCardsDate}
+        archiveCapture={archiveCapture}
         archiveCards={archiveCards}
         setCardPriority={setCardPriority}
         setEditingCard={setEditingCard}
@@ -3560,9 +3607,16 @@ function Composer({ text, setText, saveRawCapture, profiles, currentUser, busy, 
   const ownerText = draft?.decision === "schedule" && !isRoutineConfirmation
     ? (ownerOptions.find((option) => option.id === (draft.ownerId || currentUser?.id || ""))?.label || "我")
     : "";
+  const isSecretDraft = draft?.decision === "schedule" && draft.visibility === "private";
   const participantsForOwner = (ownerId) => ownerId === "shared" ? profiles.map((profile) => profile.id) : [ownerId].filter(Boolean);
   const updateDraft = (patch) => setRouteDraft((current) => current ? { ...current, ...patch } : current);
   const updatePrimaryOwner = (ownerId) => updateDraft({ ownerId, participants: participantsForOwner(ownerId) });
+  const updateDraftSecret = (checked) => {
+    const ownerId = currentUser?.id || "";
+    updateDraft(checked
+      ? { visibility: "private", ownerId, participants: participantsForOwner(ownerId) }
+      : { visibility: "shared" });
+  };
   const updateRelatedItem = (index, patch) => {
     setRouteDraft((current) => {
       if (!current) return current;
@@ -3604,16 +3658,20 @@ function Composer({ text, setText, saveRawCapture, profiles, currentUser, busy, 
     if (!route) return route;
     const { _enabled, _uiId, relatedItems, ...routeBase } = route;
     if (route.decision === "schedule") {
+      const privatePatch = route.visibility === "private"
+        ? { visibility: "private", ownerId: currentUser?.id || route.ownerId || "", participants: participantsForOwner(currentUser?.id || route.ownerId || "") }
+        : { visibility: "shared" };
       const enabledRelatedItems = (Array.isArray(relatedItems) ? relatedItems : [])
         .filter((item) => item?._enabled !== false)
-        .map(stripRelatedUiFields);
+        .map((item) => ({ ...stripRelatedUiFields(item), ...(route.visibility === "private" ? privatePatch : {}) }));
       if (_enabled !== false) {
-        return { ...routeBase, relatedItems: enabledRelatedItems };
+        return { ...routeBase, ...privatePatch, relatedItems: enabledRelatedItems };
       }
       if (enabledRelatedItems.length) {
         const [promoted, ...remaining] = enabledRelatedItems;
         return {
           ...routeBase,
+          ...privatePatch,
           ...promoted,
           captureId: route.captureId,
           sourceCaptureId: route.sourceCaptureId,
@@ -3781,7 +3839,7 @@ function Composer({ text, setText, saveRawCapture, profiles, currentUser, busy, 
                   <select value={draft.segment || "allDay"} onChange={(event) => updateDraft({ segment: event.target.value })} aria-label="时段">
                     {Object.entries(segmentLabels).map(([id, label]) => <option key={id} value={id}>{label}</option>)}
                   </select>
-                  <select value={draft.ownerId || currentUser?.id || ""} onChange={(event) => updatePrimaryOwner(event.target.value)} aria-label="归属">
+                  <select value={isSecretDraft ? currentUser?.id || "" : draft.ownerId || currentUser?.id || ""} onChange={(event) => updatePrimaryOwner(event.target.value)} aria-label="归属" disabled={isSecretDraft}>
                     {ownerOptions.map((option) => <option key={option.id} value={option.id}>{option.label}</option>)}
                   </select>
                   <select value={draft.priority || "normal"} onChange={(event) => updateDraft({ priority: event.target.value })} aria-label="优先级">
@@ -3793,11 +3851,20 @@ function Composer({ text, setText, saveRawCapture, profiles, currentUser, busy, 
             </div>
             {ownerText ? (
               <div className="route-owner-quick" aria-label="生活卡归属">
+                <button
+                  className={cx("is-secret", isSecretDraft && "is-active")}
+                  type="button"
+                  onClick={() => updateDraftSecret(!isSecretDraft)}
+                >
+                  <Icon name="lock" />
+                  <span>小秘密</span>
+                </button>
                 {ownerOptions.map((option) => (
                   <button
                     key={option.id}
-                    className={cx((draft.ownerId || currentUser?.id || "") === option.id && "is-active")}
+                    className={cx((draft.ownerId || currentUser?.id || "") === option.id && !isSecretDraft && "is-active")}
                     type="button"
+                    disabled={isSecretDraft}
                     onClick={() => updatePrimaryOwner(option.id)}
                   >
                     {option.label}
@@ -3824,7 +3891,7 @@ function Composer({ text, setText, saveRawCapture, profiles, currentUser, busy, 
                 <div className="confirm-item-list" id="confirm-item-list" aria-label="识别出的生活卡">
                   {confirmRows.map((row) => {
                     const item = row.item || {};
-                    const rowOwnerId = item.ownerId || draft.ownerId || currentUser?.id || "";
+                    const rowOwnerId = isSecretDraft ? currentUser?.id || "" : item.ownerId || draft.ownerId || currentUser?.id || "";
                     const updateRow = (patch) => row.primary ? updateDraft(patch) : updateRelatedItem(row.index, patch);
                     const toggleRow = () => updateRow({ _enabled: !row.enabled });
                     return (
@@ -3852,7 +3919,7 @@ function Composer({ text, setText, saveRawCapture, profiles, currentUser, busy, 
                         />
                         <select
                           value={rowOwnerId}
-                          disabled={!row.enabled}
+                          disabled={!row.enabled || isSecretDraft}
                           onChange={(event) => row.primary ? updatePrimaryOwner(event.target.value) : updateRelatedOwner(row.index, event.target.value)}
                           aria-label={`${item.title || "生活卡"}归属`}
                         >
@@ -4114,7 +4181,7 @@ function MonthPage({ data, selectedDate, chooseDate, setPage }) {
   );
 }
 
-function LifeCardTimeline({ cards, captures = [], profiles, currentUser, now, selectedDate, filter, setFilter, timelineScope = "today", setTimelineScope, expanded, setExpanded, toggleCard, archiveCard, toggleStep, toggleTimer, moveCardsDate, archiveCards, setCardPriority, setEditingCard, openDetail, chooseDate, reorderCards }) {
+function LifeCardTimeline({ cards, captures = [], profiles, currentUser, now, selectedDate, filter, setFilter, timelineScope = "today", setTimelineScope, expanded, setExpanded, toggleCard, archiveCard, toggleStep, toggleTimer, moveCardsDate, archiveCapture, archiveCards, setCardPriority, setEditingCard, openDetail, chooseDate, reorderCards }) {
   const [isScrollDragging, setIsScrollDragging] = useState(false);
   const [isCardScrubbing, setIsCardScrubbing] = useState(false);
   const [rolloverBusy, setRolloverBusy] = useState(false);
@@ -4165,6 +4232,9 @@ function LifeCardTimeline({ cards, captures = [], profiles, currentUser, now, se
   }, [lifeCards, currentUser?.id, filter, profileIds]);
 
   const visibleCards = filteredCards;
+  const convertedCaptureIds = useMemo(() => sourceCaptureIdSet(cards), [cards]);
+  const nowLabel = clockTimeLabel(now);
+  const showCurrentTime = selectedDate === todayKey && timelineScope === "today" && nowLabel;
   const timelineCaptures = useMemo(() => (captures || [])
     .filter((capture) => capture?.rawKind !== "cat-word")
     .filter((capture) => cleanStoryText(capture.text || "") || capture.assets?.length)
@@ -4176,12 +4246,12 @@ function LifeCardTimeline({ cards, captures = [], profiles, currentUser, now, se
     .filter((capture) => {
       const archived = isArchivedCapture(capture);
       if (filter === "archived") return archived;
-      if (archived || captureHasAcceptedOutput(capture)) return false;
+      if (!isActiveTimelineCapture(capture, convertedCaptureIds)) return false;
       if (filter === "shared") return false;
       if (filter === "mine") return !currentUser?.id || capture.createdBy === currentUser.id;
       return true;
     })
-    .map(captureTimelineEntry), [captures, currentUser?.id, filter, selectedDate, timelineScope, todayKey]);
+    .map(captureTimelineEntry), [captures, convertedCaptureIds, currentUser?.id, filter, selectedDate, timelineScope, todayKey]);
   const visibleEntries = useMemo(() => sortTimelineEntries([
     ...visibleCards.map(lifeCardTimelineEntry),
     ...timelineCaptures,
@@ -4521,7 +4591,6 @@ function LifeCardTimeline({ cards, captures = [], profiles, currentUser, now, se
       setRolloverBusy(false);
     }
   };
-
   return (
     <section className="life-section">
       <div className="life-toolbar">
@@ -4715,7 +4784,13 @@ function LifeCardTimeline({ cards, captures = [], profiles, currentUser, now, se
         onPointerCancel={endDragScroll}
         onClickCapture={stopDragClick}
       >
-        {dates.length ? <span className="timeline-axis-handle" aria-hidden="true" /> : null}
+        {dates.length && showCurrentTime ? (
+          <span className="timeline-now-chip" aria-label={`当前时间 ${nowLabel}`}>
+            <Icon name="clock" />
+            <b>现在 {nowLabel}</b>
+          </span>
+        ) : null}
+        {dates.length ? <span className="timeline-axis-handle" data-time={showCurrentTime ? nowLabel : ""} aria-hidden="true" /> : null}
         {dates.length ? dates.map((date) => {
           const dayEntries = displayGrouped.get(date) || [];
           const isExpanded = expanded.has(date);
@@ -4774,6 +4849,7 @@ function LifeCardTimeline({ cards, captures = [], profiles, currentUser, now, se
                                 capture={capture}
                                 profiles={profiles}
                                 compact={isCompactCard}
+                                archiveCapture={archiveCapture}
                                 openDetail={openDetail}
                               />
                             ) : (
@@ -4840,9 +4916,14 @@ function captureTimelineTitle(capture) {
   return count ? `${count} 张照片` : "随手记";
 }
 
-function TimelineCapture({ capture, profiles, compact = false, openDetail }) {
+function TimelineCapture({ capture, profiles, compact = false, archiveCapture, openDetail }) {
   const ownerIds = [capture.createdBy].filter(Boolean);
   const title = captureTimelineTitle(capture);
+  const archived = isArchivedCapture(capture);
+  const handleArchive = (event) => {
+    event.stopPropagation();
+    archiveCapture?.(capture);
+  };
   return (
     <article className={cx("timeline-capture", isArchivedCapture(capture) && "is-archived", compact && "is-compact")}>
       <button
@@ -4856,6 +4937,17 @@ function TimelineCapture({ capture, profiles, compact = false, openDetail }) {
           <strong>{title}</strong>
         </span>
       </button>
+      {archiveCapture ? (
+        <button
+          className="timeline-capture-archive"
+          type="button"
+          onClick={handleArchive}
+          aria-label={archived ? "恢复随手记" : "归档随手记"}
+          title={archived ? "恢复" : "收进归档"}
+        >
+          <Icon name={archived ? "undo" : "archive"} />
+        </button>
+      ) : null}
     </article>
   );
 }
@@ -4869,6 +4961,7 @@ function LifeCard({ card, profiles, currentUser, compact = false, toggleCard, ar
   const isDraft = Boolean(card.isDraft);
   const storedDone = isCompletedCard(card);
   const isArchived = isArchivedCard(card);
+  const privateCard = isPrivateLifeCard(card);
   const canPatch = canPatchLifeCard(card);
   const canQuickPatch = canPatch && !isArchived && !isDailyCheckinCard(card);
   const canArchive = ["schedule", "todo"].includes(card.sourceType) && !isDailyCheckinCard(card);
@@ -5059,7 +5152,7 @@ function LifeCard({ card, profiles, currentUser, compact = false, toggleCard, ar
     .join(" · ");
   return (
     <article
-      className={cx("life-card", `type-${itemType}`, card.priority === "high" && "is-important", isLegacyCheckin && "is-checkin", isDailyCheckin && "is-daily-checkin", isDone && "is-done", isArchived && "is-archived", ageNotice && "is-aged", ageNotice?.level === "strong" && "is-aged-strong", readOnly && "is-readonly", isInsight && "is-insight", isDraft && "is-draft")}
+      className={cx("life-card", `type-${itemType}`, card.priority === "high" && "is-important", privateCard && "is-private", isLegacyCheckin && "is-checkin", isDailyCheckin && "is-daily-checkin", isDone && "is-done", isArchived && "is-archived", ageNotice && "is-aged", ageNotice?.level === "strong" && "is-aged-strong", readOnly && "is-readonly", isInsight && "is-insight", isDraft && "is-draft")}
       style={{ "--owner-one": ownerColor, "--owner-two": secondColor }}
       onDoubleClick={() => {
         if (!readOnly) setEditingCard(card);
@@ -5074,6 +5167,12 @@ function LifeCard({ card, profiles, currentUser, compact = false, toggleCard, ar
           <div className="card-copy">
             <div className="card-meta">
               <ThemeBadge className="type-pill" variant="soft" radius="full" size="1">{itemTypeLabels[itemType]}</ThemeBadge>
+              {privateCard ? (
+                <ThemeBadge className="secret-pill" variant="soft" radius="full" size="1">
+                  <Icon name="lock" />
+                  小秘密
+                </ThemeBadge>
+              ) : null}
               {contextBits.length ? (
                 <ThemeBadge className="context-pill" variant="soft" radius="full" size="1">
                   {contextBits.join(" · ")}
@@ -5363,6 +5462,7 @@ function buildCardEditorDefaults(card) {
     itemType: card.itemType || "thing",
     ownerId: card.ownerId || "shared",
     priority: card.priority || "normal",
+    visibility: card.visibility === "private" ? "private" : "shared",
     segment: card.segment || "allDay",
     repeatRule: card.repeatRule || "",
     plannedAt: dateTimeLocalValue(card.plannedAt),
@@ -5373,7 +5473,7 @@ function buildCardEditorDefaults(card) {
   };
 }
 
-function CardEditor({ card, profiles, onClose, onSave, onDelete, confirmLeave, initialSection = "" }) {
+function CardEditor({ card, profiles, currentUser, onClose, onSave, onDelete, confirmLeave, initialSection = "" }) {
   const isDailyCheckin = card.title === "一起打卡！" || card.repeatRule === "daily@03:00";
   const defaultValues = useMemo(() => buildCardEditorDefaults(card), [card]);
   const {
@@ -5393,6 +5493,8 @@ function CardEditor({ card, profiles, onClose, onSave, onDelete, confirmLeave, i
   const { fields, append, insert, remove, move } = useFieldArray({ control, name: "steps", keyName: "formId" });
   const form = watch();
   const formSteps = watch("steps") || [];
+  const isSecret = form.visibility === "private";
+  const secretOwnerId = currentUser?.id || form.ownerId || "";
   const [dragStepId, setDragStepId] = useState("");
   const dragStepIdRef = useRef("");
   const stepListRef = useRef(null);
@@ -5563,7 +5665,8 @@ function CardEditor({ card, profiles, onClose, onSave, onDelete, confirmLeave, i
       ...values,
       title: isDailyCheckin ? "一起打卡！" : values.title,
       itemType: isDailyCheckin ? "checkin" : values.itemType,
-      ownerId: isDailyCheckin ? "shared" : values.ownerId,
+      visibility: isDailyCheckin ? "shared" : values.visibility || "shared",
+      ownerId: isDailyCheckin ? "shared" : values.visibility === "private" ? secretOwnerId : values.ownerId,
       priority: isDailyCheckin ? "normal" : values.priority,
       repeatRule: isDailyCheckin ? "daily@03:00" : values.repeatRule || (values.itemType === "habit" ? "daily" : ""),
       durationMin: Number(values.durationMin) || 0,
@@ -5583,7 +5686,7 @@ function CardEditor({ card, profiles, onClose, onSave, onDelete, confirmLeave, i
         .filter((step) => step.title),
     });
   });
-  const participants = form.ownerId === "shared" ? profiles.map((profile) => profile.id) : [form.ownerId];
+  const participants = isSecret ? [secretOwnerId].filter(Boolean) : form.ownerId === "shared" ? profiles.map((profile) => profile.id) : [form.ownerId];
   const ownerChoices = [
     { id: "shared", label: "共同" },
     ...profiles.map((profile) => ({ id: profile.id, label: profile.displayName })),
@@ -5592,7 +5695,7 @@ function CardEditor({ card, profiles, onClose, onSave, onDelete, confirmLeave, i
     { id: "", label: "共同" },
     ...profiles.map((profile) => ({ id: profile.id, label: profile.displayName })),
   ];
-  const ownerLabel = ownerChoices.find((choice) => choice.id === form.ownerId)?.label || "共同";
+  const ownerLabel = isSecret ? "小秘密" : ownerChoices.find((choice) => choice.id === form.ownerId)?.label || "共同";
   const priorityLabel = priorityOptions.find((choice) => choice.id === form.priority)?.label || "普通";
   const repeatLabel = repeatRuleLabel(form.repeatRule) || "一次";
   const stepCount = formSteps.filter((step) => String(step.title || "").trim()).length || formSteps.length;
@@ -5620,6 +5723,13 @@ function CardEditor({ card, profiles, onClose, onSave, onDelete, confirmLeave, i
     setValue("plannedAt", localDateTimeValue(date, time), { shouldDirty: true, shouldValidate: true });
     setValue("segment", segment, { shouldDirty: true, shouldValidate: true });
   }, [getValues, isDailyCheckin, setValue]);
+  const setSecretMode = useCallback((checked) => {
+    if (isDailyCheckin) return;
+    setValue("visibility", checked ? "private" : "shared", { shouldDirty: true, shouldValidate: true });
+    if (checked && secretOwnerId) {
+      setValue("ownerId", secretOwnerId, { shouldDirty: true, shouldValidate: true });
+    }
+  }, [isDailyCheckin, secretOwnerId, setValue]);
   const editorDateShortcuts = [
     { label: "本日", value: today() },
     { label: "明天", value: addDays(today(), 1) },
@@ -5697,6 +5807,21 @@ function CardEditor({ card, profiles, onClose, onSave, onDelete, confirmLeave, i
                   <span>备注</span>
                   <textarea rows={4} {...register("detail")} placeholder="写一点背景、提醒或需要照顾的地方" />
                 </label>
+                <input type="hidden" {...register("visibility")} />
+                {!isDailyCheckin ? (
+                  <button
+                    className={cx("secret-toggle", isSecret && "is-active")}
+                    type="button"
+                    onClick={() => setSecretMode(!isSecret)}
+                    aria-pressed={isSecret ? "true" : "false"}
+                  >
+                    <Icon name="lock" />
+                    <span>
+                      <strong>小秘密</strong>
+                      <em>{isSecret ? "只有我能看到这张生活卡" : "不准被对方看到"}</em>
+                    </span>
+                  </button>
+                ) : null}
                 <div className="edit-field-grid">
                   <div className="edit-line-field edit-date-field">
                     <span>日期</span>
@@ -5732,7 +5857,7 @@ function CardEditor({ card, profiles, onClose, onSave, onDelete, confirmLeave, i
                       value={form.ownerId}
                       onValueChange={(value) => setValue("ownerId", value, { shouldDirty: true, shouldValidate: true })}
                       options={ownerChoices}
-                      disabled={card.sourceType === "checkin" || isDailyCheckin}
+                      disabled={card.sourceType === "checkin" || isDailyCheckin || isSecret}
                       ariaLabel="归属"
                     />
                   </label>
@@ -6007,7 +6132,11 @@ function DynamicList({ title, rows, profiles, onOpen, className = "" }) {
 
 function RawCaptureShelf({ data, profiles, currentUser, selectedDate, openDetail }) {
   const context = useMemo(() => ({ profiles, currentUser, selectedDate }), [profiles, currentUser, selectedDate]);
-  const rows = useMemo(() => (data.captures || []).filter(isActiveTimelineCapture).slice(0, 8).map((capture) => captureRow(capture, context)), [data.captures, context]);
+  const convertedCaptureIds = useMemo(() => sourceCaptureIdSet(data.scheduleItemCards || []), [data.scheduleItemCards]);
+  const rows = useMemo(() => (data.captures || [])
+    .filter((capture) => isActiveTimelineCapture(capture, convertedCaptureIds))
+    .slice(0, 8)
+    .map((capture) => captureRow(capture, context)), [convertedCaptureIds, data.captures, context]);
   return (
     <DynamicList
       title="随手记"
@@ -6557,6 +6686,7 @@ function DailySummaryPage({ data, profiles, currentUser, request, setData, selec
   const titleIsDate = title === selectedDate;
   const context = useMemo(() => ({ profiles, currentUser, selectedDate }), [profiles, currentUser, selectedDate]);
   const selectedCards = useMemo(() => sortCards((data.scheduleItemCards || []).filter((card) => card.date === selectedDate && !isDefaultPromptCard(card))), [data.scheduleItemCards, selectedDate]);
+  const convertedCaptureIds = useMemo(() => sourceCaptureIdSet(data.scheduleItemCards || []), [data.scheduleItemCards]);
   const selectedMemories = useMemo(() => (data.memoryItems || []).filter((item) => item.suggestedDate === selectedDate || String(item.updatedAt || "").slice(0, 10) === selectedDate).slice(0, 8), [data.memoryItems, selectedDate]);
   const completedRows = useMemo(() => (summary?.completed?.length ? summary.completed : selectedCards.filter(isCompletedCard)).slice(0, 8).map((item) => {
     if (item.sourceType) return lifeCardRow(item, context);
@@ -6580,10 +6710,10 @@ function DailySummaryPage({ data, profiles, currentUser, request, setData, selec
           rawFormat: item.photoCount ? "markdown+photo" : "markdown",
         }));
     return captures
-      .filter(isActiveTimelineCapture)
+      .filter((capture) => isActiveTimelineCapture(capture, convertedCaptureIds))
       .slice(0, 8)
       .map((capture) => captureRow(capture, context));
-  }, [summary?.moments, data.captures, context, selectedDate]);
+  }, [summary?.moments, data.captures, convertedCaptureIds, context, selectedDate]);
   const memoryRows = useMemo(() => {
     const hooks = summary?.memoryHooks?.length ? summary.memoryHooks : selectedMemories;
     return hooks.slice(0, 8).map((item) => item.group ? memoryRow(item, context) : summaryRow(item, "记忆", context));

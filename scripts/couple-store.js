@@ -81,6 +81,7 @@ const captureAgentPrompt = [
   "纪念日定义支持无年份日期，例如“纪念日：1月9日在一起”“1.9 是在一起的日子”；date 用 selectedDate/currentDate 所在年份补齐，repeatRule 用 yearly，ownerId 用 shared，participants 用双方。",
   "纪念日记忆会用于倒计时、今年第几天、提前提醒和准备建议；如果用户明确说要提醒、准备、买礼物、订餐厅、整理照片、写信或庆祝，才返回 schedule，并把 memoryKinds 包含 anniversary，多个准备动作拆进 relatedItems。",
   "如果输入是在新增日常打卡或习惯，例如运动打卡、喝水打卡、每天早睡，返回 schedule 且 itemType=checkin/habit；后端会把它加入当天固定“打卡”生活卡的子项，不要再生成一张独立普通生活卡。",
+  "如果用户明确说“小秘密”“私密”“仅我可见”“不准/不要被对方看到”，raw capture 和 schedule 都必须视为 private；返回 schedule 时设置 visibility=private，ownerId=当前用户，participants 只包含当前用户，隐私词不要写进标题或步骤。",
   "如果输入包含图片，图片也是 raw capture 的一部分；分析图片只能生成轻确认，不能覆盖 raw。",
   "如果图片是截图、手写清单、便签或 todolist，先识别文字与勾选状态，再把未完成的明确行动拆成 schedule/relatedItems；已勾选内容可写入 detail 或 dailyStory，不要当成待办。",
   "如果只是偏好、边界、愿望、承诺或照顾线索，不要强行生成 Schedule Item，返回 memory。",
@@ -1573,7 +1574,7 @@ function getDefaultProfiles() {
       initials: "大",
       avatar: "pink-cat",
       color: "#ff5c9a",
-      defaultPassword: "1314",
+      defaultPassword: "damao",
       passwordEnvKey: "PEOS_COUPLE_YOU_PASSWORD",
       nameEnvKey: "PEOS_COUPLE_YOU_NAME",
     }),
@@ -1584,7 +1585,7 @@ function getDefaultProfiles() {
       initials: "小",
       avatar: "violet-cat",
       color: "#8a6cff",
-      defaultPassword: "5200",
+      defaultPassword: "xiaomao",
       passwordEnvKey: "PEOS_COUPLE_PARTNER_PASSWORD",
       nameEnvKey: "PEOS_COUPLE_PARTNER_NAME",
     }),
@@ -1670,6 +1671,39 @@ function normalizeParticipants(store, ownerId, participants, userId) {
   const source = Array.isArray(participants) ? participants : [ownerId || userId];
   const normalized = source.filter((id) => profileIds.includes(id));
   return [...new Set(normalized.length ? normalized : [userId])];
+}
+
+function normalizeLifeCardVisibility(payload = {}, existing = {}) {
+  const raw = payload.visibility !== undefined ? payload.visibility : existing.visibility;
+  return validVisibilities.has(raw) ? raw : "shared";
+}
+
+function isSecretLifeCardText(text) {
+  return /小秘密|私密|仅我可见|不要给对方看|不准给对方看|不要被对方看到|不准被对方看到|别给对方看|别让对方看到/.test(String(text || ""));
+}
+
+function stripSecretLifeCardText(text) {
+  return String(text || "")
+    .replace(/小秘密[:：]?/g, "")
+    .replace(/私密[:：]?/g, "")
+    .replace(/仅我可见[:：]?/g, "")
+    .replace(/(?:不要|不准|别)(?:给对方看|被对方看到|让对方看到)/g, "")
+    .replace(/[，,。；;、:：\s]+$/g, "")
+    .replace(/^[，,。；;、:：\s]+/g, "")
+    .replace(/[，,。；;、:：\s]{2,}/g, " ")
+    .trim();
+}
+
+function lifeCardVisibleToUser(item, userId) {
+  if (normalizeLifeCardVisibility(item) !== "private") return true;
+  const participants = Array.isArray(item?.participants) ? item.participants : [];
+  return item?.createdBy === userId || item?.ownerId === userId || participants.includes(userId);
+}
+
+function assertLifeCardVisibleToUser(item, userId) {
+  if (!lifeCardVisibleToUser(item, userId)) {
+    throw new Error("life card item not found");
+  }
 }
 
 function resolveCatWordTargetUserId(store, capture, fallbackSenderId) {
@@ -2019,6 +2053,7 @@ function reorderLifeCards(userId, payload = {}) {
       const sourceId = sanitizeText(entry?.sourceId || entry?.id, 80);
       const item = findLifeCardSourceItem(store, sourceType, sourceId);
       if (!item) return;
+      if (!lifeCardVisibleToUser(item, userId)) return;
       item.manualOrder = normalizeManualOrder(entry.manualOrder, (index + 1) * 1000);
       item.updatedBy = userId;
       item.updatedAt = timestamp;
@@ -2046,6 +2081,7 @@ function toggleLifeCardStep(userId, payload = {}) {
     if (!item) {
       throw new Error("life card item not found");
     }
+    assertLifeCardVisibleToUser(item, userId);
 
     const requestedTargetUserId = resolveStatusTargetUserId(store, userId, payload.targetUserId);
     const steps = normalizeLifeCardSteps(item.steps, item.participants, item.title);
@@ -2136,6 +2172,7 @@ function toggleLifeCardTimer(userId, payload = {}) {
     if (!item) {
       throw new Error("life card item not found");
     }
+    assertLifeCardVisibleToUser(item, userId);
 
     const timestamp = nowIso();
     const date = normalizeDate(payload.date || item.date || businessDate());
@@ -2184,6 +2221,7 @@ function rememberLifeCard(userId, payload = {}) {
     if (!item) {
       throw new Error("life card item not found");
     }
+    assertLifeCardVisibleToUser(item, userId);
 
     const itemType = normalizeScheduleItemType(item.itemType, sourceType === "schedule" ? "date" : "thing");
     const cardId = typedLifeCardId(sourceType, item.id);
@@ -2250,8 +2288,9 @@ function rememberLifeCard(userId, payload = {}) {
 function createScheduleItem(store, payload, userId) {
   const profileIds = store.profiles.map((item) => item.id);
   const date = normalizeDate(payload.date);
-  const ownerId = normalizeOwnerId(store, payload.ownerId, userId);
-  const normalizedParticipants = normalizeParticipants(store, ownerId, payload.participants, userId);
+  const visibility = normalizeLifeCardVisibility(payload);
+  const ownerId = visibility === "private" ? userId : normalizeOwnerId(store, payload.ownerId, userId);
+  const normalizedParticipants = visibility === "private" ? [userId] : normalizeParticipants(store, ownerId, payload.participants, userId);
   const itemType = inferScheduleItemType(payload, "date");
   const timestamp = nowIso();
   const item = {
@@ -2271,6 +2310,7 @@ function createScheduleItem(store, payload, userId) {
     repeatRule: sanitizeText(payload.repeatRule, 120),
     priority: normalizePriority(payload.priority),
     manualOrder: normalizeManualOrder(payload.manualOrder, 0),
+    visibility,
     ownerId,
     participants: normalizedParticipants,
     statusByUser: Object.fromEntries(normalizedParticipants.map((id) => [id, "todo"])),
@@ -2295,8 +2335,9 @@ function createScheduleItem(store, payload, userId) {
 function createTodoItem(store, payload, userId) {
   const date = normalizeDate(payload.date);
   const bucket = normalizeTodoBucket(payload.bucket);
-  const ownerId = normalizeOwnerId(store, payload.ownerId, userId);
-  const participants = normalizeParticipants(store, ownerId, payload.participants, userId);
+  const visibility = normalizeLifeCardVisibility(payload);
+  const ownerId = visibility === "private" ? userId : normalizeOwnerId(store, payload.ownerId, userId);
+  const participants = visibility === "private" ? [userId] : normalizeParticipants(store, ownerId, payload.participants, userId);
   const itemType = inferScheduleItemType(payload, "thing");
   const timestamp = nowIso();
   const item = {
@@ -2316,6 +2357,7 @@ function createTodoItem(store, payload, userId) {
     repeatRule: sanitizeText(payload.repeatRule, 120),
     priority: normalizePriority(payload.priority),
     manualOrder: normalizeManualOrder(payload.manualOrder, 0),
+    visibility,
     ownerId,
     participants,
     statusByUser: Object.fromEntries(participants.map((id) => [id, "todo"])),
@@ -2494,8 +2536,9 @@ function createCheckinItem(store, payload, userId) {
 }
 
 function createDeadlineItem(store, payload, userId) {
-  const ownerId = normalizeOwnerId(store, payload.ownerId, userId);
-  const participants = normalizeParticipants(store, ownerId, payload.participants, userId);
+  const visibility = normalizeLifeCardVisibility(payload);
+  const ownerId = visibility === "private" ? userId : normalizeOwnerId(store, payload.ownerId, userId);
+  const participants = visibility === "private" ? [userId] : normalizeParticipants(store, ownerId, payload.participants, userId);
   const itemType = inferScheduleItemType(payload, "reminder");
   const timestamp = nowIso();
   const item = {
@@ -2514,6 +2557,7 @@ function createDeadlineItem(store, payload, userId) {
     repeatRule: sanitizeText(payload.repeatRule, 120),
     priority: normalizePriority(payload.priority),
     manualOrder: normalizeManualOrder(payload.manualOrder, 0),
+    visibility,
     ownerId,
     participants,
     statusByUser: Object.fromEntries(participants.map((id) => [id, "todo"])),
@@ -2595,6 +2639,16 @@ function ensureStoreShape(store) {
   shaped.profiles = shaped.profiles.map((profile) => {
     const fallback = defaultProfiles.find((item) => item.id === profile.id) || profile;
     const envName = profile.nameEnvKey ? String(process.env[profile.nameEnvKey] || "").trim() : "";
+    const passwordEnvKey = profile.passwordEnvKey || fallback.passwordEnvKey || "";
+    const passwordSalt = profile.passwordSalt || fallback.passwordSalt || crypto.randomBytes(8).toString("hex");
+    let passwordHash = profile.passwordHash || fallback.passwordHash || "";
+    const accessCodeMigration = {
+      you: { from: "1314", to: "damao" },
+      partner: { from: "5200", to: "xiaomao" },
+    }[profile.id];
+    if (!process.env[passwordEnvKey] && accessCodeMigration && passwordHash === hashPassword(accessCodeMigration.from, passwordSalt)) {
+      passwordHash = hashPassword(accessCodeMigration.to, passwordSalt);
+    }
     const legacyName = profile.id === "you" && ["你", "成员 A"].includes(profile.displayName) ? "大猫" :
       profile.id === "partner" && ["猫", "成员 B"].includes(profile.displayName) ? "小猫" :
         profile.displayName;
@@ -2610,6 +2664,9 @@ function ensureStoreShape(store) {
       avatar: sanitizeText(profile.avatar || fallback.avatar || "pink-cat", 40),
       avatarUrl: sanitizeText(profile.avatarUrl || "", 500),
       color: normalizeColor(profile.color, fallback.color || "#ff5c9a"),
+      passwordEnvKey,
+      passwordSalt,
+      passwordHash,
     };
   });
   shaped.scheduleItems = Array.isArray(shaped.scheduleItems) ? shaped.scheduleItems : [];
@@ -2640,7 +2697,14 @@ function ensureStoreShape(store) {
     ? shaped.longTermMemoryItems.map((item) => normalizeStoredLongTermMemoryItem(shaped, item)).filter(Boolean)
     : [];
   shaped.personalPages = shaped.personalPages && typeof shaped.personalPages === "object" ? shaped.personalPages : {};
-  shaped.captures = Array.isArray(shaped.captures) ? shaped.captures : [];
+  shaped.captures = Array.isArray(shaped.captures)
+    ? shaped.captures.map((capture) => ({
+        ...capture,
+        visibility: capture?.rawKind !== "cat-word" && isSecretLifeCardText(capture?.text)
+          ? "private"
+          : validVisibilities.has(capture?.visibility) ? capture.visibility : "shared",
+      }))
+    : [];
   const profileIds = shaped.profiles.map((profile) => profile.id);
   shaped.personalPages = Object.fromEntries(
     shaped.profiles.map((profile) => {
@@ -3043,14 +3107,16 @@ function buildTimelineDays(store, userId, selectedDate) {
   const weekDates = new Set(weekDays.map((day) => day.id));
   const entries = [
     ...store.scheduleItems
+      .filter((item) => lifeCardVisibleToUser(item, userId))
       .filter((item) => weekDates.has(item.date))
       .map((item) => publicTimelineEntry(item, "schedule", userId, profileIds)),
     ...store.todoItems
+      .filter((item) => lifeCardVisibleToUser(item, userId))
       .filter((item) => weekDates.has(normalizeDate(item.date)))
       .map((item) => publicTimelineEntry(item, "todo", userId, profileIds)),
     ...store.captures
       .filter((item) => weekDates.has(item.date))
-      .filter((item) => captureCountsAsVisibleMoment(item, userId))
+      .filter((item) => captureCountsAsVisibleMoment(item, userId, store))
       .map((item) => publicTimelineEntry(item, "capture", userId, profileIds)),
   ]
     .filter((item) => item.date)
@@ -3147,6 +3213,7 @@ function publicScheduleItem(item, profileIds) {
     repeatRule: item.repeatRule || "",
     priority: normalizePriority(item.priority),
     manualOrder: normalizeManualOrder(item.manualOrder, 0),
+    visibility: normalizeLifeCardVisibility(item),
     ownerId: item.ownerId || "shared",
     participants: normalizedParticipants,
     statusByUser,
@@ -3192,6 +3259,7 @@ function publicTodoItem(item, profileIds) {
     priority: normalizePriority(item.priority),
     manualOrder: normalizeManualOrder(item.manualOrder, 0),
     bucket: normalizeTodoBucket(item.bucket),
+    visibility: normalizeLifeCardVisibility(item),
     ownerId: item.ownerId || "shared",
     participants: normalizedParticipants,
     statusByUser,
@@ -3286,6 +3354,7 @@ function publicDeadlineItem(item, profileIds) {
     repeatRule: item.repeatRule || "",
     priority: normalizePriority(item.priority),
     manualOrder: normalizeManualOrder(item.manualOrder, 0),
+    visibility: normalizeLifeCardVisibility(item),
     ownerId: item.ownerId || "shared",
     participants: normalizedParticipants,
     statusByUser,
@@ -3543,6 +3612,8 @@ function analyzeRelatedScheduleItems(text, primaryTitle, base) {
         date,
         segment,
         ownerId: base.ownerId,
+        participants: [base.ownerId].filter(Boolean),
+        visibility: base.visibility || "shared",
         repeatRule: itemType === "habit" ? "daily" : "",
         priority: /重要|必须|ddl|deadline|截止|答辩|考试|面试/i.test(part) ? "high" : "normal",
         ...planning,
@@ -3565,26 +3636,28 @@ function analyzeCapture(userId, payload = {}) {
 
   const selectedDate = normalizeDate(payload.date || capture?.date);
   const ownerId = normalizeOwnerId(store, payload.ownerId || userId, userId);
+  const visibility = isSecretLifeCardText(text) ? "private" : "shared";
+  const routeText = stripSecretLifeCardText(text) || text;
   const analysisMode = payload.analysisMode === "agent" ? "agent" : "template";
   const anniversaryMemory = buildAnniversaryMemoryConfirmation(store, userId, payload, capture, text, selectedDate, ownerId, analysisMode);
   if (anniversaryMemory) return anniversaryMemory;
-  const templateMatched = analysisMode === "template" ? isTemplateScheduleMatch(text) : true;
-  const inferredDecision = inferCaptureDecision(text);
+  const templateMatched = analysisMode === "template" ? isTemplateScheduleMatch(routeText) : true;
+  const inferredDecision = inferCaptureDecision(routeText);
   const decision = analysisMode === "template"
     ? (templateMatched ? "schedule" : inferredDecision)
     : inferredDecision;
-  const clauses = splitCaptureClauses(text);
+  const clauses = splitCaptureClauses(routeText);
   const scheduleClause = templateMatched
-    ? (clauses.find((part) => isTemplateScheduleMatch(part)) || clauses[0] || text)
+    ? (clauses.find((part) => isTemplateScheduleMatch(part)) || clauses[0] || routeText)
     : "";
   const itemType = inferScheduleItemType({ title: scheduleClause, detail: scheduleClause }, "thing");
-  const date = templateMatched ? resolveCaptureDate(scheduleClause || text, selectedDate) : selectedDate;
-  const segment = templateMatched ? resolveCaptureSegment(scheduleClause || text, "allDay") : "allDay";
+  const date = templateMatched ? resolveCaptureDate(scheduleClause || routeText, selectedDate) : selectedDate;
+  const segment = templateMatched ? resolveCaptureSegment(scheduleClause || routeText, "allDay") : "allDay";
   const title = templateMatched
-    ? (cleanCaptureTitle(scheduleClause) || cleanCaptureTitle(text) || shortText(text, 80))
-    : (cleanCaptureTitle(text) || shortText(text, 80));
-  const detail = templateMatched ? sanitizeText(text === title ? "" : text, 800) : sanitizeText(text === title ? "" : text, 800);
-  const priority = /重要|必须|ddl|deadline|截止|答辩|考试|面试/i.test(text) ? "high" : "normal";
+    ? (cleanCaptureTitle(scheduleClause) || cleanCaptureTitle(routeText) || shortText(routeText, 80))
+    : (cleanCaptureTitle(routeText) || shortText(routeText, 80));
+  const detail = sanitizeText(routeText === title ? "" : routeText, 800);
+  const priority = /重要|必须|ddl|deadline|截止|答辩|考试|面试/i.test(routeText) ? "high" : "normal";
   const planning = templateMatched
     ? buildLifeCardPlanning({
         title,
@@ -3594,6 +3667,7 @@ function analyzeCapture(userId, payload = {}) {
         segment,
         ownerId,
         participants: [ownerId].filter(Boolean),
+        visibility,
         priority,
       })
     : buildLifeCardPlanning({
@@ -3604,6 +3678,7 @@ function analyzeCapture(userId, payload = {}) {
         segment,
         ownerId,
         participants: [ownerId].filter(Boolean),
+        visibility,
         priority,
       });
   const base = {
@@ -3615,6 +3690,8 @@ function analyzeCapture(userId, payload = {}) {
     date,
     segment,
     ownerId,
+    participants: [ownerId].filter(Boolean),
+    visibility,
     title,
     detail,
     repeatRule: itemType === "habit" ? "daily" : "",
@@ -3623,7 +3700,7 @@ function analyzeCapture(userId, payload = {}) {
     memoryKinds: normalizeLifeCardMemoryKinds(payload.memoryKinds || payload.memoryKind, { title, detail, itemType, priority }),
     ...planning,
   };
-  const relatedItems = decision === "schedule" && templateMatched ? analyzeRelatedScheduleItems(text, title, base) : [];
+  const relatedItems = decision === "schedule" && templateMatched ? analyzeRelatedScheduleItems(routeText, title, base) : [];
   const relatedTitleKeys = relatedItems.map((item) => normalizedTitleKey(item.title)).filter(Boolean);
   const filteredSteps = relatedTitleKeys.length
     ? base.steps.filter((step) => {
@@ -3695,9 +3772,9 @@ function buildCaptureAgentFacts(store, userId, payload, capture, text, selectedD
   const startDate = addDays(selectedDate, -14);
   const endDate = addDays(selectedDate, 90);
   const datedContext = [
-    ...store.todoItems.map((item) => publicCaptureAgentContextItem(item, "todo")),
-    ...store.scheduleItems.map((item) => publicCaptureAgentContextItem(item, "schedule")),
-    ...store.deadlineItems.map((item) => publicCaptureAgentContextItem(item, "deadline")),
+    ...store.todoItems.filter((item) => lifeCardVisibleToUser(item, userId)).map((item) => publicCaptureAgentContextItem(item, "todo")),
+    ...store.scheduleItems.filter((item) => lifeCardVisibleToUser(item, userId)).map((item) => publicCaptureAgentContextItem(item, "schedule")),
+    ...store.deadlineItems.filter((item) => lifeCardVisibleToUser(item, userId)).map((item) => publicCaptureAgentContextItem(item, "deadline")),
     ...store.checkinItems.map((item) => publicCaptureAgentContextItem(item, "checkin")),
   ]
     .filter(Boolean)
@@ -3767,6 +3844,7 @@ function buildCaptureAgentStructuredPrompt(facts) {
     "- itemType 默认 thing；工作/作业/会议用 work；购买用 purchase；约会/一起出去用 date；提醒/截止用 reminder；打卡用 checkin；周期习惯用 habit。",
     "- 新增日常打卡/习惯时，仍返回 decision=schedule 和 itemType=checkin/habit，但语义是加入当天固定“打卡”生活卡的打卡项；不要把它描述成独立普通任务。",
     "- ownerId 默认当前用户；只有明确共同参与才用 shared。participants 必须从 profileIds 或 shared 对应成员中选择。",
+    "- 用户明确说“小秘密”“私密”“仅我可见”“不准/不要被对方看到”时，visibility=private，ownerId=当前用户，participants=[当前用户]，隐私词不要写进标题或步骤。",
     "- 相对日期必须按 selectedDate 解析，例如今天下午、周日、下周一。",
     "- 如果 rawCapture.assets 非空，你会收到同顺序的图片附件；必须结合图片内容和 rawCapture.text 分析。",
     "- 图片里如果是 todo list、备忘录、聊天截图、白板或手写清单：识别每一条文字；未勾选/待办项生成 schedule 或 relatedItems；已勾选/完成项不要生成待办，可放进 detail/reason。",
@@ -3880,8 +3958,9 @@ function normalizeAgentRelatedItem(store, userId, source, fallback) {
   const date = normalizeDate(raw.date, resolveCaptureDate(text || fallback.text, fallback.date));
   const segment = normalizeSegment(raw.segment || resolveCaptureSegment(text || fallback.text, fallback.segment));
   const itemType = normalizeScheduleItemType(raw.itemType, inferScheduleItemType(raw, fallback.itemType));
-  const ownerId = normalizeOwnerId(store, raw.ownerId || fallback.ownerId, userId);
-  const participants = normalizeParticipants(store, ownerId, raw.participants, userId);
+  const visibility = normalizeLifeCardVisibility(raw, fallback);
+  const ownerId = visibility === "private" ? userId : normalizeOwnerId(store, raw.ownerId || fallback.ownerId, userId);
+  const participants = visibility === "private" ? [userId] : normalizeParticipants(store, ownerId, raw.participants, userId);
   const title = sanitizeText(raw.title || cleanCaptureTitle(text), 180);
   const detail = sanitizeText(raw.detail || "", 800);
   const priority = validPriorities.has(raw.priority) ? raw.priority : fallback.priority;
@@ -3897,6 +3976,7 @@ function normalizeAgentRelatedItem(store, userId, source, fallback) {
     segment,
     ownerId,
     participants,
+    visibility,
     priority,
     plannedAt: raw.plannedAt,
     dueAt: raw.dueAt,
@@ -3913,6 +3993,7 @@ function normalizeAgentRelatedItem(store, userId, source, fallback) {
     segment,
     ownerId,
     participants,
+    visibility,
     repeatRule: sanitizeText(raw.repeatRule || (itemType === "habit" ? "daily" : ""), 120),
     priority,
     tags: normalizeLifeCardTags(raw.tags, { title, detail, itemType, priority }),
@@ -3929,8 +4010,9 @@ function normalizeCaptureAgentConfirmation(store, userId, payload, capture, text
   const date = normalizeDate(agentOutput?.date, resolveCaptureDate(baseText, selectedDate));
   const segment = normalizeSegment(agentOutput?.segment || resolveCaptureSegment(baseText, "allDay"));
   const itemType = normalizeScheduleItemType(agentOutput?.itemType, inferScheduleItemType(agentOutput, "thing"));
-  const ownerId = normalizeOwnerId(store, agentOutput?.ownerId || payload.ownerId || userId, userId);
-  const participants = normalizeParticipants(store, ownerId, agentOutput?.participants, userId);
+  const visibility = normalizeLifeCardVisibility(agentOutput, { visibility: isSecretLifeCardText(baseText) ? "private" : "shared" });
+  const ownerId = visibility === "private" ? userId : normalizeOwnerId(store, agentOutput?.ownerId || payload.ownerId || userId, userId);
+  const participants = visibility === "private" ? [userId] : normalizeParticipants(store, ownerId, agentOutput?.participants, userId);
   const title = sanitizeText(
     agentOutput?.title || (decision === "schedule" ? cleanCaptureTitle(text) : shortText(text, 80)) || defaultLifeCardTitle,
     180
@@ -3961,6 +4043,7 @@ function normalizeCaptureAgentConfirmation(store, userId, payload, capture, text
     segment,
     ownerId,
     participants,
+    visibility,
     priority,
     plannedAt: agentOutput?.plannedAt,
     dueAt: agentOutput?.dueAt,
@@ -3974,6 +4057,7 @@ function normalizeCaptureAgentConfirmation(store, userId, payload, capture, text
     itemType,
     ownerId,
     priority,
+    visibility,
   };
   const primaryTitleKey = normalizedTitleKey(title);
   const relatedItems = decision === "schedule"
@@ -3995,6 +4079,7 @@ function normalizeCaptureAgentConfirmation(store, userId, payload, capture, text
     segment,
     ownerId,
     participants,
+    visibility,
     title,
     detail,
     repeatRule: sanitizeText(agentOutput?.repeatRule || (itemType === "habit" ? "daily" : ""), 120),
@@ -4137,7 +4222,8 @@ function captureVisibleToUser(capture, userId) {
   return capture.visibility === "shared" || capture.createdBy === userId;
 }
 
-function captureHasAcceptedOutput(capture) {
+function captureHasAcceptedOutput(capture, store = null) {
+  if (store && capture?.id && hasItemFromCapture(store, capture.id)) return true;
   const acceptedRoutes = Array.isArray(capture?.acceptedRoutes) ? capture.acceptedRoutes : [];
   if (acceptedRoutes.some((route) => {
     const decision = normalizeCaptureDecision(route?.decision, "capture");
@@ -4155,11 +4241,11 @@ function captureHasAcceptedOutput(capture) {
   return capture?.mode === "analysis" && intent !== "capture" && intent !== "agent" && intent !== "template";
 }
 
-function captureCountsAsVisibleMoment(capture, userId) {
+function captureCountsAsVisibleMoment(capture, userId, store = null) {
   if (!captureVisibleToUser(capture, userId)) return false;
   if (capture?.archivedAt) return false;
   if (capture?.rawKind === "cat-word") return false;
-  if (captureHasAcceptedOutput(capture)) return false;
+  if (captureHasAcceptedOutput(capture, store)) return false;
   return Boolean(sanitizeText(capture?.text, 1200) || (Array.isArray(capture?.assets) && capture.assets.length));
 }
 
@@ -4205,7 +4291,7 @@ function recentVisibleCaptures(store, userId, selectedDate, days = 365) {
   const today = normalizeDate(selectedDate);
   const startDate = addDays(today, -days);
   return store.captures
-    .filter((capture) => captureCountsAsVisibleMoment(capture, userId))
+    .filter((capture) => captureCountsAsVisibleMoment(capture, userId, store))
     .filter((capture) => capture.date >= startDate && capture.date <= today)
     .sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)));
 }
@@ -4484,6 +4570,7 @@ function buildCareInsights(store, userId, selectedDate) {
   if (partnerId) {
     const weekEnd = addDays(today, 6);
     const partnerEveningLoad = store.scheduleItems.filter((item) =>
+      lifeCardVisibleToUser(item, userId) &&
       !isArchived(item) &&
       item.date >= today &&
       item.date <= weekEnd &&
@@ -4512,6 +4599,7 @@ function buildCareInsights(store, userId, selectedDate) {
       ...store.todoItems,
       ...store.deadlineItems,
     ].find((item) =>
+      lifeCardVisibleToUser(item, userId) &&
       !isArchived(item) &&
       normalizeDate(item.date) >= today &&
       normalizeDate(item.date) <= tomorrow &&
@@ -4550,13 +4638,14 @@ function readMarkdownTableRows(filePath) {
     .filter((cells) => cells.some(Boolean));
 }
 
-function buildAnniversaryInsights(store, selectedDate, captureInsights) {
+function buildAnniversaryInsights(store, selectedDate, captureInsights, userId = "") {
   const today = normalizeDate(selectedDate);
   const recentWish = captureInsights.find((insight) => insight.kind === "wish" || insight.kind === "preference");
   const wishDetail = recentWish?.sourceText ? `最近的线索是：${recentWish.sourceText}` : "最近没有明确心愿线索，先准备轻量、不累的版本。";
   const candidates = [];
 
   store.deadlineItems.forEach((item) => {
+    if (userId && !lifeCardVisibleToUser(item, userId)) return;
     if (!anniversaryPattern.test(`${item.title || ""} ${item.detail || ""}`)) return;
     candidates.push({
       id: `deadline-${item.id}`,
@@ -4567,6 +4656,7 @@ function buildAnniversaryInsights(store, selectedDate, captureInsights) {
   });
 
   store.scheduleItems.forEach((item) => {
+    if (userId && !lifeCardVisibleToUser(item, userId)) return;
     if (!anniversaryPattern.test(`${item.title || ""} ${item.detail || ""}`)) return;
     candidates.push({
       id: `schedule-${item.id}`,
@@ -4701,7 +4791,7 @@ function buildRelationshipInsights(store, userId, selectedDate) {
   return dedupeInsights([
     ...captureInsights,
     ...buildCareInsights(store, userId, selectedDate),
-    ...buildAnniversaryInsights(store, selectedDate, captureInsights),
+    ...buildAnniversaryInsights(store, selectedDate, captureInsights, userId),
     ...buildOnThisDayInsights(store, userId, selectedDate),
   ])
     .sort((a, b) => b.score - a.score || String(b.createdAt).localeCompare(String(a.createdAt)))
@@ -4873,13 +4963,13 @@ function typedLifeCardId(sourceType, sourceId) {
   return `${sanitizeText(sourceType, 40)}-${sanitizeText(sourceId, 100)}`;
 }
 
-function collectRawLifeCardItems(store) {
+function collectRawLifeCardItems(store, userId = "") {
   return [
     ...store.scheduleItems.map((item) => ({ sourceType: "schedule", item })),
     ...store.todoItems.map((item) => ({ sourceType: "todo", item })),
     ...store.checkinItems.map((item) => ({ sourceType: "checkin", item })),
     ...store.deadlineItems.map((item) => ({ sourceType: "deadline", item })),
-  ];
+  ].filter(({ item }) => !userId || lifeCardVisibleToUser(item, userId));
 }
 
 function publicLifeCardRelationLink(item, sourceType, relationType) {
@@ -4900,7 +4990,7 @@ function relationIdsMatch(aIds, bSourceType, bId) {
   return normalizeIdList(aIds, 16).some((id) => id === bId || id === typedId);
 }
 
-function buildLifeCardRelations(store, publicItem, sourceType) {
+function buildLifeCardRelations(store, publicItem, sourceType, userId = "") {
   const currentId = publicItem.id || "";
   if (!currentId) return [];
   const currentTypedId = typedLifeCardId(sourceType, currentId);
@@ -4909,7 +4999,7 @@ function buildLifeCardRelations(store, publicItem, sourceType) {
   const currentCaptureId = publicItem.sourceCaptureId || "";
   const links = [];
 
-  collectRawLifeCardItems(store).forEach(({ sourceType: otherType, item }) => {
+  collectRawLifeCardItems(store, userId).forEach(({ sourceType: otherType, item }) => {
     if (!item?.id) return;
     const otherTypedId = typedLifeCardId(otherType, item.id);
     if (otherTypedId === currentTypedId) return;
@@ -5116,6 +5206,7 @@ function publicScheduleItemCard(store, publicItem, sourceType, userId, options =
     },
     priority: publicItem.priority || "",
     manualOrder: normalizeManualOrder(publicItem.manualOrder, 0),
+    visibility: normalizeLifeCardVisibility(publicItem),
     bucket: publicItem.bucket || "",
     slot: publicItem.slot || "",
     sourceCaptureId: publicItem.sourceCaptureId || "",
@@ -5145,7 +5236,7 @@ function publicScheduleItemCard(store, publicItem, sourceType, userId, options =
   card.nextStep = lifeCardNextStep(card);
   card.timing = lifeCardTiming(card, options.selectedDate || date);
   card.actionSummary = lifeCardActionSummary(card, options.selectedDate || date);
-  card.relations = buildLifeCardRelations(store, publicItem, sourceType);
+  card.relations = buildLifeCardRelations(store, publicItem, sourceType, userId);
   card.memoryLinks = buildLifeCardMemoryLinks(store, publicItem, sourceType);
   return {
     ...card,
@@ -5187,12 +5278,14 @@ function buildScheduleItemCards(store, userId, selectedDate, relationshipInsight
     /^(?:互相确认今天的状态|一起确认今天的安排|一起确认明天的安排)$/.test(sanitizeText(item?.title, 160));
 
   const scheduleCards = store.scheduleItems
+    .filter((item) => lifeCardVisibleToUser(item, userId))
     .filter(includeVisibleItem)
     .map((item) => publicScheduleItemCard(store, publicScheduleItem(item, profileIds), "schedule", userId, {
       itemType: "date",
       selectedDate: today,
     }));
   const todoCards = store.todoItems
+    .filter((item) => lifeCardVisibleToUser(item, userId))
     .filter((item) => normalizeTodoBucket(item.bucket) === "future" || includeVisibleItem(item))
     .map((item) => publicScheduleItemCard(store, publicTodoItem(item, profileIds), "todo", userId, {
       itemType: "thing",
@@ -5207,6 +5300,7 @@ function buildScheduleItemCards(store, userId, selectedDate, relationshipInsight
       selectedDate: today,
     }));
   const deadlineCards = store.deadlineItems
+    .filter((item) => lifeCardVisibleToUser(item, userId))
     .filter(includeVisibleItem)
     .map((item) => publicScheduleItemCard(store, publicDeadlineItem(item, profileIds), "deadline", userId, {
       itemType: "reminder",
@@ -5334,7 +5428,7 @@ function buildHomeFocus(store, userId, selectedDate, options = {}) {
   const visibleCaptures = (Array.isArray(options.captures) ? options.captures : store.captures)
     .filter((capture) => capture.date === date)
     .filter((capture) => capture.visibility === "shared" || capture.createdBy === userId)
-    .filter((capture) => captureCountsAsVisibleMoment(capture, userId))
+    .filter((capture) => captureCountsAsVisibleMoment(capture, userId, store))
     .map((capture) => capture.rawKind ? capture : publicCapture(capture))
     .sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)));
   const publicFocus = (candidate) => candidate ? {
@@ -5579,9 +5673,12 @@ function createLifeCardsFromConfirmation(userId, payload = {}) {
     const selectedDate = normalizeDate(payload.date);
 
     const createOne = (input, parentItemId = "") => {
-      const itemType = normalizeScheduleItemType(input.itemType, "thing");
+      const visibility = normalizeLifeCardVisibility(input, payload);
+      const rawItemType = normalizeScheduleItemType(input.itemType, "thing");
+      const itemType = visibility === "private" && (rawItemType === "checkin" || rawItemType === "habit") ? "thing" : rawItemType;
       const sourceType = sourceTypeForItemType(itemType);
       const ownerId = sourceType === "checkin" ? "shared" : normalizeOwnerId(store, input.ownerId || payload.ownerId || userId, userId);
+      const visibleOwnerId = visibility === "private" ? userId : ownerId;
       const tagInput = input.tags || (parentItemId ? [] : payload.tags);
       const memoryKindInput = input.memoryKinds || input.memoryKind || (parentItemId ? [] : (payload.memoryKinds || payload.memoryKind));
       const body = {
@@ -5599,8 +5696,9 @@ function createLifeCardsFromConfirmation(userId, payload = {}) {
         tags: normalizeLifeCardTags(tagInput, input),
         memoryKinds: normalizeLifeCardMemoryKinds(memoryKindInput, input),
         repeatRule: sanitizeText(input.repeatRule || (itemType === "habit" ? "daily" : ""), 120),
-        ownerId,
-        participants: normalizeParticipants(store, ownerId, input.participants, userId),
+        visibility,
+        ownerId: visibleOwnerId,
+        participants: visibility === "private" ? [userId] : normalizeParticipants(store, ownerId, input.participants, userId),
         bucket: input.bucket || (normalizeDate(input.date || selectedDate) > selectedDate ? "future" : "today"),
         priority: input.priority || "normal",
         plannedAt: input.plannedAt || payload.plannedAt || "",
@@ -5612,7 +5710,7 @@ function createLifeCardsFromConfirmation(userId, payload = {}) {
 
       if (!body.title) return null;
 
-      if (shouldAppendToDailyCheckinCard(itemType, body)) {
+      if (visibility !== "private" && shouldAppendToDailyCheckinCard(itemType, body)) {
         return appendDailyCheckinStepFromConfirmation(store, userId, body);
       }
 
@@ -5657,6 +5755,7 @@ function createLifeCardsFromConfirmation(userId, payload = {}) {
       durationMin: payload.durationMin,
       steps: payload.steps,
       timeBlocks: payload.timeBlocks,
+      visibility: payload.visibility,
     });
 
     if (!primary) {
@@ -5787,12 +5886,12 @@ function acceptCaptureRoute(userId, payload = {}) {
   };
 }
 
-function getCompletionForDate(store, date, userId) {
+function getCompletionForDate(store, date, userId, viewerUserId = "") {
   const scheduleItems = store.scheduleItems.filter(
-    (item) => !isArchived(item) && item.date === date && item.participants?.includes(userId)
+    (item) => (!viewerUserId || lifeCardVisibleToUser(item, viewerUserId)) && !isArchived(item) && item.date === date && item.participants?.includes(userId)
   );
   const todoItems = store.todoItems.filter(
-    (item) => !isArchived(item) && item.date === date && item.bucket !== "future" && item.participants?.includes(userId)
+    (item) => (!viewerUserId || lifeCardVisibleToUser(item, viewerUserId)) && !isArchived(item) && item.date === date && item.bucket !== "future" && item.participants?.includes(userId)
   );
   const checkinItems = store.checkinItems.filter((item) => {
     const createdDate = String(item.createdAt || "").slice(0, 10);
@@ -5868,7 +5967,7 @@ function getMonthSummary(store, selectedDate, userId = "") {
     }).filter((pulse) => pulse.dailyScore || pulse.happiestThing || pulse.smallAchievement);
 
     store.profiles.forEach((profile) => {
-      const completion = day.isFuture ? emptyCompletion : getCompletionForDate(store, day.id, profile.id);
+      const completion = day.isFuture ? emptyCompletion : getCompletionForDate(store, day.id, profile.id, userId);
       userStats[profile.id] = completion;
       if (!day.isFuture) {
         totalsByUser[profile.id].done += completion.done;
@@ -5881,7 +5980,7 @@ function getMonthSummary(store, selectedDate, userId = "") {
       userStats,
       eventCount: store.scheduleItems.filter((item) => !isArchived(item) && item.date === day.id).length,
       todoCount: store.todoItems.filter((item) => !isArchived(item) && item.date === day.id).length,
-      captureCount: store.captures.filter((item) => item.date === day.id && captureCountsAsVisibleMoment(item, userId || item.createdBy)).length,
+      captureCount: store.captures.filter((item) => item.date === day.id && captureCountsAsVisibleMoment(item, userId || item.createdBy, store)).length,
       summaryGenerated: Boolean(dailySummary),
       summaryTitle: dailySummary ? normalizeSummaryTitle(dailySummary) : "",
       dailyPulses,
@@ -5965,11 +6064,16 @@ function isDailySummaryContentOperation(operation) {
   return true;
 }
 
-function buildCompletionTimeline(store, date) {
+function buildCompletionTimeline(store, date, userId = "") {
   return (Array.isArray(store.operations) ? store.operations : [])
     .filter((operation) => ["toggle-status", "toggle-step"].includes(operation.action))
     .filter((operation) => operation.meta?.status === "done")
     .filter((operation) => operation.date === date || String(operation.createdAt || "").slice(0, 10) === date)
+    .filter((operation) => {
+      if (!userId) return true;
+      const item = findLifeCardSourceItem(store, sanitizeText(operation.entityType, 40), operation.entityId);
+      return !item || lifeCardVisibleToUser(item, userId);
+    })
     .sort((a, b) => String(a.createdAt).localeCompare(String(b.createdAt)))
     .slice(-80)
     .map((operation) => publicCompletionTimelineItem({
@@ -6375,11 +6479,14 @@ function getDailySummaryFacts(store, date, options = {}) {
   const profileIds = getProfileIds(store);
   const publicProfiles = store.profiles.map(publicProfile);
   const relationshipInsights = buildRelationshipInsights(store, options.userId || profileIds[0] || "", date).slice(0, 8);
+  const viewerUserId = options.userId || "";
   const scheduleThings = store.scheduleItems
+    .filter((item) => !viewerUserId || lifeCardVisibleToUser(item, viewerUserId))
     .filter((item) => item.date === date)
     .map((item) => summarizeThing(scheduleItemTypeLabels[normalizeScheduleItemType(item.itemType, "date")] || "猫猫的事", item, item.statusByUser || {}))
     .filter(isMeaningfulSummaryThing);
   const todoThings = store.todoItems
+    .filter((item) => !viewerUserId || lifeCardVisibleToUser(item, viewerUserId))
     .filter((item) => item.date === date && normalizeTodoBucket(item.bucket) !== "future")
     .map((item) => summarizeThing(scheduleItemTypeLabels[normalizeScheduleItemType(item.itemType, "thing")] || "事情", item, item.statusByUser || {}))
     .filter(isMeaningfulSummaryThing);
@@ -6403,7 +6510,7 @@ function getDailySummaryFacts(store, date, options = {}) {
   const captures = store.captures
     .filter((item) => item.date === date)
     .filter((item) => options.includePrivate || item.visibility === "shared")
-    .filter((item) => !item.archivedAt && item.rawKind !== "cat-word" && !captureHasAcceptedOutput(item))
+    .filter((item) => !item.archivedAt && item.rawKind !== "cat-word" && !captureHasAcceptedOutput(item, store))
     .map(publicCapture)
     .sort((a, b) => String(a.createdAt).localeCompare(String(b.createdAt)));
   const photos = captures.flatMap((capture) => capture.assets || []);
@@ -6477,7 +6584,7 @@ function getDailySummaryFacts(store, date, options = {}) {
     weather,
     dayContext,
     photos: photos.map(publicDiaryAsset).filter(Boolean),
-    completionTimeline: buildCompletionTimeline(store, date),
+    completionTimeline: buildCompletionTimeline(store, date, viewerUserId),
     status_by_user: people,
     source_counts: {
       todos: todoThings.length,
@@ -6618,6 +6725,7 @@ function getState(userId, options = {}) {
     currentUser: store.profiles.map(publicProfile).find((profile) => profile.id === userId),
     profiles: store.profiles.map(publicProfile),
     scheduleItems: store.scheduleItems
+      .filter((item) => lifeCardVisibleToUser(item, userId))
       .filter((item) => weekDates.has(item.date))
       .map((item) => publicScheduleItem(item, profileIds))
       .sort((a, b) => {
@@ -6629,6 +6737,7 @@ function getState(userId, options = {}) {
         return String(a.createdAt).localeCompare(String(b.createdAt));
       }),
     todoItems: store.todoItems
+      .filter((item) => lifeCardVisibleToUser(item, userId))
       .map((item) => publicTodoItem(item, profileIds))
       .filter((item) => {
         const inWeek = weekDates.has(item.date);
@@ -6647,11 +6756,12 @@ function getState(userId, options = {}) {
       .map((item) => publicCheckinItem(item, profileIds, selectedDate))
       .sort((a, b) => String(a.createdAt).localeCompare(String(b.createdAt))),
     deadlineItems: store.deadlineItems
+      .filter((item) => lifeCardVisibleToUser(item, userId))
       .map((item) => publicDeadlineItem(item, profileIds))
       .sort((a, b) => a.date.localeCompare(b.date) || String(a.createdAt).localeCompare(String(b.createdAt))),
     diaryDay: getDiaryDaySnapshot(store, selectedDate),
     dailySummary: publicDailySummary(store.dailySummaries[selectedDate], {
-      completionTimeline: buildCompletionTimeline(store, selectedDate),
+      completionTimeline: buildCompletionTimeline(store, selectedDate, userId),
     }),
     scheduleItemCards,
     relationshipInsights,
@@ -6689,15 +6799,21 @@ function upsertScheduleItem(userId, payload) {
       recordOperation(store, userId, "create", "schedule", created.id, { date: created.date, title: created.title, sourceType: "schedule" });
       return publicScheduleItem(created, profileIds);
     }
+    assertLifeCardVisibleToUser(existing, userId);
 
+    const nextVisibility = normalizeLifeCardVisibility(payload, existing);
     const nextOwnerId =
-      payload.ownerId === "shared"
+      nextVisibility === "private"
+        ? userId
+        : payload.ownerId === "shared"
         ? "shared"
         : profileIds.includes(payload.ownerId)
           ? payload.ownerId
           : existing.ownerId;
     const nextParticipants =
-      nextOwnerId === "shared"
+      nextVisibility === "private"
+        ? [userId]
+        : nextOwnerId === "shared"
         ? profileIds
         : (Array.isArray(payload.participants) ? payload.participants : existing.participants)
             .filter((id) => profileIds.includes(id));
@@ -6717,6 +6833,7 @@ function upsertScheduleItem(userId, payload) {
     existing.repeatRule = sanitizeText(payload.repeatRule ?? existing.repeatRule, 120);
     existing.priority = normalizePriority(payload.priority || existing.priority);
     existing.manualOrder = normalizeManualOrder(payload.manualOrder, existing.manualOrder);
+    existing.visibility = nextVisibility;
     existing.ownerId = nextOwnerId;
     existing.participants = [...new Set(nextParticipants.length ? nextParticipants : [userId])];
     existing.statusByUser = Object.fromEntries(
@@ -6745,6 +6862,7 @@ function toggleScheduleItem(userId, payload) {
     if (!item) {
       throw new Error("schedule item not found");
     }
+    assertLifeCardVisibleToUser(item, userId);
 
     const targetUserId = resolveStatusTargetUserId(store, userId, payload.targetUserId);
     assertStatusTargetAllowed(item, userId, targetUserId, payload);
@@ -6776,6 +6894,7 @@ function archiveScheduleItem(userId, payload) {
     if (!item) {
       throw new Error("schedule item not found");
     }
+    assertLifeCardVisibleToUser(item, userId);
 
     const timestamp = nowIso();
     const restoring = Boolean(item.archivedAt);
@@ -6801,6 +6920,7 @@ function deleteScheduleItem(userId, payload) {
     if (index === -1) {
       throw new Error("schedule item not found");
     }
+    assertLifeCardVisibleToUser(store.scheduleItems[index], userId);
     const [removed] = store.scheduleItems.splice(index, 1);
     recordOperation(store, userId, "delete", "schedule", removed.id, { date: removed.date, title: removed.title, sourceType: "schedule" });
     return {
@@ -6821,9 +6941,11 @@ function upsertTodoItem(userId, payload) {
       recordOperation(store, userId, "create", "todo", created.id, { date: created.date, title: created.title, sourceType: "todo" });
       return publicTodoItem(created, profileIds);
     }
+    assertLifeCardVisibleToUser(existing, userId);
 
-    const ownerId = normalizeOwnerId(store, payload.ownerId ?? existing.ownerId, userId);
-    const participants = normalizeParticipants(store, ownerId, payload.participants || existing.participants, userId);
+    const visibility = normalizeLifeCardVisibility(payload, existing);
+    const ownerId = visibility === "private" ? userId : normalizeOwnerId(store, payload.ownerId ?? existing.ownerId, userId);
+    const participants = visibility === "private" ? [userId] : normalizeParticipants(store, ownerId, payload.participants || existing.participants, userId);
     existing.date = normalizeDate(payload.date, existing.date);
     existing.bucket = normalizeTodoBucket(payload.bucket || existing.bucket);
     existing.title = sanitizeText(payload.title ?? existing.title, 180);
@@ -6839,6 +6961,7 @@ function upsertTodoItem(userId, payload) {
     existing.repeatRule = sanitizeText(payload.repeatRule ?? existing.repeatRule, 120);
     existing.priority = normalizePriority(payload.priority || existing.priority);
     existing.manualOrder = normalizeManualOrder(payload.manualOrder, existing.manualOrder);
+    existing.visibility = visibility;
     existing.ownerId = ownerId;
     existing.participants = participants;
     existing.statusByUser = Object.fromEntries(
@@ -6852,6 +6975,7 @@ function upsertTodoItem(userId, payload) {
       existing.itemType = "checkin";
       existing.ownerId = "shared";
       existing.participants = profileIds;
+      existing.visibility = "shared";
       existing.tags = normalizeLifeCardTags([...(existing.tags || []), dailyCheckinCardTag], { ...existing, itemType: "checkin" });
       existing.repeatRule = "daily@03:00";
       existing.steps = normalizeDailyCheckinStepsForItem(existing);
@@ -6876,6 +7000,7 @@ function toggleTodoItem(userId, payload) {
     if (!item) {
       throw new Error("todo item not found");
     }
+    assertLifeCardVisibleToUser(item, userId);
 
     const targetUserId = resolveStatusTargetUserId(store, userId, payload.targetUserId);
     assertStatusTargetAllowed(item, userId, targetUserId, payload);
@@ -6906,6 +7031,7 @@ function archiveTodoItem(userId, payload) {
     if (!item) {
       throw new Error("todo item not found");
     }
+    assertLifeCardVisibleToUser(item, userId);
 
     const timestamp = nowIso();
     const restoring = Boolean(item.archivedAt);
@@ -6931,6 +7057,7 @@ function deleteTodoItem(userId, payload) {
     if (index === -1) {
       throw new Error("todo item not found");
     }
+    assertLifeCardVisibleToUser(store.todoItems[index], userId);
     const [removed] = store.todoItems.splice(index, 1);
     recordOperation(store, userId, "delete", "todo", removed.id, { date: removed.date, title: removed.title, sourceType: "todo" });
     return {
@@ -7046,9 +7173,11 @@ function upsertDeadlineItem(userId, payload) {
       recordOperation(store, userId, "create", "deadline", created.id, { date: created.date, title: created.title, sourceType: "deadline" });
       return publicDeadlineItem(created, profileIds);
     }
+    assertLifeCardVisibleToUser(existing, userId);
 
-    const ownerId = normalizeOwnerId(store, payload.ownerId ?? existing.ownerId, userId);
-    const participants = normalizeParticipants(store, ownerId, payload.participants || existing.participants, userId);
+    const visibility = normalizeLifeCardVisibility(payload, existing);
+    const ownerId = visibility === "private" ? userId : normalizeOwnerId(store, payload.ownerId ?? existing.ownerId, userId);
+    const participants = visibility === "private" ? [userId] : normalizeParticipants(store, ownerId, payload.participants || existing.participants, userId);
     existing.date = normalizeDate(payload.date, existing.date);
     existing.title = sanitizeText(payload.title ?? existing.title, 180);
     existing.detail = sanitizeText(payload.detail ?? existing.detail, 500);
@@ -7063,6 +7192,7 @@ function upsertDeadlineItem(userId, payload) {
     existing.repeatRule = sanitizeText(payload.repeatRule ?? existing.repeatRule, 120);
     existing.priority = normalizePriority(payload.priority || existing.priority);
     existing.manualOrder = normalizeManualOrder(payload.manualOrder, existing.manualOrder);
+    existing.visibility = visibility;
     existing.ownerId = ownerId;
     existing.participants = participants;
     existing.statusByUser = Object.fromEntries(
@@ -7090,6 +7220,7 @@ function toggleDeadlineItem(userId, payload) {
     if (!item) {
       throw new Error("deadline item not found");
     }
+    assertLifeCardVisibleToUser(item, userId);
 
     const targetUserId = resolveStatusTargetUserId(store, userId, payload.targetUserId);
     assertStatusTargetAllowed(item, userId, targetUserId, payload);
@@ -7132,6 +7263,7 @@ function deleteDeadlineItem(userId, payload) {
     if (index === -1) {
       throw new Error("deadline item not found");
     }
+    assertLifeCardVisibleToUser(store.deadlineItems[index], userId);
     const [removed] = store.deadlineItems.splice(index, 1);
     recordOperation(store, userId, "delete", "deadline", removed.id, { date: removed.date, title: removed.title, sourceType: "deadline" });
     return {
@@ -7201,7 +7333,6 @@ function addDiaryAsset(userId, payload) {
 function addCapture(userId, payload) {
   return mutateStore((store) => {
     const date = normalizeDate(payload.date);
-    const visibility = validVisibilities.has(payload.visibility) ? payload.visibility : "shared";
     const mode = validCaptureModes.has(payload.mode) ? payload.mode : "save";
     const assetPayloads = [
       ...(Array.isArray(payload.assets) ? payload.assets : []),
@@ -7211,6 +7342,9 @@ function addCapture(userId, payload) {
     if (!text) {
       throw new Error("capture text is required");
     }
+    const visibility = validVisibilities.has(payload.visibility)
+      ? payload.visibility
+      : isSecretLifeCardText(text) ? "private" : "shared";
     const assets = assetPayloads.slice(0, 3).map((asset) =>
       createImageAsset(userId, asset, {
         date,
@@ -7253,7 +7387,7 @@ function addCapture(userId, payload) {
 function archiveCaptureItem(userId, payload = {}) {
   return mutateStore((store) => {
     const captureId = sanitizeText(payload.id || payload.captureId, 100);
-    const capture = store.captures.find((item) => item.id === captureId);
+    const capture = store.captures.find((item) => item.id === captureId) || findCaptureForArchive(store, userId, payload);
     if (!capture) {
       throw new Error("capture not found");
     }
@@ -7277,6 +7411,23 @@ function archiveCaptureItem(userId, payload = {}) {
     });
     return publicCapture(capture);
   });
+}
+
+function findCaptureForArchive(store, userId, payload = {}) {
+  const date = normalizeDate(payload.date, "");
+  const createdAt = sanitizeText(payload.createdAt, 40);
+  const createdBy = sanitizeText(payload.createdBy, 80);
+  const text = sanitizeText(payload.text, 1200);
+  if (!date && !createdAt && !createdBy && !text) return null;
+
+  const matches = store.captures
+    .filter((capture) => captureVisibleToUser(capture, userId))
+    .filter((capture) => !date || capture.date === date || String(capture.createdAt || "").slice(0, 10) === date)
+    .filter((capture) => !createdAt || capture.createdAt === createdAt)
+    .filter((capture) => !createdBy || capture.createdBy === createdBy)
+    .filter((capture) => !text || sanitizeText(capture.text, 1200) === text);
+
+  return matches.length === 1 ? matches[0] : null;
 }
 
 function markCatWordsRead(userId, payload = {}) {
