@@ -3261,6 +3261,7 @@ button.cat-word-mini:hover {
 .timeline-card-slot.is-compact .card-meta,
 .timeline-card-slot.is-compact .card-audit,
 .timeline-card-slot.is-compact .card-plan,
+.timeline-card-slot.is-compact .daily-checkin-brief,
 .timeline-card-slot.is-compact .step-meter,
 .timeline-card-slot.is-compact .card-detail,
 .timeline-card-slot.is-compact .checkin-meter,
@@ -3268,6 +3269,7 @@ button.cat-word-mini:hover {
 .timeline-list.is-card-scrubbing .timeline-card-slot:not(.is-scrub-target) .card-meta,
 .timeline-list.is-card-scrubbing .timeline-card-slot:not(.is-scrub-target) .card-audit,
 .timeline-list.is-card-scrubbing .timeline-card-slot:not(.is-scrub-target) .card-plan,
+.timeline-list.is-card-scrubbing .timeline-card-slot:not(.is-scrub-target) .daily-checkin-brief,
 .timeline-list.is-card-scrubbing .timeline-card-slot:not(.is-scrub-target) .step-meter,
 .timeline-list.is-card-scrubbing .timeline-card-slot:not(.is-scrub-target) .card-detail,
 .timeline-list.is-card-scrubbing .timeline-card-slot:not(.is-scrub-target) .checkin-meter,
@@ -3275,6 +3277,7 @@ button.cat-word-mini:hover {
 .timeline-list.is-card-focused .timeline-card-slot:not(.is-scrub-target) .card-meta,
 .timeline-list.is-card-focused .timeline-card-slot:not(.is-scrub-target) .card-audit,
 .timeline-list.is-card-focused .timeline-card-slot:not(.is-scrub-target) .card-plan,
+.timeline-list.is-card-focused .timeline-card-slot:not(.is-scrub-target) .daily-checkin-brief,
 .timeline-list.is-card-focused .timeline-card-slot:not(.is-scrub-target) .step-meter,
 .timeline-list.is-card-focused .timeline-card-slot:not(.is-scrub-target) .card-detail,
 .timeline-list.is-card-focused .timeline-card-slot:not(.is-scrub-target) .checkin-meter,
@@ -3439,6 +3442,11 @@ button.cat-word-mini:hover {
   text-decoration: line-through;
   text-decoration-thickness: 2px;
   text-decoration-color: rgba(36, 185, 154, 0.42);
+}
+
+.life-card.is-daily-checkin.is-done .card-copy strong {
+  color: var(--ink);
+  text-decoration: none;
 }
 
 .life-card.is-done .card-meta span:not(.type-pill),
@@ -3752,11 +3760,51 @@ button.cat-word-mini:hover {
   font-weight: 900;
 }
 
+.daily-checkin-brief {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  justify-content: space-between;
+  min-width: 0;
+  padding: 7px 9px;
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--type) 9%, rgba(255, 255, 255, 0.72));
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--type) 14%, transparent);
+}
+
+.daily-checkin-brief span {
+  overflow: hidden;
+  min-width: 0;
+  color: color-mix(in srgb, var(--type) 74%, var(--ink));
+  font-size: 0.86rem;
+  font-weight: 950;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.daily-checkin-brief em {
+  display: inline-flex;
+  flex: 0 0 auto;
+  min-height: 22px;
+  align-items: center;
+  padding: 0 7px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.74);
+  color: color-mix(in srgb, var(--type) 82%, var(--ink));
+  font-size: 0.74rem;
+  font-style: normal;
+  font-weight: 950;
+}
+
 .card-checkin-board {
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
   min-width: 0;
+}
+
+.life-card.is-daily-checkin .card-checkin-board {
+  gap: 7px;
 }
 
 .checkin-person {
@@ -3823,6 +3871,20 @@ button.cat-word-mini:hover {
   width: 12px;
   height: 12px;
   stroke-width: 3;
+}
+
+.life-card.is-daily-checkin .checkin-person {
+  min-height: 32px;
+  padding: 0 10px;
+  background: rgba(255, 255, 255, 0.72);
+}
+
+.life-card.is-daily-checkin .checkin-person:not(:disabled) {
+  box-shadow: 0 6px 14px color-mix(in srgb, var(--person-color) 12%, transparent);
+}
+
+.life-card.is-daily-checkin .checkin-person:disabled:not(.is-done) {
+  opacity: 0.72;
 }
 
 .card-collab-board {
@@ -7558,7 +7620,7 @@ button.home-focus-note:hover {
 }
 
 .detail-title-block h2 {
-  font-size: clamp(1.55rem, 4vw, 2.45rem);
+  font-size: clamp(1.35rem, 3vw, 2rem);
   overflow-wrap: anywhere;
 }
 
@@ -7616,6 +7678,17 @@ button.home-focus-note:hover {
   border-color: rgba(211, 144, 33, 0.18);
   background: rgba(255, 225, 118, 0.3);
   color: #7a551a;
+}
+
+.detail-action-row.is-secondary {
+  gap: 6px;
+}
+
+.detail-action-row.is-secondary button {
+  min-height: 32px;
+  border-style: dashed;
+  background: rgba(255, 255, 255, 0.42);
+  color: rgba(46, 38, 48, 0.6);
 }
 
 .detail-action-row button:active {
@@ -7701,6 +7774,62 @@ button.home-focus-note:hover {
 .detail-card-groups {
   display: grid;
   gap: 10px;
+}
+
+.detail-more {
+  display: grid;
+  gap: 10px;
+  padding-top: 2px;
+  border-top: 1px solid rgba(46, 38, 48, 0.06);
+}
+
+.detail-more summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  min-height: 38px;
+  border-radius: 12px;
+  color: rgba(46, 38, 48, 0.62);
+  cursor: pointer;
+  list-style: none;
+  font-size: 0.82rem;
+  font-weight: 950;
+}
+
+.detail-more summary::-webkit-details-marker {
+  display: none;
+}
+
+.detail-more summary span {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.detail-more summary svg {
+  width: 15px;
+  height: 15px;
+  color: var(--pink-deep);
+}
+
+.detail-more summary em {
+  color: var(--muted);
+  font-size: 0.74rem;
+  font-style: normal;
+  font-weight: 900;
+}
+
+.detail-more[open] summary {
+  color: var(--ink);
+}
+
+.detail-more .detail-rows.is-secondary div {
+  background: rgba(255, 255, 255, 0.36);
+}
+
+.detail-more .detail-card-groups.is-secondary {
+  gap: 8px;
 }
 
 .detail-steps {
@@ -8036,10 +8165,13 @@ button.detail-step:hover {
 
   .timeline-card-slot.is-compact .next-step-row,
   .timeline-card-slot.is-compact .card-checkin-board,
+  .timeline-card-slot.is-compact .daily-checkin-brief,
   .timeline-list.is-card-scrubbing .timeline-card-slot:not(.is-scrub-target) .next-step-row,
   .timeline-list.is-card-scrubbing .timeline-card-slot:not(.is-scrub-target) .card-checkin-board,
+  .timeline-list.is-card-scrubbing .timeline-card-slot:not(.is-scrub-target) .daily-checkin-brief,
   .timeline-list.is-card-focused .timeline-card-slot:not(.is-scrub-target) .next-step-row,
-  .timeline-list.is-card-focused .timeline-card-slot:not(.is-scrub-target) .card-checkin-board {
+  .timeline-list.is-card-focused .timeline-card-slot:not(.is-scrub-target) .card-checkin-board,
+  .timeline-list.is-card-focused .timeline-card-slot:not(.is-scrub-target) .daily-checkin-brief {
     display: none;
   }
 
@@ -9343,6 +9475,24 @@ button.detail-step:hover {
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+
+  .detail-action-row.is-secondary {
+    position: static;
+    display: flex;
+    grid-template-columns: none;
+    flex-wrap: wrap;
+    margin: 0;
+    padding: 0;
+    background: transparent;
+    backdrop-filter: none;
+  }
+
+  .detail-action-row.is-secondary button,
+  .detail-action-row.is-secondary button.is-primary {
+    grid-column: auto;
+    min-height: 34px;
+    padding: 0 10px;
   }
 
   .confirm-dialog {

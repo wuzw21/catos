@@ -1281,6 +1281,7 @@ function lifeCardTimeTracking(card, userId) {
 }
 
 function lifeCardStepProgress(card) {
+  if (isDailyCheckinLifeCard(card)) return { done: 0, total: 0, percent: 0 };
   const steps = Array.isArray(card.steps) ? card.steps : [];
   if (!steps.length) return { done: 0, total: 0, percent: 0 };
   const parentDone = Boolean(card.archivedAt || card.completion?.allDone);
@@ -1293,6 +1294,7 @@ function lifeCardStepProgress(card) {
 }
 
 function lifeCardNextStep(card) {
+  if (isDailyCheckinLifeCard(card)) return null;
   const steps = Array.isArray(card.steps) ? card.steps : [];
   const next = steps.find((step) => step.status !== "done");
   if (next) {
@@ -1328,7 +1330,7 @@ function lifeCardTiming(card, selectedDate) {
     label: overdue
       ? "已过期"
       : relevantDate === anchorDate
-        ? "今天"
+        ? "当天"
         : days === 1
           ? "明天"
           : days > 1
@@ -1397,7 +1399,7 @@ function rankScheduleItemCard(card, selectedDate) {
       reasons.unshift("已过期");
     } else if (dueDays === 0) {
       score += 64;
-      reasons.unshift("今天截止");
+      reasons.unshift("本日截止");
     } else if (dueDays <= 3) {
       score += 42 - dueDays * 4;
       reasons.push(`${dueDays} 天后截止`);
@@ -1745,6 +1747,19 @@ function applyStepAwareStatusToggle(item, targetUserId, userId, payload = {}) {
     ? item.statusByUser[targetUserId]
     : "todo";
   const requestedStatus = validStatuses.has(payload.status) ? payload.status : "";
+
+  if (isDailyCheckinLifeCard(item)) {
+    const participants = Array.isArray(item.participants) ? item.participants : [];
+    const nextStatus = requestedStatus || (currentStatus === "done" ? "todo" : "done");
+    item.statusByUser = Object.fromEntries(
+      participants.map((id) => [id, validStatuses.has(item.statusByUser?.[id]) ? item.statusByUser[id] : "todo"])
+    );
+    item.statusByUser[targetUserId] = nextStatus;
+    item.archivedAt = "";
+    item.archivedBy = "";
+    return;
+  }
+
   const steps = normalizeLifeCardSteps(item.steps, item.participants, item.title);
 
   if (steps.length) {
@@ -2102,7 +2117,7 @@ function makeDailyCheckinStep(title, index, existing = null) {
     title: sanitizeText(title || source.title, 120),
     ownerId: sanitizeText(source.ownerId || "", 80),
     estimateMin: normalizeDurationMin(source.estimateMin, 0),
-    status: validStatuses.has(source.status) ? source.status : "todo",
+    status: "todo",
     sortOrder: Number.isFinite(Number(source.sortOrder)) ? Number(source.sortOrder) : index,
   };
 }
@@ -2436,6 +2451,12 @@ function hasDailyCheckinCard(store, date = businessDate()) {
     item.date === normalizedDate &&
     normalizeLifeCardTags(item.tags, item).includes(dailyCheckinCardTag)
   );
+}
+
+function isDailyCheckinLifeCard(item) {
+  if (!item) return false;
+  return normalizeLifeCardTags(item.tags, item).includes(dailyCheckinCardTag) ||
+    (normalizeScheduleItemType(item.itemType, "") === "checkin" && item.repeatRule === "daily@03:00");
 }
 
 function readStore() {
@@ -4755,12 +4776,15 @@ function publicScheduleItemCard(store, publicItem, sourceType, userId, options =
   const itemType = normalizeScheduleItemType(publicItem.itemType, options.itemType || "thing");
   const participants = Array.isArray(publicItem.participants) ? publicItem.participants : [];
   const steps = normalizeLifeCardSteps(publicItem.steps, participants, publicItem.title);
-  const doneUsers = participants.filter((id) => publicItem.statusByUser?.[id] === "done");
-  const stepsDone = steps.length ? steps.filter((step) => step.status === "done").length : 0;
-  const stepsAllDone = Boolean(steps.length && stepsDone === steps.length);
-  const currentUserHasTodoStep = steps.some((step) => (!step.ownerId || step.ownerId === userId) && step.status !== "done");
-  const date = normalizeDate(options.date || publicItem.date);
   const tags = normalizeLifeCardTags(publicItem.tags, { ...publicItem, itemType });
+  const isDailyCheckin = tags.includes(dailyCheckinCardTag) ||
+    (itemType === "checkin" && publicItem.repeatRule === "daily@03:00");
+  const completionSteps = isDailyCheckin ? [] : steps;
+  const doneUsers = participants.filter((id) => publicItem.statusByUser?.[id] === "done");
+  const stepsDone = completionSteps.length ? completionSteps.filter((step) => step.status === "done").length : 0;
+  const stepsAllDone = Boolean(completionSteps.length && stepsDone === completionSteps.length);
+  const currentUserHasTodoStep = completionSteps.some((step) => (!step.ownerId || step.ownerId === userId) && step.status !== "done");
+  const date = normalizeDate(options.date || publicItem.date);
   const memoryKinds = normalizeLifeCardMemoryKinds(publicItem.memoryKinds || publicItem.memoryKind, { ...publicItem, itemType });
   const card = {
     id: `${sourceType}-${publicItem.id}`,
@@ -4779,10 +4803,10 @@ function publicScheduleItemCard(store, publicItem, sourceType, userId, options =
     statusUpdatedBy: publicItem.statusUpdatedBy || {},
     statusUpdatedAt: publicItem.statusUpdatedAt || {},
     completion: {
-      done: steps.length ? stepsDone : doneUsers.length,
-      total: steps.length || participants.length,
-      allDone: steps.length ? stepsAllDone : Boolean(participants.length && doneUsers.length === participants.length),
-      currentUserDone: steps.length ? !currentUserHasTodoStep : publicItem.statusByUser?.[userId] === "done",
+      done: completionSteps.length ? stepsDone : doneUsers.length,
+      total: completionSteps.length || participants.length,
+      allDone: completionSteps.length ? stepsAllDone : Boolean(participants.length && doneUsers.length === participants.length),
+      currentUserDone: completionSteps.length ? !currentUserHasTodoStep : publicItem.statusByUser?.[userId] === "done",
     },
     priority: publicItem.priority || "",
     manualOrder: normalizeManualOrder(publicItem.manualOrder, 0),
@@ -4950,7 +4974,7 @@ function scheduleFocusCopy(card, date) {
   const itemType = normalizeScheduleItemType(card.itemType, "thing");
   const cardDate = normalizeDate(card.date, date);
   const label = cardDate === date
-    ? itemType === "date" ? "小约会" : itemType === "purchase" ? "小愿望" : itemType === "work" ? "推进一点" : "今天的小事"
+    ? itemType === "date" ? "小约会" : itemType === "purchase" ? "小愿望" : itemType === "work" ? "推进一点" : "小事"
     : "接下来";
   const withTime = [time, text].filter(Boolean).join(" ");
   if (/吃|饭|午餐|晚餐|早餐|日料|餐厅|咖啡|奶茶/.test(text)) {

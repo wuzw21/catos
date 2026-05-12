@@ -133,7 +133,7 @@ const memoryKindLabels = {
   list: "清单",
 };
 const captureDecisionLabels = {
-  schedule: { label: "生活卡", icon: "cards", hint: "会进入今天和接下来" },
+  schedule: { label: "生活卡", icon: "cards", hint: "会进入时间轴" },
   capture: { label: "随手记", icon: "camera", hint: "只保留原文" },
   memory: { label: "长期记忆", icon: "bookmark", hint: "会沉淀成偏好、纪念或承诺" },
   dailyStory: { label: "日总结素材", icon: "sparkle", hint: "会留给日记整理" },
@@ -699,14 +699,14 @@ function formatCardPlannedLabel(card) {
   const match = raw.match(/^(\d{4}-\d{2}-\d{2})T(\d{2}):(\d{2})/);
   if (!match) return "";
   if (match[1] === card?.date) return `${match[2]}:${match[3]}`;
-  return formatDateTimeShort(raw);
+  return lifeCardDateTimeLabel(raw, card?.date);
 }
 
 function formatCardDueLabel(card) {
   const raw = String(card?.dueAt || "");
   const match = raw.match(/^(\d{4}-\d{2}-\d{2})T(\d{2}):(\d{2})/);
   if (!match) return "";
-  const label = match[1] === card?.date ? `${match[2]}:${match[3]}` : formatDateTimeShort(raw);
+  const label = lifeCardDateTimeLabel(raw, card?.date);
   return label ? `截止 ${label}` : "";
 }
 
@@ -716,6 +716,14 @@ function formatDateTimeShort(value) {
   if (!match) return "";
   const date = match[1] === today() ? "今天" : shortDate(match[1]);
   return `${date} ${match[2]}:${match[3]}`;
+}
+
+function lifeCardDateTimeLabel(value, cardDate = "") {
+  const raw = String(value || "");
+  const match = raw.match(/^(\d{4}-\d{2}-\d{2})T(\d{2}):(\d{2})/);
+  if (!match) return "";
+  if (match[1] === cardDate) return `${match[2]}:${match[3]}`;
+  return `${shortDate(match[1])} ${match[2]}:${match[3]}`;
 }
 
 function compactDateTime(value) {
@@ -781,7 +789,7 @@ function cardPlanParts(card) {
   if (card.stepProgress?.total) parts.push(`${card.stepProgress.done}/${card.stepProgress.total}`);
   const duration = durationLabel(card.durationMin);
   if (duration) parts.push(duration);
-  if (card.dueAt) parts.push(`${formatDateTimeShort(card.dueAt)} 截止`);
+  if (card.dueAt) parts.push(`${lifeCardDateTimeLabel(card.dueAt, card.date)} 截止`);
   return parts.slice(0, 4);
 }
 
@@ -799,7 +807,7 @@ function lifeCardAgeNotice(card, anchorDate = today()) {
     return {
       level: "strong",
       label: "已过期",
-      text: ageDays >= 14 ? `过期 ${ageDays} 天了，建议今天处理或归档。` : `过期 ${ageDays} 天了。`,
+      text: ageDays >= 14 ? `过期 ${ageDays} 天了，建议处理或归档。` : `过期 ${ageDays} 天了。`,
     };
   }
   if (ageDays >= 14) {
@@ -834,6 +842,15 @@ function displayCardTitle(value) {
   const text = cleanCardText(value);
   if (/^(?:互相确认今天的状态|一起确认今天的安排)$/.test(text)) return dailyCheckinTitle;
   return text;
+}
+
+function lifeCardSurfaceText(value, fallback = "") {
+  const text = cleanCardText(value)
+    .replace(/(?:今天|今日)(?:的)?/g, "")
+    .replace(/^[\s.。·、，,：:\-]+|[\s.。·、，,：:\-]+$/g, "")
+    .replace(/\s{2,}/g, " ")
+    .trim();
+  return text || fallback;
 }
 
 function normalizedPromptKey(value) {
@@ -1137,19 +1154,53 @@ function memoryKindText(kinds, fallback = "") {
 
 function lifeCardDisplayTitle(card, fallback = "记录") {
   if (isDailyCheckinCard(card)) return "打卡";
-  return displayCardTitle(card?.title || card?.sourceCaptureSummary || fallback);
+  return lifeCardSurfaceText(displayCardTitle(card?.title || card?.sourceCaptureSummary || fallback), fallback);
+}
+
+function compactCheckinItemTitle(value) {
+  const text = cleanCardText(value || "")
+    .replace(/^确定/, "")
+    .replace(/^进行/, "")
+    .replace(/^完成(?:今日)?/, "")
+    .replace(/^今日/, "")
+    .trim();
+  if (/体育锻炼|运动|锻炼/.test(text)) return "运动";
+  return shortText(text || value, 12);
+}
+
+function dailyCheckinItems(card) {
+  return (Array.isArray(card?.steps) ? card.steps : [])
+    .map((step) => compactCheckinItemTitle(step?.title || step))
+    .filter(Boolean);
+}
+
+function dailyCheckinSummary(card, fallback = "打卡") {
+  const items = dailyCheckinItems(card);
+  if (!items.length) return fallback;
+  const visible = items.slice(0, 3);
+  return `${visible.join(" · ")}${items.length > visible.length ? ` +${items.length - visible.length}` : ""}`;
+}
+
+function dailyCheckinProgressText(card) {
+  const participants = Array.isArray(card?.participants) ? card.participants : [];
+  if (!participants.length) return statusText(card) || "";
+  const done = participants.filter((id) => isCardDoneForUser(card, id)).length;
+  if (done === participants.length) return "都打卡了";
+  if (!done) return "还没打卡";
+  return `${done}/${participants.length} 已打卡`;
 }
 
 function completionSummaryForCard(card, profiles, currentUser = null) {
   const participants = Array.isArray(card?.participants) ? card.participants : [];
   if (!participants.length) return statusText(card) || card?.statusLabel || "";
   const updatedBy = card?.statusUpdatedBy || {};
+  const isCheckin = isDailyCheckinCard(card) || card?.itemType === "checkin";
   return participants
     .map((id) => {
       const name = userDisplayName(id, profiles, participantShortName(id, profiles, currentUser, id));
       const done = isCardDoneForUser(card, id);
       const actor = updatedBy[id] && updatedBy[id] !== id ? userDisplayName(updatedBy[id], profiles, updatedBy[id]) : "";
-      return `${name}${done ? "已完成" : "未完成"}${actor ? `（${actor}代点）` : ""}`;
+      return `${name}${done ? (isCheckin ? "已打卡" : "已完成") : (isCheckin ? "未打卡" : "未完成")}${actor ? `（${actor}代点）` : ""}`;
     })
     .join(" · ");
 }
@@ -1229,7 +1280,7 @@ function compactLifeCardRow(card, context, activeId = "") {
   return {
     id: card.id,
     title: cleanCardText(lifeCardDisplayTitle(card)),
-    subtitle: [card.date === today() ? "今天" : shortDate(card.date), primaryTimeLabel(card), itemTypeLabels[itemType]].filter(Boolean).join(" · "),
+    subtitle: [shortDate(card.date), primaryTimeLabel(card), itemTypeLabels[itemType]].filter(Boolean).join(" · "),
     ownerIds: cardParticipantIds(card, context.profiles, context.currentUser),
     active: card.id === activeId,
     action: { type: "open-detail", detailType: "lifeCard", payload: card },
@@ -1257,8 +1308,8 @@ function relationLifeCardRow(link, context, activeId = "") {
   }
   return {
     id: `${link.sourceType || "card"}-${link.sourceId || link.title}`,
-    title: cleanCardText(link.title || "相关生活卡"),
-    subtitle: [relationLabels[link.relationType] || "相关", link.date === today() ? "今天" : shortDate(link.date), itemTypeLabels[link.itemType]].filter(Boolean).join(" · "),
+    title: lifeCardSurfaceText(link.title || "相关生活卡", "相关生活卡"),
+    subtitle: [relationLabels[link.relationType] || "相关", shortDate(link.date), itemTypeLabels[link.itemType]].filter(Boolean).join(" · "),
     ownerIds: [],
     active: false,
     action: null,
@@ -1305,7 +1356,7 @@ function lifeCardDetailSections(card, context) {
       rows: relationRows,
     } : null,
     sameDayCards.length ? {
-      title: anchorDate === today() ? "今天" : shortDate(anchorDate),
+      title: shortDate(anchorDate) || "同日",
       rows: sameDayCards.map((item) => compactLifeCardRow(item, context, card.id)),
     } : null,
     futureTodoCards.length ? {
@@ -1321,7 +1372,6 @@ const detailBuilders = {
     const itemType = card.itemType && itemTypeLabels[card.itemType] ? card.itemType : "thing";
     const participants = cardParticipantIds(card, profiles, currentUser);
     const title = lifeCardDisplayTitle(card);
-    const detail = summaryLine(card) || cleanCardText(card.detail || card.slot || "");
     const readOnly = card.readOnly || card.sourceType === "insight";
     const stepStatus = card.stepProgress?.total ? `${card.stepProgress.done}/${card.stepProgress.total}` : "";
     const isDone = isCompletedCard(card);
@@ -1330,6 +1380,7 @@ const detailBuilders = {
     const targetDone = targetUserId ? isCardDoneForUser(card, targetUserId) : isDone;
     const timerActive = Boolean(card.timeTracking?.currentUserActive);
     const isDailyCheckin = isDailyCheckinCard(card);
+    const detail = lifeCardSurfaceText(isDailyCheckin ? dailyCheckinSummary(card) : summaryLine(card) || cleanCardText(card.detail || card.slot || ""), "");
     const peerCheckinCards = card.sourceType === "checkin"
       ? (Array.isArray(context.cards) ? context.cards : [])
           .filter((item) => item.sourceType === "checkin" && item.date === card.date)
@@ -1345,13 +1396,13 @@ const detailBuilders = {
     const steps = rawSteps
       .map((step) => {
         const ownerIds = stepOwnerIds(step, participants);
-        const state = stepStateLabel(step, profiles, participants, currentUser);
-        const owner = stepOwnerLabel(step, profiles, participants, currentUser);
+        const state = isDailyCheckin ? "打卡项" : stepStateLabel(step, profiles, participants, currentUser);
+        const owner = isDailyCheckin ? "" : stepOwnerLabel(step, profiles, participants, currentUser);
         return {
           id: step.id || step.title,
           title: cleanCardText(step.title || ""),
-          done: step.status === "done",
-          ownerIds,
+          done: isDailyCheckin ? false : step.status === "done",
+          ownerIds: isDailyCheckin ? [] : ownerIds,
           owner,
           state,
           hint: durationLabel(step.estimateMin),
@@ -1364,11 +1415,14 @@ const detailBuilders = {
     const hasMemory = Boolean(memoryKindText(card.memoryKinds) || card.memoryLinks?.length);
     const participantLine = namesForIds(participants, profiles);
     const completionLine = completionSummaryForCard(card, profiles, currentUser);
+    const statusValue = isDailyCheckin ? dailyCheckinProgressText(card) : stepStatus || statusText(card) || card.statusLabel;
+    const timeValue = primaryTimeLabel(card);
+    const repeatValue = card.repeatRule ? repeatRuleLabel(card.repeatRule) : "";
     const canQuickPatch = canPatchLifeCard(card) && !isArchived && !isDailyCheckin;
     const quickMoveDate = card.date === today() ? addDays(card.date, 1) : today();
-    const quickMoveLabel = card.date === today() ? "明天" : "今天";
+    const quickMoveLabel = card.date === today() ? "明天" : "本日";
     const primaryActionLabel = isDailyCheckin || itemType === "checkin"
-      ? (targetDone ? "取消打卡" : isProxy ? `帮${targetName}打卡` : "打卡")
+      ? (targetDone ? "取消打卡" : isProxy ? `帮${targetName}打卡` : isDailyCheckin ? "我打卡" : "打卡")
       : (targetDone ? "取消" : isProxy ? `帮${targetName}完成` : "完成");
     return {
       type: "lifeCard",
@@ -1377,33 +1431,47 @@ const detailBuilders = {
       body: detail,
       date: detailDateLabel(card.date),
       ownerIds: participants,
-      chips: [
-        { label: "类型", value: itemTypeLabels[itemType] },
-        { label: "时间", value: primaryTimeLabel(card) },
-        { label: "参与", value: participantLine || ownerLabel(card.ownerId, currentUser) },
-        { label: "完成", value: stepStatus || statusText(card) || card.statusLabel },
-      ].filter((item) => item.value),
+      chips: (isDailyCheckin
+        ? [
+            { label: "参与", value: participantLine },
+            { label: "状态", value: statusValue },
+          ]
+        : [
+            { label: "时间", value: timeValue },
+            { label: "状态", value: statusValue },
+            repeatValue ? { label: "周期", value: repeatValue } : null,
+            card.priority === "high" ? { label: "重要", value: "已标记" } : null,
+          ]).filter((item) => item && item.value),
       rows: detailRows([
-        completionLine ? { label: "完成情况", value: completionLine, wide: true } : null,
-        card.nextStep?.title ? { label: "下一步", value: card.nextStep.title, wide: true } : null,
-        card.plannedAt ? { label: "开始", value: formatDateTimeShort(card.plannedAt) } : null,
-        card.dueAt ? { label: "截止", value: formatDateTimeShort(card.dueAt) } : null,
+        completionLine && participants.length > 1 ? { label: isDailyCheckin ? "打卡情况" : "双人进度", value: completionLine, wide: true } : null,
+        card.nextStep?.title && !steps.length ? { label: "下一步", value: card.nextStep.title, wide: true } : null,
+      ]),
+      moreRows: detailRows([
+        { label: "类型", value: itemTypeLabels[itemType] },
+        { label: "参与", value: participantLine || ownerLabel(card.ownerId, currentUser) },
+        isDailyCheckin ? { label: "刷新", value: repeatValue || timeValue } : null,
+        card.plannedAt ? { label: "开始", value: lifeCardDateTimeLabel(card.plannedAt, card.date) } : null,
+        card.dueAt ? { label: "截止", value: lifeCardDateTimeLabel(card.dueAt, card.date) } : null,
         card.durationMin ? { label: "预计", value: durationLabel(card.durationMin) } : null,
         card.stepProgress?.total ? { label: "步骤", value: `${card.stepProgress.done}/${card.stepProgress.total}` } : null,
-        card.repeatRule ? { label: "周期", value: repeatRuleLabel(card.repeatRule) } : null,
+        repeatValue ? { label: "周期", value: repeatValue } : null,
         card.priority === "high" ? { label: "优先级", value: "重要" } : null,
       ]),
       steps,
-      sections: lifeCardDetailSections(card, context),
+      stepsLabel: isDailyCheckin ? "打卡项" : "步骤",
+      sections: [],
+      moreSections: lifeCardDetailSections(card, context),
       images: [],
       actions: [
         !readOnly && !isArchived && targetUserId ? { type: "toggle-card", icon: targetDone ? "undo" : "check", label: primaryActionLabel, card } : null,
         !readOnly && !isArchived && !card.isDraft && card.sourceType !== "checkin" && !isDailyCheckin ? { type: "timer-card", icon: timerActive ? "stop" : "clock", label: timerActive ? "停止" : "计时", card } : null,
+        !readOnly ? { type: "edit-card", icon: "edit", label: "编辑", card } : null,
+      ].filter(Boolean),
+      moreActions: [
         canQuickPatch ? { type: "move-card-date", icon: "calendar", label: quickMoveLabel, card, date: quickMoveDate } : null,
         canQuickPatch ? { type: "set-card-priority", icon: "star", label: card.priority === "high" ? "普通" : "重要", card, priority: card.priority === "high" ? "normal" : "high" } : null,
         !isDailyCheckin && !readOnly && ["schedule", "todo"].includes(card.sourceType) ? { type: "archive-card", icon: isArchived ? "undo" : "archive", label: isArchived ? "恢复" : "归档", card } : null,
         !readOnly && !card.isDraft ? { type: "remember-card", icon: "bookmark", label: hasMemory ? "已记" : "记忆", card } : null,
-        !readOnly ? { type: "edit-card", icon: "edit", label: "编辑", card } : null,
         card.date ? { type: "go-date", icon: "calendar", label: "月历", date: card.date, page: "month" } : null,
       ].filter(Boolean),
     };
@@ -2176,7 +2244,7 @@ export function App() {
       setData(result.state);
       refreshDetailCardFromState(result.state, card);
       if (wasCompleted) setFilter("all");
-      toast.success(wasCompleted ? "已恢复待办" : "已完成");
+      toast.success(isDailyCheckinCard(card) || card.itemType === "checkin" ? (wasCompleted ? "已取消打卡" : "已打卡") : (wasCompleted ? "已恢复待办" : "已完成"));
     }
   }
 
@@ -2196,7 +2264,7 @@ export function App() {
 
   async function moveCardDate(card, date, options = {}) {
     if (!canPatchLifeCard(card) || !date) return;
-    const label = date === today() ? "今天" : date === addDays(today(), 1) ? "明天" : shortDate(date);
+    const label = date === today() ? "本日" : date === addDays(today(), 1) ? "明天" : shortDate(date);
     const result = await saveLifeCardPatch(card, { date }, {
       selectDate: options.selectDate,
       message: options.silent ? "" : `已移到${label}`,
@@ -2690,8 +2758,9 @@ function HomeTime({ now }) {
 }
 
 function HomeFocusNote({ focus, data, profiles, onOpen }) {
-  const text = cleanStoryText(focus?.text || "");
-  const title = cleanStoryText(focus?.title || "");
+  const isLifeCardFocus = focus?.sourceType === "lifeCard";
+  const text = isLifeCardFocus ? lifeCardSurfaceText(cleanStoryText(focus?.text || ""), "") : cleanStoryText(focus?.text || "");
+  const title = isLifeCardFocus ? lifeCardSurfaceText(cleanStoryText(focus?.title || ""), "") : cleanStoryText(focus?.title || "");
   if (!text && !title) return null;
   const actor = profiles.find((profile) => profile.id === focus?.actorId);
   const lifeCard = (data?.scheduleItemCards || []).find((card) => card.id === focus?.sourceId || card.sourceId === focus?.sourceId);
@@ -2728,7 +2797,7 @@ function HomeFocusNote({ focus, data, profiles, onOpen }) {
         <Icon name={focus?.icon || "sparkle"} />
       </span>
       <span className="home-focus-copy">
-        <strong>{title || focus?.meta || "今天"}</strong>
+        <strong>{title || focus?.meta || (isLifeCardFocus ? "生活卡" : "今天")}</strong>
         <em>{text || title}</em>
       </span>
       {actor ? <CatAvatar profile={actor} className="is-mini" /> : focus?.meta ? <i>{focus.meta}</i> : null}
@@ -2848,7 +2917,7 @@ function Composer({ text, setText, saveRawCapture, profiles, currentUser, busy, 
   const decisionMeta = captureDecisionMeta(draft?.decision);
   const confirmationType = decisionMeta.label;
   const routeWhen = draft?.decision === "schedule"
-    ? [draft.date === today() ? "今天" : shortDate(draft.date), segmentLabels[draft.segment || "allDay"], itemTypeLabels[draft.itemType || "thing"]].filter(Boolean).join(" · ")
+    ? [shortDate(draft.date), segmentLabels[draft.segment || "allDay"], itemTypeLabels[draft.itemType || "thing"]].filter(Boolean).join(" · ")
     : decisionMeta.hint;
   const memoryHint = draft?.decision === "memory"
     ? memoryKindText(draft.memoryKinds || draft.memoryKind, "长期记忆")
@@ -3470,7 +3539,7 @@ function LifeCardTimeline({ cards, profiles, currentUser, selectedDate, filter, 
   ), [visibleCards, selectedDate, todayKey]);
   const rolloverCards = rolloverAllCards.slice(0, 4);
   const rolloverHiddenCount = Math.max(0, rolloverAllCards.length - rolloverCards.length);
-  const rolloverTargetLabel = selectedDate === todayKey ? "今天" : shortDate(selectedDate);
+  const rolloverTargetLabel = selectedDate === todayKey ? "本日" : shortDate(selectedDate);
   const summary = useMemo(() => {
     const activeCards = lifeCards.filter((card) => !isArchivedCard(card));
     const openCards = activeCards.filter((card) => !isCompletedCard(card));
@@ -4117,12 +4186,16 @@ function LifeCard({ card, profiles, currentUser, compact = false, toggleCard, ar
       ? (isGroupCard || card.completion?.allDone ? "已完成" : "我已完成")
     : waitLabel || progressStatus;
   const repeatNote = repeatRuleLabel(card.repeatRule);
-  const contextBits = [
-    timeNote,
-    repeatNote && repeatNote !== timeNote ? repeatNote : "",
-    displayedStatus,
-    card.priority === "high" ? "重要" : "",
-  ].filter(Boolean);
+  const checkinSummary = isDailyCheckin ? dailyCheckinSummary(card) : "";
+  const checkinProgress = isDailyCheckin ? dailyCheckinProgressText(card) : "";
+  const contextBits = isDailyCheckin
+    ? [checkinSummary, checkinProgress].filter(Boolean)
+    : [
+        timeNote,
+        repeatNote && repeatNote !== timeNote ? repeatNote : "",
+        displayedStatus,
+        card.priority === "high" ? "重要" : "",
+      ].filter(Boolean);
   const openCard = () => {
     if (isDraft) {
       setEditingCard(card);
@@ -4135,7 +4208,7 @@ function LifeCard({ card, profiles, currentUser, compact = false, toggleCard, ar
     event.stopPropagation();
   };
   const { isProxy, targetName } = proxyActionMeta(card, currentUser, profiles);
-  const completeLabel = isDailyCheckin || itemType === "checkin" ? (isProxy ? `帮${targetName}打卡` : "打卡") : isProxy ? `帮${targetName}完成` : "完成";
+  const completeLabel = isDailyCheckin ? (isProxy ? `帮${targetName}打卡` : "我打卡") : itemType === "checkin" ? (isProxy ? `帮${targetName}打卡` : "打卡") : isProxy ? `帮${targetName}完成` : "完成";
   const undoLabel = isDailyCheckin || itemType === "checkin" ? (isProxy ? `取消${targetName}打卡` : "取消打卡") : isProxy ? `取消${targetName}` : "取消";
   const targetDone = completionTarget ? isCardDoneForUser(card, completionTarget) : isDone;
   const participantStates = !isLegacyCheckin && !isDailyCheckin && isGroupCard
@@ -4164,9 +4237,10 @@ function LifeCard({ card, profiles, currentUser, compact = false, toggleCard, ar
     }
     if (!readOnly && (!step.ownerId || step.ownerId === currentUser?.id || step.ownerId === completionTarget)) toggleStep?.(card, step);
   };
+  const checkinBoardLabel = checkinPeople.length ? `${checkinDoneCount}/${checkinPeople.length}` : "";
   return (
     <article
-      className={cx("life-card", `type-${itemType}`, card.priority === "high" && "is-important", isLegacyCheckin && "is-checkin", isDone && "is-done", isArchived && "is-archived", ageNotice && "is-aged", ageNotice?.level === "strong" && "is-aged-strong", readOnly && "is-readonly", isInsight && "is-insight", isDraft && "is-draft")}
+      className={cx("life-card", `type-${itemType}`, card.priority === "high" && "is-important", isLegacyCheckin && "is-checkin", isDailyCheckin && "is-daily-checkin", isDone && "is-done", isArchived && "is-archived", ageNotice && "is-aged", ageNotice?.level === "strong" && "is-aged-strong", readOnly && "is-readonly", isInsight && "is-insight", isDraft && "is-draft")}
       style={{ "--owner-one": ownerColor, "--owner-two": secondColor }}
       onDoubleClick={() => {
         if (!readOnly) setEditingCard(card);
@@ -4192,6 +4266,12 @@ function LifeCard({ card, profiles, currentUser, compact = false, toggleCard, ar
             <strong>{title}</strong>
           </div>
         </button>
+        {!compact && isDailyCheckin ? (
+          <div className="daily-checkin-brief" aria-label="打卡项">
+            <span>{checkinSummary}</span>
+            {checkinBoardLabel ? <em>{checkinBoardLabel}</em> : null}
+          </div>
+        ) : null}
         {!compact && checkinPeople.length ? (
           <div className="card-checkin-board" aria-label="共同打卡完成情况">
             {checkinPeople.map((person) => {
@@ -4442,7 +4522,7 @@ function CardEditor({ card, profiles, onClose, onSave, onDelete, confirmLeave })
             { title: cardTitle || "开始做", estimateMin: 25, ownerId: "" },
             { title: "收尾确认", estimateMin: 5, ownerId: "" },
           ]
-        : [{ title: isDailyCheckin ? "完成今日打卡" : "先做 5 分钟", estimateMin: 5, ownerId: "" }];
+        : [{ title: isDailyCheckin ? "完成打卡" : "先做 5 分钟", estimateMin: 5, ownerId: "" }];
     append(templateSteps.map((step, offset) => makeEditorStep(step, baseIndex + offset)));
     setEditorSection("steps");
   };
@@ -4561,7 +4641,7 @@ function CardEditor({ card, profiles, onClose, onSave, onDelete, confirmLeave })
     { id: "steps", label: isDailyCheckin ? "打卡" : "步骤", icon: "rows", meta: `${stepCount} 项` },
   ];
   const stepTemplates = [
-    { id: "starter", icon: "sparkle", label: isDailyCheckin ? "今日打卡" : "先动5分钟" },
+    { id: "starter", icon: "sparkle", label: isDailyCheckin ? "打卡" : "先动5分钟" },
     { id: "three", icon: "rows", label: "三步走" },
     profiles.length > 1 ? { id: "split", icon: "users", label: "分给两个人" } : null,
   ].filter(Boolean);
@@ -4580,7 +4660,7 @@ function CardEditor({ card, profiles, onClose, onSave, onDelete, confirmLeave })
     setValue("segment", segment, { shouldDirty: true, shouldValidate: true });
   }, [getValues, isDailyCheckin, setValue]);
   const editorDateShortcuts = [
-    { label: "今天", value: today() },
+    { label: "本日", value: today() },
     { label: "明天", value: addDays(today(), 1) },
     { label: "周末", value: nextWeekendDate(form.date || today()) },
   ];
@@ -4958,8 +5038,89 @@ function ConfirmDialog({ request, onCancel, onConfirm }) {
   );
 }
 
+function DetailActionRow({ actions = [], onAction, secondary = false }) {
+  if (!actions.length) return null;
+  return (
+    <div className={cx("detail-action-row", secondary && "is-secondary")} aria-label={secondary ? "更多操作" : "操作"}>
+      {actions.map((action) => (
+        <button
+          key={`${action.type}-${action.label}`}
+          className={cx(action.type === "toggle-card" && "is-primary", action.type === "timer-card" && "is-tool", action.type === "set-card-priority" && "is-warm")}
+          type="button"
+          onClick={() => onAction(action)}
+        >
+          <Icon name={action.icon} />
+          <span>{action.label}</span>
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function DetailRows({ rows = [], secondary = false }) {
+  if (!rows.length) return null;
+  return (
+    <div className={cx("detail-rows", secondary && "is-secondary")}>
+      {rows.map((row) => (
+        <div key={`${row.label}-${row.value}`} className={cx(row.wide && "is-wide")}>
+          <span>{row.label}</span>
+          <strong>{row.value}</strong>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function DetailSectionGroups({ sections = [], profiles, onAction, secondary = false }) {
+  if (!sections.length) return null;
+  return (
+    <div className={cx("detail-card-groups", secondary && "is-secondary")}>
+      {sections.map((section) => (
+        <section className="dynamic-list detail-card-group" key={section.title}>
+          <div className="dynamic-list-head">
+            <strong>{section.title}</strong>
+            <span>{section.rows.length}</span>
+          </div>
+          <div className="dynamic-rows">
+            {section.rows.map((row) => {
+              const content = (
+                <>
+                  <AvatarPair profiles={profiles} ids={row.ownerIds} />
+                  <span>
+                    <strong>{row.title}</strong>
+                    {row.subtitle ? <em>{row.subtitle}</em> : null}
+                  </span>
+                  {row.action ? <Icon name="chevronRight" /> : <i aria-hidden="true" />}
+                </>
+              );
+              return row.action ? (
+                <button
+                  className={cx("dynamic-row detail-card-row", row.active && "is-active")}
+                  type="button"
+                  key={row.id}
+                  onClick={() => onAction(row.action)}
+                >
+                  {content}
+                </button>
+              ) : (
+                <div className={cx("dynamic-row detail-card-row", row.active && "is-active")} key={row.id}>
+                  {content}
+                </div>
+              );
+            })}
+          </div>
+        </section>
+      ))}
+    </div>
+  );
+}
+
 function DetailDrawer({ detail, profiles, onClose, onAction }) {
   const ownerIds = detail.ownerIds?.length ? detail.ownerIds : profiles.map((profile) => profile.id).slice(0, 2);
+  const moreActions = detail.moreActions || [];
+  const moreRows = detail.moreRows || [];
+  const moreSections = detail.moreSections || [];
+  const hasMore = moreActions.length || moreRows.length || moreSections.length;
   return (
     <Dialog.Root open onOpenChange={(nextOpen) => {
       if (!nextOpen) onClose();
@@ -4983,21 +5144,7 @@ function DetailDrawer({ detail, profiles, onClose, onAction }) {
           <h2>{detail.title}</h2>
           {detail.body ? <p>{detail.body}</p> : null}
         </div>
-        {detail.actions?.length ? (
-          <div className="detail-action-row" aria-label="操作">
-            {detail.actions.slice(0, 8).map((action) => (
-              <button
-                key={`${action.type}-${action.label}`}
-                className={cx(action.type === "toggle-card" && "is-primary", action.type === "timer-card" && "is-tool", action.type === "set-card-priority" && "is-warm")}
-                type="button"
-                onClick={() => onAction(action)}
-              >
-                <Icon name={action.icon} />
-                <span>{action.label}</span>
-              </button>
-            ))}
-          </div>
-        ) : null}
+        <DetailActionRow actions={detail.actions || []} onAction={onAction} />
         {detail.chips?.length ? (
           <div className="detail-chips">
             {detail.chips.map((chip) => (
@@ -5013,18 +5160,9 @@ function DetailDrawer({ detail, profiles, onClose, onAction }) {
             {detail.images.slice(0, 4).map((image) => <img key={image.id || image.url} src={image.url} alt={image.name || "照片"} />)}
           </div>
         ) : null}
-        {detail.rows?.length ? (
-          <div className="detail-rows">
-            {detail.rows.map((row) => (
-              <div key={`${row.label}-${row.value}`} className={cx(row.wide && "is-wide")}>
-                <span>{row.label}</span>
-                <strong>{row.value}</strong>
-              </div>
-            ))}
-          </div>
-        ) : null}
+        <DetailRows rows={detail.rows || []} />
         {detail.steps?.length ? (
-          <div className="detail-steps" aria-label="步骤">
+          <div className="detail-steps" aria-label={detail.stepsLabel || "步骤"}>
             {detail.steps.map((step) => {
               const content = (
                 <>
@@ -5054,45 +5192,17 @@ function DetailDrawer({ detail, profiles, onClose, onAction }) {
             })}
           </div>
         ) : null}
-        {detail.sections?.length ? (
-          <div className="detail-card-groups">
-            {detail.sections.map((section) => (
-              <section className="dynamic-list detail-card-group" key={section.title}>
-                <div className="dynamic-list-head">
-                  <strong>{section.title}</strong>
-                  <span>{section.rows.length}</span>
-                </div>
-                <div className="dynamic-rows">
-                  {section.rows.map((row) => {
-                    const content = (
-                      <>
-                        <AvatarPair profiles={profiles} ids={row.ownerIds} />
-                        <span>
-                          <strong>{row.title}</strong>
-                          {row.subtitle ? <em>{row.subtitle}</em> : null}
-                        </span>
-                        {row.action ? <Icon name="chevronRight" /> : <i aria-hidden="true" />}
-                      </>
-                    );
-                    return row.action ? (
-                      <button
-                        className={cx("dynamic-row detail-card-row", row.active && "is-active")}
-                        type="button"
-                        key={row.id}
-                        onClick={() => onAction(row.action)}
-                      >
-                        {content}
-                      </button>
-                    ) : (
-                      <div className={cx("dynamic-row detail-card-row", row.active && "is-active")} key={row.id}>
-                        {content}
-                      </div>
-                    );
-                  })}
-                </div>
-              </section>
-            ))}
-          </div>
+        <DetailSectionGroups sections={detail.sections || []} profiles={profiles} onAction={onAction} />
+        {hasMore ? (
+          <details className="detail-more">
+            <summary>
+              <span><Icon name="more" />更多</span>
+              <em>细项</em>
+            </summary>
+            <DetailActionRow actions={moreActions} onAction={onAction} secondary />
+            <DetailRows rows={moreRows} secondary />
+            <DetailSectionGroups sections={moreSections} profiles={profiles} onAction={onAction} secondary />
+          </details>
         ) : null}
         </Dialog.Content>
       </Dialog.Portal>
