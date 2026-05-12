@@ -1948,8 +1948,15 @@ function useHashRoute() {
   return [page, setPage];
 }
 
+function friendlyErrorMessage(message, fallback = "操作失败") {
+  const text = String(message || "").trim();
+  if (/invalid login or password/i.test(text)) return "访问码不对。";
+  if (/login required/i.test(text)) return "需要先登录。";
+  return text || fallback;
+}
+
 function errorMessage(err, fallback = "操作失败") {
-  return err?.message || fallback;
+  return friendlyErrorMessage(err?.message, fallback);
 }
 
 export function App() {
@@ -1984,7 +1991,7 @@ export function App() {
     const result = await response.json().catch(() => ({}));
     if (response.status === 401) {
       setData(null);
-      setError(result.error || "需要先登录。");
+      setError(friendlyErrorMessage(result.error, "需要先登录。"));
       return null;
     }
     if (!response.ok || result.ok === false) {
@@ -2100,7 +2107,7 @@ export function App() {
         toast.success("已进入猫猫日记本");
       }
     } catch (err) {
-      const message = err.message === "invalid login or password" ? "访问码不对。" : errorMessage(err);
+      const message = errorMessage(err);
       setError(message);
       toast.error(message);
     } finally {
@@ -5713,7 +5720,7 @@ function CatNoticePage({ profiles, currentUser, now, data, request, setData, set
           <h1>猫猫的话</h1>
         </div>
         <div className="cat-note-actions">
-          <IconButton icon="edit" label="自己编辑" onClick={() => beginEdit()} />
+          <IconButton icon="edit" label={targetProfile ? `写给${targetProfile.displayName}` : "写给对方"} onClick={() => beginEdit()} />
           <IconButton icon="refresh" label={notice.isNightLocked ? "夜间固定" : "换一句"} onClick={() => setVariant((value) => value + 1)} disabled={notice.isNightLocked || editing} />
         </div>
       </div>
@@ -5722,18 +5729,26 @@ function CatNoticePage({ profiles, currentUser, now, data, request, setData, set
         <span><Icon name={notice.icon} />{notice.title}</span>
         {editing ? (
           <form className="cat-word-compose" onSubmit={sendWord}>
+            <div className="cat-word-compose-head">
+              <span>
+                {targetProfile ? <CatAvatar profile={targetProfile} className="is-mini" /> : <Icon name="send" />}
+                <b>{targetProfile ? `给 ${targetProfile.displayName}` : "给对方"}</b>
+              </span>
+              <em>{draft.trim().length}/180</em>
+            </div>
             <textarea
               value={draft}
               onChange={(event) => setDraft(event.target.value)}
               aria-label="猫猫的话"
+              placeholder={targetProfile ? `想对${targetProfile.displayName}说什么` : "想对对方说什么"}
               maxLength={180}
               autoFocus
             />
             <div className="cat-word-send-row">
-              {sendError ? <em>{sendError}</em> : <span>{targetProfile ? `给 ${targetProfile.displayName}` : "给对方"}</span>}
+              {sendError ? <em>{sendError}</em> : <span>{draft.trim() ? "小纸条" : "还没写内容"}</span>}
               <div>
                 <IconButton icon="x" label="取消" onClick={() => setEditing(false)} disabled={sending} />
-                <IconButton icon="send" label="送给对方" type="submit" primary disabled={sending || !draft.trim()} />
+                <IconButton icon="send" label={sending ? "送出中" : "送出"} type="submit" primary disabled={sending || !draft.trim()} />
               </div>
             </div>
           </form>
