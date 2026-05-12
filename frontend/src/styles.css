@@ -2860,6 +2860,10 @@ button.cat-word-mini:hover {
 
 .timeline-list {
   --timeline-axis-x: 132px;
+  --timeline-date-col: 116px;
+  --timeline-day-gap: 38px;
+  --timeline-time-label-w: 50px;
+  --timeline-time-axis-gap: 6px;
   position: relative;
   gap: 18px;
   max-height: clamp(430px, 62svh, 760px);
@@ -2890,24 +2894,29 @@ button.cat-word-mini:hover {
 
 .day-cards {
   gap: 12px;
+  padding-top: 36px;
 }
 
 .timeline-time-group {
+  position: relative;
   display: grid;
-  grid-template-columns: 76px minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1fr);
   gap: 10px;
   align-items: start;
   min-width: 0;
 }
 
 .timeline-time-label {
-  position: sticky;
-  top: 94px;
-  z-index: 1;
+  position: absolute;
+  top: 0;
+  left: calc(var(--timeline-axis-x) - var(--timeline-date-col) - var(--timeline-day-gap) - var(--timeline-time-label-w) - var(--timeline-time-axis-gap));
+  z-index: 3;
   display: flex;
+  width: var(--timeline-time-label-w);
   justify-content: flex-end;
   min-width: 0;
   padding-top: 14px;
+  pointer-events: none;
 }
 
 .timeline-time-label span {
@@ -3042,8 +3051,7 @@ button.cat-word-mini:hover {
   pointer-events: none;
 }
 
-.timeline-list.is-card-scrubbing::after,
-.timeline-list.is-card-focused::after {
+.timeline-list.is-card-scrubbing::after {
   height: var(--axis-handle-y, var(--day-progress, 0%));
 }
 
@@ -3062,16 +3070,15 @@ button.cat-word-mini:hover {
   transform: translateY(-50%);
 }
 
-.timeline-list.is-card-scrubbing .timeline-axis-handle,
-.timeline-list.is-card-focused .timeline-axis-handle {
+.timeline-list.is-card-scrubbing .timeline-axis-handle {
   top: clamp(5px, var(--axis-handle-y, var(--day-progress, 0%)), calc(100% - 8px));
 }
 
 .timeline-day {
   position: relative;
   display: grid;
-  grid-template-columns: 116px minmax(0, 1fr);
-  gap: 38px;
+  grid-template-columns: var(--timeline-date-col) minmax(0, 1fr);
+  gap: var(--timeline-day-gap);
   min-height: 112px;
   padding-top: 0;
   border-top: 0;
@@ -8142,8 +8149,10 @@ button.detail-step:hover {
   }
 
   .timeline-day {
-    grid-template-columns: 58px minmax(0, 1fr);
-    gap: 18px;
+    --timeline-date-col: 58px;
+    --timeline-day-gap: 18px;
+    --timeline-time-label-w: 42px;
+    --timeline-time-axis-gap: 4px;
     min-height: 96px;
   }
 
@@ -8158,9 +8167,9 @@ button.detail-step:hover {
   }
 
   .timeline-time-label {
-    position: static;
-    justify-content: flex-start;
-    padding-top: 0;
+    position: absolute;
+    justify-content: flex-end;
+    padding-top: 12px;
   }
 
   .timeline-node {

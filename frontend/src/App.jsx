@@ -824,11 +824,12 @@ function lifeCardAgeNotice(card, anchorDate = today()) {
   };
 }
 
-function dayProgressPercent(date) {
-  if (date < today()) return 100;
-  if (date > today()) return 0;
-  const now = new Date();
-  const shiftedMinutes = ((now.getHours() - dayRolloverHour + 24) % 24) * 60 + now.getMinutes();
+function dayProgressPercent(date, nowValue = new Date()) {
+  const nowDate = nowValue instanceof Date ? nowValue : new Date(nowValue);
+  const currentDate = businessDate(nowDate);
+  if (date < currentDate) return 100;
+  if (date > currentDate) return 0;
+  const shiftedMinutes = ((nowDate.getHours() - dayRolloverHour + 24) % 24) * 60 + nowDate.getMinutes();
   return Math.round((shiftedMinutes / 1440) * 100);
 }
 
@@ -2479,6 +2480,7 @@ export function App() {
               data={data}
               profiles={profiles}
               currentUser={currentUser}
+              now={now}
               selectedDate={selectedDate}
               chooseDate={chooseDate}
               composerText={composerText}
@@ -2674,6 +2676,7 @@ function Dashboard(props) {
     data,
     profiles,
     currentUser,
+    now,
     selectedDate,
     chooseDate,
     composerText,
@@ -2741,6 +2744,7 @@ function Dashboard(props) {
         cards={data.scheduleItemCards || []}
         profiles={profiles}
         currentUser={currentUser}
+        now={now}
         selectedDate={selectedDate}
         filter={filter}
         setFilter={setFilter}
@@ -3478,14 +3482,15 @@ function MonthPage({ data, selectedDate, chooseDate, setPage }) {
   );
 }
 
-function LifeCardTimeline({ cards, profiles, currentUser, selectedDate, filter, setFilter, timelineScope = "today", setTimelineScope, expanded, setExpanded, toggleCard, archiveCard, toggleStep, toggleTimer, moveCardsDate, archiveCards, setCardPriority, setEditingCard, openDetail, chooseDate, reorderCards }) {
+function LifeCardTimeline({ cards, profiles, currentUser, now, selectedDate, filter, setFilter, timelineScope = "today", setTimelineScope, expanded, setExpanded, toggleCard, archiveCard, toggleStep, toggleTimer, moveCardsDate, archiveCards, setCardPriority, setEditingCard, openDetail, chooseDate, reorderCards }) {
   const [isScrollDragging, setIsScrollDragging] = useState(false);
   const [isCardScrubbing, setIsCardScrubbing] = useState(false);
   const [rolloverBusy, setRolloverBusy] = useState(false);
   const [scrubTargetId, setScrubTargetId] = useState("");
   const [axisFocusId, setAxisFocusId] = useState("");
   const [compactDates, setCompactDates] = useState(() => new Set());
-  const [axisHandleY, setAxisHandleY] = useState(`${dayProgressPercent(selectedDate)}%`);
+  const liveAxisPercent = `${dayProgressPercent(selectedDate, now)}%`;
+  const [axisHandleY, setAxisHandleY] = useState(liveAxisPercent);
   const listRef = useRef(null);
   const cardRefs = useRef(new Map());
   const scrubFrame = useRef(0);
@@ -3593,8 +3598,8 @@ function LifeCardTimeline({ cards, profiles, currentUser, selectedDate, filter, 
     if (scrubClearTimer.current) window.clearTimeout(scrubClearTimer.current);
   }, []);
   useEffect(() => {
-    if (!dragState.current.active) setAxisHandleY(`${dayProgressPercent(selectedDate)}%`);
-  }, [selectedDate]);
+    if (!dragState.current.active) setAxisHandleY(liveAxisPercent);
+  }, [liveAxisPercent]);
   useEffect(() => {
     if (axisFocusId && !visibleCards.some((card) => card.id === axisFocusId)) setAxisFocusId("");
   }, [axisFocusId, visibleCards]);
@@ -3604,7 +3609,7 @@ function LifeCardTimeline({ cards, profiles, currentUser, selectedDate, filter, 
   }, [filter, selectedDate, timelineScope, updateOrderPreview]);
   const axisPercentFromPointer = (event) => {
     const rect = event.currentTarget.getBoundingClientRect();
-    if (!rect.height) return dayProgressPercent(selectedDate);
+    if (!rect.height) return dayProgressPercent(selectedDate, now);
     return Math.max(3, Math.min(97, ((event.clientY - rect.top) / rect.height) * 100));
   };
   const centerCardNearPointer = (clientY, force = false) => {
@@ -3790,6 +3795,7 @@ function LifeCardTimeline({ cards, profiles, currentUser, selectedDate, filter, 
       setScrubTargetId("");
     }
     dragState.current = { ...drag, active: false, kind: "", pointerId: null, targetId: "" };
+    setAxisHandleY(liveAxisPercent);
   };
   const stopDragClick = (event) => {
     if (!dragState.current.blockClick) return;
@@ -3802,7 +3808,7 @@ function LifeCardTimeline({ cards, profiles, currentUser, selectedDate, filter, 
     setScrubTargetId("");
     setIsCardScrubbing(false);
     if (date === todayKey) {
-      setAxisHandleY(`${dayProgressPercent(date)}%`);
+      setAxisHandleY(`${dayProgressPercent(date, now)}%`);
       listRef.current?.scrollTo({ top: 0, behavior: "smooth" });
     }
     chooseDate?.(date);
@@ -3998,7 +4004,7 @@ function LifeCardTimeline({ cards, profiles, currentUser, selectedDate, filter, 
       <div
         ref={listRef}
         className={cx("timeline-list", isScrollDragging && "is-dragging", isCardScrubbing && "is-card-scrubbing", isFocusMode && "is-card-focused")}
-        style={{ "--day-progress": `${dayProgressPercent(selectedDate)}%`, "--axis-handle-y": axisHandleY }}
+        style={{ "--day-progress": liveAxisPercent, "--axis-handle-y": axisHandleY }}
         onPointerDown={startDragScroll}
         onPointerMove={dragScroll}
         onPointerUp={endDragScroll}
