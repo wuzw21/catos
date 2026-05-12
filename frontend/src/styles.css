@@ -1562,19 +1562,43 @@ button.cat-word-mini:hover {
 }
 
 .route-owner-quick button.is-secret {
-  gap: 4px;
+  gap: 5px;
+  position: relative;
+  border-color: rgba(219, 67, 129, 0.14);
+  background: rgba(255, 246, 250, 0.68);
   color: var(--pink-deep);
 }
 
-.route-owner-quick button.is-secret svg {
+.secret-icon-stack {
+  position: relative;
+  display: inline-grid;
+  width: 15px;
+  height: 15px;
+  place-items: center;
+  flex: 0 0 auto;
+}
+
+.secret-icon-stack svg:first-child {
   width: 12px;
   height: 12px;
 }
 
+.secret-icon-stack svg:last-child {
+  position: absolute;
+  top: -4px;
+  right: -5px;
+  width: 8px;
+  height: 8px;
+  color: #ff9ac4;
+  stroke-width: 2.35;
+}
+
 .route-owner-quick button.is-secret.is-active {
-  border-color: rgba(219, 67, 129, 0.22);
-  background: rgba(255, 226, 239, 0.94);
+  border-color: rgba(219, 67, 129, 0.26);
+  background:
+    linear-gradient(135deg, rgba(255, 226, 239, 0.97), rgba(255, 245, 195, 0.88));
   color: var(--pink-deep);
+  box-shadow: 0 8px 18px rgba(219, 67, 129, 0.11);
 }
 
 .confirm-items-fold {
@@ -3396,8 +3420,52 @@ button.cat-word-mini:hover {
 }
 
 .day-cards {
+  grid-column: 2;
   gap: 12px;
-  padding-top: 36px;
+  padding-top: 2px;
+}
+
+.timeline-day-header {
+  display: inline-flex;
+  width: max-content;
+  max-width: 100%;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 9px;
+  border: 1px solid rgba(46, 38, 48, 0.06);
+  border-radius: 999px;
+  background: rgba(255, 253, 249, 0.82);
+  color: rgba(46, 38, 48, 0.58);
+  box-shadow: 0 6px 16px rgba(68, 46, 58, 0.055);
+  cursor: pointer;
+  transition: color 160ms ease, background 160ms ease, border-color 160ms ease, transform 160ms ease;
+}
+
+.timeline-day-header svg {
+  width: 13px;
+  height: 13px;
+}
+
+.timeline-day-header strong,
+.timeline-day-header span {
+  font-size: 0.72rem;
+  font-weight: 950;
+  line-height: 1;
+  letter-spacing: 0;
+  white-space: nowrap;
+}
+
+.timeline-day-header span {
+  color: var(--pink-deep);
+}
+
+.timeline-day-header:hover,
+.timeline-day-header:focus-visible,
+.timeline-day.is-selected .timeline-day-header {
+  border-color: rgba(255, 111, 168, 0.16);
+  background: rgba(255, 246, 250, 0.94);
+  color: var(--ink);
+  transform: translateY(-1px);
 }
 
 .timeline-time-group {
@@ -3530,7 +3598,7 @@ button.cat-word-mini:hover {
   height: 15px;
 }
 
-.timeline-list.is-card-focused .timeline-day.has-scrub-target .day-label,
+.timeline-list.is-card-focused .timeline-day.has-scrub-target .timeline-day-header,
 .timeline-list.is-card-focused .timeline-card-slot.is-scrub-target {
   visibility: visible;
   opacity: 1;
@@ -3696,60 +3764,6 @@ button.cat-word-mini:hover {
 
 .timeline-day.has-high .timeline-node {
   background: transparent;
-}
-
-.day-label {
-  position: sticky;
-  top: 94px;
-  align-self: start;
-  display: grid;
-  justify-items: end;
-  gap: 3px;
-  min-width: 96px;
-  padding: 5px 0;
-  border: 0;
-  background: transparent;
-  color: inherit;
-  text-align: right;
-  cursor: pointer;
-  box-shadow: none;
-  transition: opacity 160ms ease, transform 160ms ease;
-}
-
-.day-label strong {
-  color: var(--pink-deep);
-  font-size: 0.98rem;
-  line-height: 1;
-  letter-spacing: 0;
-  transition: color 160ms ease;
-}
-
-.day-label:hover,
-.timeline-day.is-selected .day-label {
-  transform: translateY(-1px);
-}
-
-.day-label:hover strong,
-.timeline-day.is-selected .day-label strong {
-  color: var(--ink);
-}
-
-.timeline-day.is-today .day-label {
-  justify-self: end;
-  min-width: 96px;
-}
-
-.timeline-day.is-today .day-label strong {
-  color: var(--pink-deep);
-  font-size: 1.04rem;
-}
-
-.timeline-day.is-selected .day-label::after {
-  content: "";
-  width: 18px;
-  height: 3px;
-  border-radius: 999px;
-  background: rgba(255, 111, 168, 0.42);
 }
 
 .life-card {
@@ -4328,14 +4342,47 @@ button.cat-word-mini:hover {
 }
 
 .card-meta .secret-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
   min-height: 24px;
-  padding: 0 8px;
+  padding: 0 9px 0 7px;
   border-radius: 999px;
-  background: rgba(255, 226, 239, 0.86);
+  border: 1px solid rgba(219, 67, 129, 0.12);
+  background:
+    linear-gradient(135deg, rgba(255, 232, 243, 0.96), rgba(255, 247, 205, 0.88));
   color: var(--pink-deep);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.68);
+}
+
+.secret-pill-icons {
+  position: relative;
+  display: inline-grid;
+  width: 14px;
+  height: 14px;
+  place-items: center;
+  flex: 0 0 auto;
+}
+
+.secret-pill-icons svg:first-child {
+  width: 12px;
+  height: 12px;
+}
+
+.secret-pill-icons svg:last-child {
+  position: absolute;
+  top: -4px;
+  right: -4px;
+  width: 8px;
+  height: 8px;
+  color: #ff9ac4;
+  stroke-width: 2.4;
 }
 
 .life-card.is-private {
+  border-color: rgba(219, 67, 129, 0.12);
+  background:
+    linear-gradient(135deg, rgba(255, 252, 253, 0.98), rgba(255, 248, 235, 0.94));
   box-shadow:
     inset 0 0 0 1px rgba(219, 67, 129, 0.13),
     0 12px 32px rgba(68, 46, 58, 0.08);
@@ -7694,20 +7741,47 @@ button.home-focus-note:hover {
   gap: 10px;
   align-items: center;
   min-width: 0;
-  padding: 10px 11px;
-  border: 1px solid rgba(219, 67, 129, 0.13);
-  border-radius: 14px;
-  background: rgba(255, 246, 250, 0.58);
+  padding: 11px 12px;
+  border: 1px solid rgba(219, 67, 129, 0.14);
+  border-radius: 16px;
+  background:
+    linear-gradient(135deg, rgba(255, 250, 252, 0.9), rgba(255, 248, 224, 0.52));
   color: var(--ink);
   cursor: pointer;
   text-align: left;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.72);
+  transition: border-color 160ms ease, background 160ms ease, box-shadow 160ms ease, transform 160ms ease;
 }
 
-.secret-toggle > svg {
-  width: 16px;
-  height: 16px;
+.secret-toggle:hover {
+  transform: translateY(-1px);
+}
+
+.secret-toggle-icon {
+  position: relative;
+  display: inline-grid;
+  width: 30px;
+  height: 30px;
+  place-items: center;
   flex: 0 0 auto;
+  border-radius: 999px;
+  background: rgba(255, 226, 239, 0.72);
   color: var(--pink-deep);
+}
+
+.secret-toggle-icon svg:first-child {
+  width: 15px;
+  height: 15px;
+}
+
+.secret-toggle-icon svg:last-child {
+  position: absolute;
+  top: 4px;
+  right: 3px;
+  width: 9px;
+  height: 9px;
+  color: #ff9ac4;
+  stroke-width: 2.4;
 }
 
 .secret-toggle span {
@@ -7729,9 +7803,14 @@ button.home-focus-note:hover {
 }
 
 .secret-toggle.is-active {
-  border-color: rgba(219, 67, 129, 0.24);
-  background: rgba(255, 226, 239, 0.92);
-  box-shadow: 0 10px 24px rgba(219, 67, 129, 0.08);
+  border-color: rgba(219, 67, 129, 0.28);
+  background:
+    linear-gradient(135deg, rgba(255, 226, 239, 0.96), rgba(255, 245, 198, 0.82));
+  box-shadow: 0 10px 24px rgba(219, 67, 129, 0.1), inset 0 1px 0 rgba(255, 255, 255, 0.76);
+}
+
+.secret-toggle.is-active .secret-toggle-icon {
+  background: rgba(255, 255, 255, 0.66);
 }
 
 .edit-line-field {
@@ -9491,21 +9570,8 @@ button.detail-step:hover {
     display: none;
   }
 
-  .day-label {
-    position: static;
-    display: grid;
-    justify-self: stretch;
-    justify-items: end;
-    align-items: start;
-    gap: 5px;
-    min-width: 0;
-    padding: 7px 0;
-    text-align: right;
-  }
-
-  .timeline-day.is-today .day-label {
-    justify-self: stretch;
-    min-width: 0;
+  .timeline-day-header {
+    padding: 4px 8px;
   }
 
   .timeline-list {
@@ -11494,18 +11560,18 @@ button.detail-step:hover {
     min-height: 74px;
   }
 
-  .day-label {
-    gap: 3px;
-    padding: 5px 0;
-  }
-
-  .day-label strong {
-    font-size: 0.9rem;
-  }
-
   .day-cards {
     gap: 6px;
-    padding-top: 24px;
+    padding-top: 0;
+  }
+
+  .timeline-day-header {
+    padding: 3px 7px;
+  }
+
+  .timeline-day-header strong,
+  .timeline-day-header span {
+    font-size: 0.66rem;
   }
 
   .timeline-time-cards {
@@ -12050,8 +12116,9 @@ button.detail-step:hover {
     gap: 12px;
   }
 
-  .day-label strong {
-    font-size: 0.9rem;
+  .timeline-day-header strong,
+  .timeline-day-header span {
+    font-size: 0.62rem;
   }
 
   .brand-mark {

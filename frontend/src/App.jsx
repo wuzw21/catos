@@ -3856,7 +3856,10 @@ function Composer({ text, setText, saveRawCapture, profiles, currentUser, busy, 
                   type="button"
                   onClick={() => updateDraftSecret(!isSecretDraft)}
                 >
-                  <Icon name="lock" />
+                  <span className="secret-icon-stack">
+                    <Icon name="lock" />
+                    <Icon name="sparkle" />
+                  </span>
                   <span>小秘密</span>
                 </button>
                 {ownerOptions.map((option) => (
@@ -4808,10 +4811,12 @@ function LifeCardTimeline({ cards, captures = [], profiles, currentUser, now, se
           return (
             <section key={date} className={cx("timeline-day", date === selectedDate && "is-selected", date === todayKey && "is-today", isCompactDay && "is-compact-day", hasHigh && "has-high", hasScrubTarget && "has-scrub-target")}>
               <button className="timeline-node" type="button" onClick={() => selectDate(date)} aria-label={`选择 ${shortDate(date)}`} />
-              <button className="day-label" type="button" onClick={() => selectDate(date)} title={date}>
-                <strong>{shortDate(date)}</strong>
-              </button>
               <div className="day-cards">
+                <button className="timeline-day-header" type="button" onClick={() => selectDate(date)} title={date}>
+                  <Icon name="calendar" />
+                  <strong>{shortDate(date)}</strong>
+                  {date === todayKey ? <span>今天</span> : null}
+                </button>
                 {visibleGroups.map((group) => (
                   <section className={cx("timeline-time-group", `is-${group.slot.group}`)} key={group.key}>
                     <div className="timeline-time-label" aria-label={group.slot.label}>
@@ -5169,7 +5174,10 @@ function LifeCard({ card, profiles, currentUser, compact = false, toggleCard, ar
               <ThemeBadge className="type-pill" variant="soft" radius="full" size="1">{itemTypeLabels[itemType]}</ThemeBadge>
               {privateCard ? (
                 <ThemeBadge className="secret-pill" variant="soft" radius="full" size="1">
-                  <Icon name="lock" />
+                  <span className="secret-pill-icons">
+                    <Icon name="lock" />
+                    <Icon name="sparkle" />
+                  </span>
                   小秘密
                 </ThemeBadge>
               ) : null}
@@ -5815,10 +5823,13 @@ function CardEditor({ card, profiles, currentUser, onClose, onSave, onDelete, co
                     onClick={() => setSecretMode(!isSecret)}
                     aria-pressed={isSecret ? "true" : "false"}
                   >
-                    <Icon name="lock" />
+                    <span className="secret-toggle-icon">
+                      <Icon name="lock" />
+                      <Icon name="sparkle" />
+                    </span>
                     <span>
                       <strong>小秘密</strong>
-                      <em>{isSecret ? "只有我能看到这张生活卡" : "不准被对方看到"}</em>
+                      <em>{isSecret ? "已藏好，只有我能看" : "点一下藏起来"}</em>
                     </span>
                   </button>
                 ) : null}
