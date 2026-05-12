@@ -1673,6 +1673,10 @@ const detailBuilders = {
     const quickMoveLabel = card.date === today() ? "明天" : "本日";
     const primaryActionLabel = cardToggleLabel(card, { itemType, targetUserId, targetDone, isProxy, targetName });
     const primaryActionIcon = targetDone ? "undo" : targetStepCount ? "chevronRight" : "check";
+    const canEditSteps = !readOnly && !isDailyCheckin && !isArchived && ["schedule", "todo", "deadline"].includes(card.sourceType);
+    const stepEditAction = canEditSteps
+      ? { type: "edit-card", icon: "rows", label: steps.length ? "改步骤" : "加步骤", card, initialSection: "steps" }
+      : null;
     return {
       type: "lifeCard",
       label: itemTypeLabels[itemType],
@@ -1708,6 +1712,7 @@ const detailBuilders = {
       ]),
       steps,
       stepsLabel: isDailyCheckin ? "打卡项" : "步骤",
+      stepsAction: stepEditAction,
       sections: [],
       moreSections: lifeCardDetailSections(card, context),
       images: [],
@@ -1716,6 +1721,7 @@ const detailBuilders = {
         !readOnly && !isArchived && !card.isDraft && card.sourceType !== "checkin" && !isDailyCheckin ? { type: "timer-card", icon: timerActive ? "stop" : "clock", label: timerActive ? "停止" : "计时", card } : null,
         canQuickPatch ? { type: "set-card-priority", icon: "star", label: card.priority === "high" ? "普通" : "重要", card, priority: card.priority === "high" ? "normal" : "high" } : null,
         !isDailyCheckin && !readOnly && ["schedule", "todo"].includes(card.sourceType) ? { type: "archive-card", icon: isArchived ? "undo" : "archive", label: isArchived ? "恢复" : "归档", card } : null,
+        stepEditAction,
         !readOnly ? { type: "edit-card", icon: "edit", label: detail ? "改备注" : "加备注", card } : null,
       ].filter(Boolean),
       moreActions: [
@@ -2020,6 +2026,15 @@ function cardTimelineSlot(card) {
 }
 
 function captureTimelineSlot(capture) {
+  if (capture?.plannedAt || capture?.dueAt || capture?.timeLabel || capture?.segment) {
+    return cardTimelineSlot({
+      date: capture.date,
+      plannedAt: capture.plannedAt,
+      dueAt: capture.dueAt,
+      timeLabel: capture.timeLabel,
+      segment: capture.segment,
+    });
+  }
   const minutes = timestampTimeMinutes(capture?.createdAt);
   if (minutes !== null) return { group: "capture", label: minutesLabel(minutes), bucket: 1, minutes };
   return { group: "capture", label: "随手记", bucket: 3, minutes: 30 };
@@ -2102,10 +2117,15 @@ export function App() {
   const [timelineScope, setTimelineScope] = useState("today");
   const [expanded, setExpanded] = useState(() => new Set());
   const [editingCard, setEditingCard] = useState(null);
+  const [editingInitialSection, setEditingInitialSection] = useState("");
   const [detailRequest, setDetailRequest] = useState(null);
   const [confirmRequest, setConfirmRequest] = useState(null);
   const composingRef = useRef(false);
   const confirmResolverRef = useRef(null);
+  const openCardEditor = useCallback((card, section = "") => {
+    setEditingInitialSection(section || "");
+    setEditingCard(card);
+  }, []);
 
   const request = useCallback(async (path, options = {}) => {
     const response = await fetch(path, {
@@ -2378,7 +2398,7 @@ export function App() {
     }
     if (action.type === "edit-card" && action.card) {
       setDetailRequest(null);
-      setEditingCard(action.card);
+      openCardEditor(action.card, action.initialSection || "compose");
       return;
     }
     if (action.type === "open-detail" && action.detailType && action.payload) {
@@ -2491,6 +2511,7 @@ export function App() {
     const targetUserId = step.ownerId || currentUser.id;
     const isProxy = Boolean(targetUserId && targetUserId !== currentUser.id);
     const isCheckin = isCheckinSurfaceCard(card);
+    const wasCompleting = step.status !== "done";
     if (isProxy) {
       const targetName = actorName(targetUserId, profiles, "对方");
       const actionText = isCheckin
@@ -2522,7 +2543,8 @@ export function App() {
     if (result) {
       setData(result.state);
       refreshDetailCardFromState(result.state, card);
-      toast.success(step.status === "done" ? "已恢复步骤" : "已完成步骤");
+      const recordedCompletion = await maybeRecordCompletionCapture(card, result.state, wasCompleting);
+      if (!recordedCompletion) toast.success(step.status === "done" ? "已恢复步骤" : "已完成步骤");
     }
   }
 
@@ -2587,12 +2609,89 @@ export function App() {
       setData(result.state);
       refreshDetailCardFromState(result.state, card);
       if (wasCompleted) setFilter("all");
+      const recordedCompletion = await maybeRecordCompletionCapture(card, result.state, !wasCompleted);
+      if (recordedCompletion) return;
       toast.success(isDailyCheckinCard(card) || card.itemType === "checkin"
         ? (wasCompleted ? "已取消打卡" : "已打卡")
         : hasTargetSteps
           ? (wasCompleted ? "已恢复相关步骤" : "已完成下一步")
           : (wasCompleted ? "已恢复待办" : "已完成"));
     }
+  }
+
+  function canRecordCompletionCapture(card) {
+    return Boolean(
+      card &&
+      !card.isDraft &&
+      !card.readOnly &&
+      !isCheckinSurfaceCard(card) &&
+      ["schedule", "todo", "deadline"].includes(card.sourceType)
+    );
+  }
+
+  function findStateCard(state, card) {
+    return (state?.scheduleItemCards || []).find((item) =>
+      item.sourceType === card.sourceType &&
+      item.sourceId === card.sourceId
+    );
+  }
+
+  function completionCapturePayload(card) {
+    const title = lifeCardDisplayTitle(card, "一件事");
+    return {
+      date: card.date || selectedDate,
+      text: `完成了：${title}`,
+      mode: "save",
+      visibility: "shared",
+      rawKind: "completion",
+      rawFormat: "markdown",
+      analysisIntent: "completion",
+      sourceType: card.sourceType,
+      sourceId: card.sourceId,
+      sourceCardId: card.id,
+      sourceTitle: title,
+      sourceItemType: card.itemType || "",
+      plannedAt: card.plannedAt || "",
+      dueAt: card.dueAt || "",
+      segment: card.segment || "",
+      timeLabel: card.timeLabel || "",
+    };
+  }
+
+  async function maybeRecordCompletionCapture(card, state, wasCompleting) {
+    if (!wasCompleting || !canRecordCompletionCapture(card)) return false;
+    const completedCard = findStateCard(state, card);
+    if (!completedCard?.completion?.allDone && !completedCard?.archivedAt) return false;
+    const alreadyRecorded = (state?.captures || []).some((capture) =>
+      capture.rawKind === "completion" &&
+      capture.sourceCardId === card.id
+    );
+    if (alreadyRecorded) {
+      setDetailRequest(null);
+      setFilter("all");
+      toast.success("已完成，收进归档");
+      return true;
+    }
+    try {
+      const captureResult = await request("/api/couple/capture", {
+        method: "POST",
+        body: completionCapturePayload(completedCard || card),
+      });
+      if (captureResult) {
+        if ((completedCard?.date || card.date || selectedDate) === selectedDate) {
+          setData(captureResult.state);
+        } else {
+          await refreshState(selectedDate);
+        }
+        setDetailRequest(null);
+        setFilter("all");
+        toast.success("已完成，留在时间轴");
+        return true;
+      }
+    } catch (err) {
+      toast.error(errorMessage(err, "完成记录保存失败"));
+    }
+    return false;
   }
 
   async function saveLifeCardPatch(card, patch = {}, options = {}) {
@@ -2873,7 +2972,11 @@ export function App() {
           <CardEditor
             card={editingCard}
             profiles={profiles}
-            onClose={() => setEditingCard(null)}
+            initialSection={editingInitialSection}
+            onClose={() => {
+              setEditingCard(null);
+              setEditingInitialSection("");
+            }}
             onSave={saveCardEdit}
             onDelete={() => deleteCard(editingCard)}
             confirmLeave={() => askConfirmation({
@@ -4608,7 +4711,6 @@ function LifeCardTimeline({ cards, captures = [], profiles, currentUser, now, se
                               <TimelineCapture
                                 capture={capture}
                                 profiles={profiles}
-                                currentUser={currentUser}
                                 compact={isCompactCard}
                                 openDetail={openDetail}
                               />
@@ -4669,11 +4771,6 @@ function LifeCardTimeline({ cards, captures = [], profiles, currentUser, now, se
   );
 }
 
-function captureLooksCompleted(capture) {
-  const text = cleanCardText(capture?.text || "");
-  return /完成|做完|搞定|结束|打卡了|已处理|已提交|finished|done/i.test(text);
-}
-
 function captureTimelineTitle(capture) {
   const text = cleanStoryText(capture?.text || "") || cleanCardText(capture?.text || "");
   if (text) return shortText(text, 54);
@@ -4681,33 +4778,21 @@ function captureTimelineTitle(capture) {
   return count ? `${count} 张照片` : "随手记";
 }
 
-function TimelineCapture({ capture, profiles, currentUser, compact = false, openDetail }) {
+function TimelineCapture({ capture, profiles, compact = false, openDetail }) {
   const ownerIds = [capture.createdBy].filter(Boolean);
-  const time = captureTimelineSlot(capture).label;
-  const completed = captureLooksCompleted(capture);
-  const assets = capture.assets?.length || 0;
-  const ownerName = capture.createdBy === currentUser?.id
-    ? "我"
-    : userDisplayName(capture.createdBy, profiles, "对方");
+  const title = captureTimelineTitle(capture);
   return (
-    <article className={cx("timeline-capture", completed && "is-completion", compact && "is-compact")}>
+    <article className={cx("timeline-capture", compact && "is-compact")}>
       <button
         className="timeline-capture-open"
         type="button"
         onClick={() => openDetail?.("capture", capture)}
-        aria-label="打开随手记"
+        aria-label={`打开随手记 ${title}`}
       >
-        <span className="timeline-capture-icon">
-          <Icon name={completed ? "check" : assets ? "image" : "camera"} />
-        </span>
-        <span className="timeline-capture-copy">
-          <span className="timeline-capture-meta">
-            <b>{completed ? "完成记录" : "随手记"}</b>
-            <em>{[time, ownerName, assets ? `${assets} 张` : ""].filter(Boolean).join(" · ")}</em>
-          </span>
-          <strong>{captureTimelineTitle(capture)}</strong>
-        </span>
         <AvatarPair profiles={profiles} ids={ownerIds} />
+        <span className="timeline-capture-copy">
+          <strong>{title}</strong>
+        </span>
       </button>
     </article>
   );
@@ -5179,6 +5264,35 @@ function makeEditorStep(step = {}, index = 0) {
   };
 }
 
+const maxEditorSteps = 8;
+
+function cleanBulkStepLine(line) {
+  return String(line || "")
+    .replace(/^\s*(?:[-*+•·]|[0-9]+[.)、]|[一二三四五六七八九十]+[、.)]|☐|□|☑|✓|✔|✅)\s*/i, "")
+    .replace(/^\s*(?:todo|待办|步骤|step)\s*[:：]\s*/i, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function parseBulkSteps(text) {
+  const source = String(text || "").trim();
+  if (!source) return [];
+  const roughLines = source.includes("\n")
+    ? source.split(/\r?\n/)
+    : source.split(/[；;]/);
+  const seen = new Set();
+  return roughLines
+    .map(cleanBulkStepLine)
+    .filter(Boolean)
+    .filter((title) => {
+      const key = title.toLowerCase();
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    })
+    .slice(0, maxEditorSteps);
+}
+
 function buildCardEditorDefaults(card) {
   return {
     title: card.title || "",
@@ -5197,7 +5311,7 @@ function buildCardEditorDefaults(card) {
   };
 }
 
-function CardEditor({ card, profiles, onClose, onSave, onDelete, confirmLeave }) {
+function CardEditor({ card, profiles, onClose, onSave, onDelete, confirmLeave, initialSection = "" }) {
   const isDailyCheckin = card.title === "一起打卡！" || card.repeatRule === "daily@03:00";
   const defaultValues = useMemo(() => buildCardEditorDefaults(card), [card]);
   const {
@@ -5221,9 +5335,15 @@ function CardEditor({ card, profiles, onClose, onSave, onDelete, confirmLeave })
   const dragStepIdRef = useRef("");
   const stepListRef = useRef(null);
   const dragCleanupRef = useRef(null);
+  const [editorSection, setEditorSection] = useState(initialSection || (isDailyCheckin ? "steps" : "compose"));
+  const [stepBulkText, setStepBulkText] = useState("");
   useEffect(() => {
     reset(defaultValues);
   }, [defaultValues, reset]);
+  useEffect(() => {
+    setEditorSection(initialSection || (isDailyCheckin ? "steps" : "compose"));
+    setStepBulkText("");
+  }, [card.id, card.sourceId, initialSection, isDailyCheckin]);
   const moveStep = (id, direction) => {
     const steps = getValues("steps") || [];
     const index = steps.findIndex((step) => step.id === id);
@@ -5231,7 +5351,24 @@ function CardEditor({ card, profiles, onClose, onSave, onDelete, confirmLeave })
     if (index < 0 || nextIndex < 0 || nextIndex >= steps.length) return;
     move(index, nextIndex);
   };
-  const addStep = () => append(makeEditorStep({ title: "", estimateMin: "", ownerId: "" }, (getValues("steps") || []).length));
+  const appendEditorSteps = (draftSteps) => {
+    const current = getValues("steps") || [];
+    const slots = Math.max(0, maxEditorSteps - current.length);
+    if (!slots) {
+      toast.error(`最多 ${maxEditorSteps} 个步骤`);
+      return false;
+    }
+    const nextSteps = (Array.isArray(draftSteps) ? draftSteps : [draftSteps])
+      .slice(0, slots)
+      .map((step, offset) => makeEditorStep(step, current.length + offset));
+    append(nextSteps);
+    if ((Array.isArray(draftSteps) ? draftSteps.length : 1) > slots) {
+      toast.message(`只加入前 ${slots} 个步骤`);
+    }
+    setEditorSection("steps");
+    return true;
+  };
+  const addStep = () => appendEditorSteps({ title: "", estimateMin: "", ownerId: "" });
   const addStepTemplate = (templateId) => {
     const baseIndex = (getValues("steps") || []).length;
     const cardTitle = String(getValues("title") || "").trim();
@@ -5244,8 +5381,16 @@ function CardEditor({ card, profiles, onClose, onSave, onDelete, confirmLeave })
             { title: "收尾确认", estimateMin: 5, ownerId: "" },
           ]
         : [{ title: isDailyCheckin ? "完成打卡" : "先做 5 分钟", estimateMin: 5, ownerId: "" }];
-    append(templateSteps.map((step, offset) => makeEditorStep(step, baseIndex + offset)));
-    setEditorSection("steps");
+    appendEditorSteps(templateSteps.map((step, offset) => makeEditorStep(step, baseIndex + offset)));
+  };
+  const addBulkSteps = () => {
+    const titles = parseBulkSteps(stepBulkText);
+    if (!titles.length) {
+      toast.error("先粘贴几行清单");
+      return;
+    }
+    const ok = appendEditorSteps(titles.map((title) => ({ title, estimateMin: "", ownerId: "" })));
+    if (ok) setStepBulkText("");
   };
   const removeStep = (id) => {
     const index = (getValues("steps") || []).findIndex((step) => step.id === id);
@@ -5354,7 +5499,6 @@ function CardEditor({ card, profiles, onClose, onSave, onDelete, confirmLeave })
     { id: "", label: "共同" },
     ...profiles.map((profile) => ({ id: profile.id, label: profile.displayName })),
   ];
-  const [editorSection, setEditorSection] = useState(isDailyCheckin ? "steps" : "compose");
   const ownerLabel = ownerChoices.find((choice) => choice.id === form.ownerId)?.label || "共同";
   const priorityLabel = priorityOptions.find((choice) => choice.id === form.priority)?.label || "普通";
   const repeatLabel = repeatRuleLabel(form.repeatRule) || "一次";
@@ -5580,7 +5724,10 @@ function CardEditor({ card, profiles, onClose, onSave, onDelete, confirmLeave })
               <Tabs.Content className="edit-section-panel" value="steps">
                 <section className="step-editor" aria-label={isDailyCheckin ? "打卡项" : "步骤"}>
                   <div className="step-editor-head">
-                    <span>{isDailyCheckin ? "打卡项" : "步骤"}</span>
+                    <span>
+                      {isDailyCheckin ? "打卡项" : "步骤"}
+                      <em>{formSteps.length ? `${formSteps.length}/${maxEditorSteps}` : "还没有"}</em>
+                    </span>
                     <button type="button" onClick={addStep}>
                       <Icon name="plus" />
                       <em>添加</em>
@@ -5594,6 +5741,21 @@ function CardEditor({ card, profiles, onClose, onSave, onDelete, confirmLeave })
                       </button>
                     ))}
                   </div>
+                  {!isDailyCheckin ? (
+                    <div className="step-bulk-box">
+                      <textarea
+                        value={stepBulkText}
+                        onChange={(event) => setStepBulkText(event.target.value)}
+                        rows={3}
+                        placeholder={"粘贴清单，每行一项\n- 查资料\n- 写提纲\n- 收尾确认"}
+                        aria-label="批量添加步骤"
+                      />
+                      <button type="button" onClick={addBulkSteps} disabled={!parseBulkSteps(stepBulkText).length}>
+                        <Icon name="rows" />
+                        <span>拆成步骤</span>
+                      </button>
+                    </div>
+                  ) : null}
                   <div className="step-editor-list">
                     {formSteps.length ? (
                       <div className="step-editor-droppable" ref={stepListRef}>
@@ -5653,6 +5815,18 @@ function CardEditor({ card, profiles, onClose, onSave, onDelete, confirmLeave })
                                     ariaLabel={`${step.title || `第 ${index + 1} 步`} 负责人`}
                                   />
                                 </label>
+                              </div>
+                              <div className="step-owner-chips" aria-label={`${step.title || `第 ${index + 1} 步`} 快速负责人`}>
+                                {stepOwnerChoices.map((choice) => (
+                                  <button
+                                    key={choice.id || "shared"}
+                                    type="button"
+                                    className={cx((step.ownerId || "") === choice.id && "is-active")}
+                                    onClick={() => setValue(`steps.${index}.ownerId`, choice.id, { shouldDirty: true, shouldValidate: true })}
+                                  >
+                                    {choice.label}
+                                  </button>
+                                ))}
                               </div>
                             </div>
                             <div className="step-row-actions">
