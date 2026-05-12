@@ -8981,10 +8981,6 @@ button.detail-step:hover {
     text-align: right;
   }
 
-  .day-label span {
-    font-size: 0.66rem;
-  }
-
   .timeline-day.is-today .day-label {
     justify-self: stretch;
     min-width: 0;
@@ -10706,10 +10702,6 @@ button.detail-step:hover {
     font-size: 0.9rem;
   }
 
-  .day-label span {
-    font-size: 0.6rem;
-  }
-
   .day-cards {
     gap: 6px;
     padding-top: 24px;
@@ -11194,10 +11186,6 @@ button.detail-step:hover {
 
   .day-label strong {
     font-size: 0.9rem;
-  }
-
-  .day-label span {
-    font-size: 0.6rem;
   }
 
   .brand-mark {
