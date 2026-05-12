@@ -81,6 +81,8 @@ const editorStepSchema = z.object({
   ownerId: z.string().optional().default(""),
   estimateMin: z.coerce.number().min(0, "分钟不能小于 0").optional().default(0),
   status: z.enum(["todo", "done"]).optional().default("todo"),
+  inputType: z.string().optional().default(""),
+  valueByUser: z.record(z.string(), z.string()).optional().default({}),
   statusByUser: z.record(z.string(), z.enum(["todo", "done"])).optional().default({}),
   statusUpdatedBy: z.record(z.string(), z.string()).optional().default({}),
   statusUpdatedAt: z.record(z.string(), z.string()).optional().default({}),
@@ -1246,7 +1248,11 @@ function compactCheckinItemTitle(value) {
     .replace(/^完成(?:今日)?/, "")
     .replace(/^今日/, "")
     .trim();
+  if (/起床时间/.test(text)) return "起床";
   if (/体育锻炼|运动|锻炼/.test(text)) return "运动";
+  if (/最开心/.test(text)) return "最开心";
+  if (/贡献/.test(text)) return "贡献";
+  if (/珍贵.*照片|照片/.test(text)) return "照片";
   return shortText(text || value, 12);
 }
 
@@ -1256,8 +1262,23 @@ function dailyCheckinItems(card) {
     .filter(Boolean);
 }
 
+function isTimeCheckinStep(step) {
+  return step?.inputType === "time" || cleanCardText(step?.title || "") === "起床时间";
+}
+
+function checkinStepInputType(step) {
+  const title = cleanCardText(step?.title || "");
+  if (isTimeCheckinStep(step)) return "time";
+  if (step?.inputType === "photo" || /珍贵.*照片|照片/.test(title)) return "photo";
+  if (step?.inputType === "text" || /最开心|贡献/.test(title)) return "text";
+  return cleanCardText(step?.inputType || "");
+}
+
 function dailyCheckinStepStatus(step, card, userId) {
   if (!step || !userId) return "todo";
+  const inputType = checkinStepInputType(step);
+  if (inputType === "time") return cleanCardText(step.valueByUser?.[userId] || "") ? "done" : "todo";
+  if (["text", "photo"].includes(inputType) && cleanCardText(step.valueByUser?.[userId] || "")) return "done";
   if (step.statusByUser?.[userId] === "done" || step.statusByUser?.[userId] === "todo") return step.statusByUser[userId];
   return isCardDoneForUser(card, userId) ? "done" : "todo";
 }
@@ -1271,12 +1292,16 @@ function dailyCheckinRows(card, profiles, currentUser = null) {
   const rawSteps = (Array.isArray(card?.steps) ? card.steps : []).filter((step) => cleanCardText(step?.title || ""));
   const steps = rawSteps.length ? rawSteps : [{ id: "daily-checkin-fallback", title: "完成打卡" }];
   return steps.map((step, index) => {
+    const inputType = checkinStepInputType(step);
     const people = participants.map((id) => {
       const profile = profiles.find((item) => item.id === id);
+      const value = ["time", "text", "photo"].includes(inputType) ? cleanCardText(step.valueByUser?.[id] || "") : "";
       const done = dailyCheckinStepDone(step, card, id);
       return {
         id,
         done,
+        value,
+        inputType,
         label: profile?.displayName || ownerLabel(id, currentUser),
         shortLabel: participantShortName(id, profiles, currentUser, profile?.displayName || "对方"),
         color: profileColor(profiles, id, id === currentUser?.id ? avatarColor(currentUser) : "#24b99a"),
@@ -1286,6 +1311,7 @@ function dailyCheckinRows(card, profiles, currentUser = null) {
       id: step.id || `daily-checkin-step-${index + 1}`,
       title: compactCheckinItemTitle(step.title || ""),
       fullTitle: cleanCardText(step.title || ""),
+      inputType,
       allDone: people.length ? people.every((person) => person.done) : false,
       people,
     };
@@ -1335,7 +1361,12 @@ function dailyCheckinPeopleProgressText(card, profiles, currentUser = null) {
 
 function dailyCheckinRowStatusText(row) {
   return (row?.people || [])
-    .map((person) => `${person.label}${person.done ? "已打卡" : "未打卡"}`)
+    .map((person) => {
+      if (row?.inputType === "time") return `${person.label}${person.value ? ` ${person.value}` : "未记录"}`;
+      if (row?.inputType === "photo") return `${person.label}${person.done ? "已传照片" : "未传照片"}`;
+      if (row?.inputType === "text") return `${person.label}${person.done ? "已写" : "未写"}`;
+      return `${person.label}${person.done ? "已打卡" : "未打卡"}`;
+    })
     .join(" · ");
 }
 
@@ -1645,8 +1676,9 @@ const detailBuilders = {
       .map((step) => {
         const ownerIds = stepOwnerIds(step, participants);
         const checkinRow = isDailyCheckin ? checkinRowsById.get(step.id || step.title) : null;
+        const isTimeRow = Boolean(isDailyCheckin && (checkinRow?.inputType === "time" || isTimeCheckinStep(step)));
         const state = isDailyCheckin
-          ? (checkinRow?.people.length ? dailyCheckinRowStatusText(checkinRow) : "打卡项")
+          ? (checkinRow?.people.length ? dailyCheckinRowStatusText({ ...checkinRow, inputType: isTimeRow ? "time" : checkinRow.inputType }) : "打卡项")
           : stepStateLabel(step, profiles, participants, currentUser);
         const owner = isDailyCheckin ? "" : stepOwnerLabel(step, profiles, participants, currentUser);
         const regularPeople = !isDailyCheckin && card.sourceType !== "checkin"
@@ -1676,7 +1708,8 @@ const detailBuilders = {
           people: isDailyCheckin && checkinRow
             ? checkinRow.people.map((person) => ({
                 ...person,
-                action: !readOnly
+                inputType: isTimeRow ? "time" : checkinRow.inputType,
+                action: !readOnly && !isTimeRow
                   ? {
                       type: "toggle-step",
                       card,
@@ -1684,6 +1717,8 @@ const detailBuilders = {
                         id: step.id || step.title,
                         title: cleanCardText(step.title || ""),
                         ownerId: person.id,
+                        inputType: isTimeRow ? "time" : checkinRow.inputType || "",
+                        value: person.value || "",
                         status: person.done ? "done" : "todo",
                       },
                     }
@@ -2579,15 +2614,23 @@ export function App() {
     const targetUserId = step.ownerId || currentUser.id;
     const isProxy = Boolean(targetUserId && targetUserId !== currentUser.id);
     const isCheckin = isCheckinSurfaceCard(card);
-    const wasCompleting = step.status !== "done";
+    const isTimeStep = isTimeCheckinStep(step);
+    const hasStepValue = Object.prototype.hasOwnProperty.call(step, "value");
+    const wasCompleting = isTimeStep ? step.status !== "done" && Boolean(step.value) : step.status !== "done";
     if (isProxy) {
       const targetName = actorName(targetUserId, profiles, "对方");
-      const actionText = isCheckin
+      const actionText = isTimeStep
+        ? step.value ? "记录起床时间" : "清空起床时间"
+        : isCheckin
         ? (step.status === "done" ? "取消打卡" : "打卡")
         : (step.status === "done" ? "取消完成" : "完成");
       const accepted = await askConfirmation({
-        title: isCheckin ? `帮 ${targetName} ${actionText}？` : `帮 ${targetName} ${actionText}这一步？`,
-        body: isCheckin
+        title: isTimeStep
+          ? `帮 ${targetName} ${actionText}？`
+          : isCheckin ? `帮 ${targetName} ${actionText}？` : `帮 ${targetName} ${actionText}这一步？`,
+        body: isTimeStep
+          ? `这会把 ${targetName} 的起床时间记为由 ${currentUser?.displayName || "你"} 操作。`
+          : isCheckin
           ? `这会把 ${targetName} 的「${step.title || "打卡项"}」记为由 ${currentUser?.displayName || "你"} 操作。`
           : `这会把 ${targetName} 的这一步记为由 ${currentUser?.displayName || "你"} 操作。`,
         confirmLabel: `确认${actionText}`,
@@ -2605,6 +2648,8 @@ export function App() {
         stepId: step.id,
         targetUserId,
         proxyConfirmed: isProxy,
+        status: step.status,
+        value: hasStepValue ? step.value : undefined,
         date: card.date,
       },
     });
@@ -2612,7 +2657,9 @@ export function App() {
       setData(result.state);
       refreshDetailCardFromState(result.state, card);
       const recordedCompletion = await maybeRecordCompletionCapture(card, result.state, wasCompleting);
-      if (!recordedCompletion) toast.success(step.status === "done" ? "已恢复步骤" : "已完成步骤");
+      if (!recordedCompletion) {
+        toast.success(isTimeStep ? (step.value ? "已记录起床时间" : "已清空起床时间") : step.status === "done" ? "已恢复步骤" : "已完成步骤");
+      }
     }
   }
 
@@ -3047,6 +3094,7 @@ export function App() {
               openDetail={openDetail}
               reorderCards={reorderCards}
               composingRef={composingRef}
+              openDailySummary={() => navigate("daily-summary")}
             />
           )}
           {page === "month" && (
@@ -3249,6 +3297,7 @@ function Dashboard(props) {
     openDetail,
     reorderCards,
     composingRef,
+    openDailySummary,
   } = props;
   const allCards = data.scheduleItemCards || [];
   const checkinCards = useMemo(() => sortCards(allCards
@@ -3295,6 +3344,7 @@ function Dashboard(props) {
         setCardPriority={setCardPriority}
         openDetail={openDetail}
         setEditingCard={setEditingCard}
+        openDailySummary={openDailySummary}
       />
       <LifeCardTimeline
         cards={allCards}
@@ -3321,12 +3371,13 @@ function Dashboard(props) {
         openDetail={openDetail}
         reorderCards={reorderCards}
         chooseDate={chooseDate}
+        openDailySummary={openDailySummary}
       />
     </section>
   );
 }
 
-function CheckinLane({ cards = [], profiles, currentUser, selectedDate, toggleCard, archiveCard, toggleStep, toggleTimer, setCardPriority, openDetail, setEditingCard }) {
+function CheckinLane({ cards = [], profiles, currentUser, selectedDate, toggleCard, archiveCard, toggleStep, toggleTimer, setCardPriority, openDetail, setEditingCard, openDailySummary }) {
   const storageKey = `peos:checkin-lane-collapsed-v2:${currentUser?.id || "guest"}`;
   const [collapsed, setCollapsed] = useState(() => {
     try {
@@ -3405,6 +3456,7 @@ function CheckinLane({ cards = [], profiles, currentUser, selectedDate, toggleCa
                 setCardPriority={setCardPriority}
                 setEditingCard={setEditingCard}
                 openDetail={openDetail}
+                openDailySummary={openDailySummary}
               />
             </div>
           );
@@ -4010,6 +4062,72 @@ function MonthCellSignals({ tags }) {
   );
 }
 
+function monthAgendaTimeLabel(card) {
+  const planned = formatCardPlannedLabel(card);
+  if (planned) return planned;
+  const due = formatCardDueLabel(card).replace(/^截止\s*/, "");
+  if (due) return due;
+  const label = primaryTimeLabel(card);
+  if (/^\d{1,2}:\d{2}$/.test(label)) return label;
+  if (["上午", "中午", "下午", "晚上", "全天"].includes(label)) return label;
+  return "全天";
+}
+
+function monthAgendaOwnerIds(card, profiles, currentUser) {
+  return cardParticipantIds(card, profiles, currentUser).slice(0, 2);
+}
+
+function MonthCellAgenda({ rows, hiddenCount }) {
+  if (!rows.length) return null;
+  return (
+    <span className="month-cell-agenda" aria-hidden="true">
+      {rows.map((row) => (
+        <span
+          className={cx("month-agenda-time", row.done && "is-done", row.ownerIds.length > 1 && "is-shared")}
+          key={row.id}
+          title={`${row.time} ${row.title}`}
+          style={{ "--owner-one": row.colors[0], "--owner-two": row.colors[1] || row.colors[0] }}
+        >
+          <span className="month-agenda-owners">
+            {row.ownerIds.map((id, index) => (
+              <span key={`${row.id}-${id}`} style={{ background: row.colors[index] }} />
+            ))}
+          </span>
+          <b>{row.time}</b>
+        </span>
+      ))}
+      {hiddenCount > 0 ? <span className="month-agenda-more">+{hiddenCount}</span> : null}
+    </span>
+  );
+}
+
+function buildMonthAgendaByDate(cards = [], profiles = [], currentUser = null) {
+  const grouped = new Map();
+  sortCards(cards)
+    .filter((card) => !isDefaultPromptCard(card))
+    .filter((card) => !isCheckinSurfaceCard(card))
+    .filter((card) => card.sourceType !== "insight")
+    .filter((card) => !isArchivedCard(card))
+    .forEach((card) => {
+      const date = String(card.date || "").slice(0, 10);
+      if (!date) return;
+      const ownerIds = monthAgendaOwnerIds(card, profiles, currentUser);
+      const fallbackOwnerIds = ownerIds.length ? ownerIds : profiles.slice(0, 1).map((profile) => profile.id);
+      const row = {
+        id: card.id,
+        title: lifeCardDisplayTitle(card, "生活卡"),
+        time: monthAgendaTimeLabel(card),
+        ownerIds: fallbackOwnerIds,
+        colors: fallbackOwnerIds.map((id, index) => profileColor(profiles, id, index === 0 ? "#ff6fa8" : "#8a6cff")),
+        done: isCompletedCard(card),
+      };
+      const rows = grouped.get(date) || [];
+      rows.push(row);
+      grouped.set(date, rows);
+    });
+  return grouped;
+}
+
 function CalendarContextButton({ context, onOpen }) {
   const marks = context?.marks || [];
   const leading = marks[0] || null;
@@ -4067,7 +4185,7 @@ function CalendarPopover({ context, onClose }) {
   );
 }
 
-function MonthPicker({ data, selectedDate, chooseDate, open, setOpen }) {
+function MonthPicker({ data, selectedDate, chooseDate, open, setOpen, agendaByDate = new Map() }) {
   const summary = data.monthSummary || { month: selectedDate.slice(0, 7), days: [] };
   const gridDays = useMemo(() => {
     const days = summary.days || [];
@@ -4094,13 +4212,19 @@ function MonthPicker({ data, selectedDate, chooseDate, open, setOpen }) {
             const cardCount = Number(day.eventCount || 0) + Number(day.todoCount || 0);
             const storyTitle = cleanStoryText(day.summaryTitle) || (day.id === selectedDate && data.dailySummary ? storyDisplayTitle(data.dailySummary, day.id) : "");
             const signal = monthCellSignal(day, storyTitle);
+            const agendaRows = agendaByDate.get(day.id) || [];
+            const visibleAgendaRows = agendaRows.slice(0, 2);
+            const hiddenAgendaCount = Math.max(0, agendaRows.length - visibleAgendaRows.length);
             return (
               <button
                 key={day.id}
-                className={cx("month-cell", day.id === selectedDate && "is-active", day.isToday && "is-today", day.summaryGenerated && "has-story", cardCount && "has-card", day.calendarMarks?.length && "has-calendar")}
+                className={cx("month-cell", day.id === selectedDate && "is-active", day.isToday && "is-today", day.summaryGenerated && "has-story", cardCount && "has-card", agendaRows.length && "has-agenda", day.calendarMarks?.length && "has-calendar")}
                 type="button"
                 onClick={() => openDay(day)}
-                aria-label={signal.ariaLabel}
+                aria-label={[
+                  signal.ariaLabel,
+                  agendaRows.length ? `安排：${agendaRows.map((row) => `${row.time}${row.title}`).join("，")}` : "",
+                ].filter(Boolean).join("，")}
               >
                 <span className="month-cell-top">
                   <b>{day.dayNumber}</b>
@@ -4108,8 +4232,12 @@ function MonthPicker({ data, selectedDate, chooseDate, open, setOpen }) {
                     <Icon name={signal.primary.icon} />
                   </span>
                 </span>
-                {storyTitle ? <em className="month-story-title">{storyTitle}</em> : null}
-                <MonthCellSignals tags={signal.tags} />
+                {storyTitle && !agendaRows.length ? <em className="month-story-title">{storyTitle}</em> : null}
+                {agendaRows.length ? (
+                  <MonthCellAgenda rows={visibleAgendaRows} hiddenCount={hiddenAgendaCount} />
+                ) : (
+                  <MonthCellSignals tags={signal.tags} />
+                )}
               </button>
             );
           })}
@@ -4130,6 +4258,7 @@ function MonthPage({ data, selectedDate, chooseDate, setPage }) {
     return sortCards((data.scheduleItemCards || [])
       .filter((card) => card.date === selectedDate));
   }, [data.scheduleItemCards, selectedDate]);
+  const monthAgendaByDate = useMemo(() => buildMonthAgendaByDate(data.scheduleItemCards || [], data.profiles || [], data.currentUser), [data.scheduleItemCards, data.profiles, data.currentUser]);
   const selectedSummary = data.dailySummary?.date === selectedDate ? data.dailySummary : null;
   const selectedSummaryTitle = cleanStoryText(selectedDay?.summaryTitle) || (selectedSummary ? storyDisplayTitle(selectedSummary, selectedDate) : "");
   const selectedSummaryText = cleanStoryText(selectedSummary?.narrative || selectedSummary?.nextStep || "");
@@ -4149,7 +4278,7 @@ function MonthPage({ data, selectedDate, chooseDate, setPage }) {
         <IconButton icon="rows" label="回首页" onClick={() => setPage("dashboard")} />
       </div>
       <div className="month-layout">
-        <MonthPicker data={data} selectedDate={selectedDate} chooseDate={chooseDate} open={true} setOpen={() => {}} />
+        <MonthPicker data={data} selectedDate={selectedDate} chooseDate={chooseDate} open={true} setOpen={() => {}} agendaByDate={monthAgendaByDate} />
         <aside className="month-inspector">
           <div className="selected-day-head">
             <div>
@@ -4184,7 +4313,7 @@ function MonthPage({ data, selectedDate, chooseDate, setPage }) {
   );
 }
 
-function LifeCardTimeline({ cards, captures = [], profiles, currentUser, now, selectedDate, filter, setFilter, timelineScope = "today", setTimelineScope, expanded, setExpanded, toggleCard, archiveCard, toggleStep, toggleTimer, moveCardsDate, archiveCapture, archiveCards, setCardPriority, setEditingCard, openDetail, chooseDate, reorderCards }) {
+function LifeCardTimeline({ cards, captures = [], profiles, currentUser, now, selectedDate, filter, setFilter, timelineScope = "today", setTimelineScope, expanded, setExpanded, toggleCard, archiveCard, toggleStep, toggleTimer, moveCardsDate, archiveCapture, archiveCards, setCardPriority, setEditingCard, openDetail, chooseDate, reorderCards, openDailySummary }) {
   const [isScrollDragging, setIsScrollDragging] = useState(false);
   const [isCardScrubbing, setIsCardScrubbing] = useState(false);
   const [rolloverBusy, setRolloverBusy] = useState(false);
@@ -4870,6 +4999,7 @@ function LifeCardTimeline({ cards, captures = [], profiles, currentUser, now, se
                                 setCardPriority={setCardPriority}
                                 setEditingCard={setEditingCard}
                                 openDetail={openDetail}
+                                openDailySummary={openDailySummary}
                               />
                             )}
                           </div>
@@ -4957,7 +5087,7 @@ function TimelineCapture({ capture, profiles, compact = false, archiveCapture, o
   );
 }
 
-function LifeCard({ card, profiles, currentUser, compact = false, toggleCard, archiveCard, toggleStep, toggleTimer, setCardPriority, setEditingCard, openDetail }) {
+function LifeCard({ card, profiles, currentUser, compact = false, toggleCard, archiveCard, toggleStep, toggleTimer, setCardPriority, setEditingCard, openDetail, openDailySummary }) {
   if (isDefaultPromptCard(card)) return null;
   const itemType = card.itemType && itemTypeLabels[card.itemType] ? card.itemType : "thing";
   const participants = cardParticipantIds(card, profiles, currentUser);
@@ -5152,6 +5282,19 @@ function LifeCard({ card, profiles, currentUser, compact = false, toggleCard, ar
     }
     if (!readOnly && (!step.ownerId || step.ownerId === currentUser?.id || step.ownerId === completionTarget)) toggleStep?.(card, step);
   };
+  const updateCheckinTimeAction = (event, row, person) => {
+    event.stopPropagation();
+    if (readOnly) return;
+    const value = event.target.value;
+    toggleStep?.(card, {
+      id: row.id,
+      title: row.fullTitle || row.title,
+      ownerId: person.id,
+      status: value ? "done" : "todo",
+      inputType: "time",
+      value,
+    });
+  };
   const legacyCheckinProgressLabel = checkinPeople
     .map((person) => `${person.label}${person.done ? "已打卡" : "未打卡"}`)
     .join(" · ");
@@ -5208,6 +5351,49 @@ function LifeCard({ card, profiles, currentUser, compact = false, toggleCard, ar
                   {row.people.map((person) => {
                     const disabled = readOnly;
                     const stepStatus = person.done ? "done" : "todo";
+                    if (row.inputType === "time") {
+                      return (
+                        <label
+                          key={`${row.id}-${person.id}`}
+                          className={cx("checkin-time-person", person.done && "is-done", disabled && "is-disabled")}
+                          style={{ "--person-color": person.color }}
+                          title={person.value ? `${person.label} ${person.value}` : `${person.label} 未记录`}
+                          onClick={(event) => event.stopPropagation()}
+                          onPointerDown={(event) => event.stopPropagation()}
+                        >
+                          <span>{person.shortLabel || person.label}</span>
+                          <input
+                            type="time"
+                            value={person.value || ""}
+                            aria-label={`${person.label} ${row.fullTitle || row.title}`}
+                            disabled={disabled}
+                            onChange={(event) => updateCheckinTimeAction(event, row, person)}
+                          />
+                        </label>
+                      );
+                    }
+                    if (row.inputType === "text" || row.inputType === "photo") {
+                      const canFillDiary = !disabled && person.id === currentUser?.id && openDailySummary;
+                      const waitingLabel = row.inputType === "photo" ? "上传" : "填写";
+                      return (
+                        <button
+                          key={`${row.id}-${person.id}`}
+                          className={cx("checkin-person is-inline is-diary", person.done && "is-done")}
+                          style={{ "--person-color": person.color }}
+                          type="button"
+                          aria-label={person.done ? `${person.label}${row.inputType === "photo" ? "已上传照片" : "已填写"}` : canFillDiary ? `${waitingLabel}${row.fullTitle || row.title}` : `${person.label}未完成${row.fullTitle || row.title}`}
+                          title={person.done ? `${person.label}${row.inputType === "photo" ? "已上传照片" : "已填写"}` : canFillDiary ? `${waitingLabel}${row.fullTitle || row.title}` : `${person.label}未完成`}
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            if (canFillDiary) openDailySummary();
+                          }}
+                          disabled={!canFillDiary}
+                        >
+                          <span>{person.shortLabel || person.label}</span>
+                          <b aria-hidden="true"><Icon name={person.done ? "check" : row.inputType === "photo" ? "image" : "edit"} /></b>
+                        </button>
+                      );
+                    }
                     return (
                       <button
                         key={`${row.id}-${person.id}`}
@@ -5427,6 +5613,8 @@ function makeEditorStep(step = {}, index = 0) {
     estimateMin: step.estimateMin || "",
     status: step.status === "done" ? "done" : "todo",
     ownerId: step.ownerId || "",
+    inputType: step.inputType || "",
+    valueByUser: step.valueByUser || {},
     statusByUser: step.statusByUser || {},
     statusUpdatedBy: step.statusUpdatedBy || {},
     statusUpdatedAt: step.statusUpdatedAt || {},
@@ -5686,6 +5874,8 @@ function CardEditor({ card, profiles, currentUser, onClose, onSave, onDelete, co
           ownerId: step.ownerId,
           estimateMin: Number(step.estimateMin) || 0,
           status: step.status === "done" ? "done" : "todo",
+          inputType: step.inputType || "",
+          valueByUser: step.valueByUser || {},
           statusByUser: step.statusByUser || {},
           statusUpdatedBy: step.statusUpdatedBy || {},
           statusUpdatedAt: step.statusUpdatedAt || {},
@@ -6007,6 +6197,7 @@ function CardEditor({ card, profiles, currentUser, onClose, onSave, onDelete, co
                           >
                             <input type="hidden" {...register(`steps.${index}.id`)} />
                             <input type="hidden" {...register(`steps.${index}.status`)} />
+                            <input type="hidden" {...register(`steps.${index}.inputType`)} />
                             <button
                               className="step-drag"
                               type="button"
@@ -6354,9 +6545,13 @@ function DetailDrawer({ detail, profiles, onClose, onAction }) {
                           type="button"
                           onClick={() => person.action ? onAction(person.action) : null}
                           disabled={!person.action}
-                          title={`${person.label}${person.done ? "已打卡" : "未打卡"}`}
+                          title={person.inputType === "time"
+                            ? person.value ? `${person.label} ${person.value}` : `${person.label} 未记录`
+                            : person.value ? `${person.label} ${person.value}` : `${person.label}${person.done ? "已打卡" : "未打卡"}`}
                         >
-                          <span>{person.label}</span>
+                          <span>{person.inputType === "time"
+                            ? person.value ? `${person.label} ${person.value}` : `${person.label} 未记录`
+                            : person.value ? `${person.label} ${person.value}` : person.label}</span>
                           <Icon name={person.done ? "check" : "circle"} />
                         </button>
                       ))}
@@ -6687,8 +6882,10 @@ function StoryDayContext({ dayContext, calendarContext, className = "" }) {
 function DailySummaryPage({ data, profiles, currentUser, request, setData, selectedDate, chooseDate, openDetail }) {
   const [pulse, setPulse] = useState(() => data.diaryDay?.userDays?.[currentUser?.id] || {});
   const [refreshing, setRefreshing] = useState(false);
+  const [uploadingPhoto, setUploadingPhoto] = useState(false);
   const [refreshError, setRefreshError] = useState("");
   const [refreshMessage, setRefreshMessage] = useState("");
+  const preciousPhotoInputRef = useRef(null);
   const summary = data.dailySummary;
   const dayContext = summary?.dayContext || data.dayContext || null;
   const title = storyDisplayTitle(summary, selectedDate);
@@ -6830,12 +7027,52 @@ function DailySummaryPage({ data, profiles, currentUser, request, setData, selec
         smallAchievement: pulse.smallAchievement || "",
       },
     });
-    if (result) setData(result.state);
+    if (result) {
+      setData(result.state);
+      setPulse(result.state?.diaryDay?.userDays?.[currentUser?.id] || {});
+      toast.success("睡前打卡已保存");
+    }
+  }
+
+  async function choosePreciousPhoto(event) {
+    const file = event.target.files?.[0] || null;
+    if (!file) return;
+    if (!file.type.startsWith("image/")) {
+      toast.error("请选择图片");
+      return;
+    }
+    if (file.size > 5 * 1024 * 1024) {
+      toast.error(`${file.name} 超过 5MB`);
+      return;
+    }
+    setUploadingPhoto(true);
+    try {
+      const result = await request("/api/couple/diary/asset", {
+        method: "POST",
+        body: {
+          date: selectedDate,
+          name: file.name,
+          dataUrl: await readFileAsDataUrl(file),
+        },
+      });
+      if (result) {
+        setData(result.state);
+        setPulse(result.state?.diaryDay?.userDays?.[currentUser?.id] || result.diaryDay?.userDays?.[currentUser?.id] || {});
+        toast.success("珍贵照片已收好");
+      }
+    } catch (error) {
+      toast.error(errorMessage(error, "上传失败"));
+    } finally {
+      setUploadingPhoto(false);
+      if (preciousPhotoInputRef.current) preciousPhotoInputRef.current.value = "";
+    }
   }
 
   const generatedLabel = summary?.generatedAt ? compactDateTime(summary.generatedAt) : "";
   const visibleDiary = cleanStoryText(diary.text || narrative);
   const hasReviewLines = [keyMoment, reviewDid, reviewShortcoming, reviewTomorrow].some(hasAnalysisEntry) || memoryClueItems.length > 0;
+  const preciousPhotos = Array.isArray(pulse.images) ? pulse.images : [];
+  const latestPreciousPhoto = preciousPhotos[preciousPhotos.length - 1] || null;
 
   return (
     <section className="story-page">
@@ -6911,13 +7148,33 @@ function DailySummaryPage({ data, profiles, currentUser, request, setData, selec
       <details className="pulse-fold">
         <summary>
           <CatAvatar profile={currentUser} className="is-mini" />
-          <span><Icon name="star" /><Icon name="check" /><Icon name="edit" /></span>
+          <span className="pulse-summary-copy">
+            <strong>睡前打卡</strong>
+            <em>开心 · 贡献 · 照片</em>
+          </span>
           <Icon name="chevronDown" />
         </summary>
         <form className="pulse-strip" onSubmit={savePulse}>
-          <input type="number" min="1" max="10" value={pulse.dailyScore || ""} onChange={(event) => setPulse({ ...pulse, dailyScore: event.target.value })} aria-label="今日打分" placeholder="/10" />
-          <input value={pulse.happiestThing || ""} onChange={(event) => setPulse({ ...pulse, happiestThing: event.target.value })} aria-label="最开心的事" placeholder="最开心的事" />
-          <input value={pulse.smallAchievement || ""} onChange={(event) => setPulse({ ...pulse, smallAchievement: event.target.value })} aria-label="核心贡献" placeholder="核心贡献" />
+          <label className="pulse-field is-score">
+            <span>心情</span>
+            <input type="number" min="1" max="10" value={pulse.dailyScore || ""} onChange={(event) => setPulse({ ...pulse, dailyScore: event.target.value })} aria-label="今日打分" placeholder="/10" />
+          </label>
+          <label className="pulse-field">
+            <span>最开心</span>
+            <input value={pulse.happiestThing || ""} onChange={(event) => setPulse({ ...pulse, happiestThing: event.target.value })} aria-label="最开心的事" placeholder="今天最开心的一小段" />
+          </label>
+          <label className="pulse-field">
+            <span>贡献</span>
+            <input value={pulse.smallAchievement || ""} onChange={(event) => setPulse({ ...pulse, smallAchievement: event.target.value })} aria-label="最有贡献的事" placeholder="今天最有贡献的事" />
+          </label>
+          <label className={cx("pulse-photo-field", latestPreciousPhoto && "has-photo", uploadingPhoto && "is-uploading")}>
+            {latestPreciousPhoto?.url ? <img src={latestPreciousPhoto.url} alt={latestPreciousPhoto.name || "最珍贵的照片"} /> : <Icon name="image" />}
+            <span>
+              <strong>{latestPreciousPhoto ? "珍贵照片" : "上传照片"}</strong>
+              <em>{uploadingPhoto ? "上传中" : preciousPhotos.length ? `${preciousPhotos.length} 张` : "每天一张"}</em>
+            </span>
+            <input ref={preciousPhotoInputRef} type="file" accept="image/png,image/jpeg,image/webp,image/gif" onChange={choosePreciousPhoto} disabled={uploadingPhoto} />
+          </label>
           <IconButton icon="check" label="保存状态" type="submit" primary />
         </form>
       </details>

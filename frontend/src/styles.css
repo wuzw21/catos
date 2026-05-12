@@ -1044,7 +1044,8 @@ button.cat-word-mini:hover {
 .quiet-field input:focus,
 .quiet-field textarea:focus,
 .quiet-field select:focus,
-.pulse-strip input:focus {
+.pulse-strip input:focus,
+.pulse-photo-field:focus-within {
   outline: 2px solid rgba(219, 67, 129, 0.18);
   outline-offset: 2px;
 }
@@ -1865,6 +1866,77 @@ button.cat-word-mini:hover {
   gap: 5px;
   align-items: center;
   min-height: 22px;
+}
+
+.month-cell-agenda {
+  display: grid;
+  gap: 4px;
+  align-content: end;
+  min-width: 0;
+}
+
+.month-agenda-time,
+.month-agenda-more {
+  display: inline-flex;
+  width: max-content;
+  max-width: 100%;
+  min-height: 20px;
+  align-items: center;
+  gap: 4px;
+  padding: 0 6px 0 5px;
+  border: 1px solid color-mix(in srgb, var(--owner-one, var(--pink)) 24%, transparent);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--owner-one, var(--pink)) 10%, rgba(255, 255, 255, 0.9));
+  color: rgba(46, 38, 48, 0.78);
+  box-shadow: 0 5px 12px rgba(68, 46, 58, 0.05);
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+}
+
+.month-agenda-time.is-shared {
+  border-color: rgba(46, 38, 48, 0.06);
+  background:
+    linear-gradient(90deg,
+      color-mix(in srgb, var(--owner-one, var(--pink)) 14%, rgba(255, 255, 255, 0.9)),
+      color-mix(in srgb, var(--owner-two, #8a6cff) 14%, rgba(255, 255, 255, 0.9)));
+}
+
+.month-agenda-time.is-done {
+  opacity: 0.5;
+}
+
+.month-agenda-time b,
+.month-agenda-more {
+  overflow: hidden;
+  font-size: 0.66rem;
+  font-weight: 950;
+  letter-spacing: 0;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.month-agenda-owners {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+}
+
+.month-agenda-owners span {
+  width: 6px;
+  height: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.86);
+  border-radius: 999px;
+  box-shadow: 0 0 0 1px rgba(46, 38, 48, 0.04);
+}
+
+.month-agenda-owners span + span {
+  margin-left: -2px;
+}
+
+.month-agenda-more {
+  border-color: rgba(46, 38, 48, 0.07);
+  background: rgba(46, 38, 48, 0.045);
+  color: rgba(46, 38, 48, 0.46);
 }
 
 .month-cell i {
@@ -4642,6 +4714,55 @@ button.cat-word-mini:hover {
   box-shadow: none;
 }
 
+.checkin-time-person {
+  --person-color: var(--type);
+  display: inline-flex;
+  min-height: 30px;
+  align-items: center;
+  gap: 6px;
+  padding: 0 7px 0 9px;
+  border: 1px solid color-mix(in srgb, var(--person-color) 18%, rgba(46, 38, 48, 0.08));
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.76);
+  color: var(--ink);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.56);
+}
+
+.checkin-time-person.is-done {
+  border-color: color-mix(in srgb, var(--person-color) 28%, rgba(36, 185, 154, 0.18));
+  background: color-mix(in srgb, var(--person-color) 10%, rgba(255, 255, 255, 0.76));
+}
+
+.checkin-time-person.is-disabled {
+  opacity: 0.72;
+}
+
+.checkin-time-person span {
+  color: color-mix(in srgb, var(--person-color) 70%, var(--ink));
+  font-size: 0.74rem;
+  font-weight: 950;
+  white-space: nowrap;
+}
+
+.checkin-time-person input {
+  width: 78px;
+  min-width: 0;
+  border: 0;
+  border-radius: 999px;
+  background: rgba(46, 38, 48, 0.05);
+  color: var(--ink);
+  font: inherit;
+  font-size: 0.76rem;
+  font-weight: 950;
+  font-variant-numeric: tabular-nums;
+  outline: none;
+  padding: 3px 4px;
+}
+
+.checkin-time-person input:focus {
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--person-color) 24%, transparent);
+}
+
 .card-checkin-board {
   display: flex;
   flex-wrap: wrap;
@@ -4731,6 +4852,11 @@ button.cat-word-mini:hover {
 
 .life-card.is-daily-checkin .daily-checkin-row .checkin-person.is-inline:not(:disabled) {
   box-shadow: none;
+}
+
+.life-card.is-daily-checkin .checkin-person.is-diary:not(.is-done) b {
+  background: color-mix(in srgb, var(--person-color) 10%, rgba(255, 255, 255, 0.72));
+  color: color-mix(in srgb, var(--person-color) 70%, var(--ink));
 }
 
 .life-card.is-daily-checkin .checkin-person:disabled:not(.is-done) {
@@ -6565,6 +6691,33 @@ button.home-focus-note:hover {
   margin-left: auto;
 }
 
+.pulse-fold summary .pulse-summary-copy {
+  display: grid;
+  gap: 1px;
+  min-width: 0;
+  margin-left: 0;
+  margin-right: auto;
+}
+
+.pulse-summary-copy strong {
+  overflow: hidden;
+  color: var(--ink);
+  font-size: 0.84rem;
+  font-weight: 950;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pulse-summary-copy em {
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-style: normal;
+  font-weight: 850;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .pulse-fold summary svg {
   width: 15px;
   height: 15px;
@@ -6580,13 +6733,104 @@ button.home-focus-note:hover {
 }
 
 .pulse-fold .pulse-strip {
-  grid-template-columns: 86px minmax(0, 1fr) minmax(0, 1fr) auto;
+  grid-template-columns: 76px minmax(0, 1fr) minmax(0, 1fr) minmax(142px, 0.82fr) auto;
   padding: 10px;
   border: 0;
   border-top: 1px solid rgba(46, 38, 48, 0.07);
   border-radius: 0;
   background: transparent;
   box-shadow: none;
+}
+
+.pulse-field {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+}
+
+.pulse-field span {
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 0.7rem;
+  font-weight: 950;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pulse-field.is-score input {
+  text-align: center;
+  font-weight: 950;
+}
+
+.pulse-photo-field {
+  position: relative;
+  display: grid;
+  grid-template-columns: 38px minmax(0, 1fr);
+  gap: 8px;
+  align-items: center;
+  min-width: 0;
+  min-height: 58px;
+  padding: 7px 9px;
+  border: 1px solid rgba(46, 38, 48, 0.1);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.72);
+  color: var(--ink);
+  cursor: pointer;
+}
+
+.pulse-photo-field:hover {
+  border-color: rgba(219, 67, 129, 0.22);
+  background: rgba(255, 255, 255, 0.86);
+}
+
+.pulse-photo-field img,
+.pulse-photo-field > svg {
+  width: 38px;
+  height: 38px;
+  border-radius: 10px;
+  object-fit: cover;
+}
+
+.pulse-photo-field > svg {
+  padding: 9px;
+  background: rgba(255, 111, 168, 0.1);
+  color: var(--pink-deep);
+}
+
+.pulse-photo-field span {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.pulse-photo-field strong,
+.pulse-photo-field em {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pulse-photo-field strong {
+  font-size: 0.78rem;
+  font-weight: 950;
+}
+
+.pulse-photo-field em {
+  color: var(--muted);
+  font-size: 0.7rem;
+  font-style: normal;
+  font-weight: 850;
+}
+
+.pulse-photo-field input {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+
+.pulse-photo-field.is-uploading {
+  opacity: 0.72;
 }
 
 .story-page .story-evidence {
@@ -10872,6 +11116,27 @@ button.detail-step:hover {
     min-height: 16px;
   }
 
+  .month-cell-agenda {
+    gap: 2px;
+  }
+
+  .month-agenda-time,
+  .month-agenda-more {
+    min-height: 15px;
+    gap: 2px;
+    padding: 0 4px;
+  }
+
+  .month-agenda-time b,
+  .month-agenda-more {
+    font-size: 0.56rem;
+  }
+
+  .month-agenda-owners span {
+    width: 5px;
+    height: 5px;
+  }
+
   .month-cell i {
     min-width: 16px;
     height: 16px;
@@ -11713,6 +11978,20 @@ button.detail-step:hover {
   .life-card.is-daily-checkin .checkin-person {
     min-height: 34px;
     padding: 0 8px;
+  }
+
+  .checkin-time-person {
+    min-height: 34px;
+    padding: 0 7px;
+  }
+
+  .checkin-time-person span {
+    font-size: 0.7rem;
+  }
+
+  .checkin-time-person input {
+    width: 74px;
+    font-size: 0.72rem;
   }
 
   .checkin-person span {
