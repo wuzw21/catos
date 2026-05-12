@@ -3357,6 +3357,7 @@ button.cat-word-mini:hover {
 .timeline-card-slot.is-compact .card-audit,
 .timeline-card-slot.is-compact .card-plan,
 .timeline-card-slot.is-compact .daily-checkin-brief,
+.timeline-card-slot.is-compact .daily-checkin-list,
 .timeline-card-slot.is-compact .step-meter,
 .timeline-card-slot.is-compact .card-detail,
 .timeline-card-slot.is-compact .checkin-meter,
@@ -3365,6 +3366,7 @@ button.cat-word-mini:hover {
 .timeline-list.is-card-scrubbing .timeline-card-slot:not(.is-scrub-target) .card-audit,
 .timeline-list.is-card-scrubbing .timeline-card-slot:not(.is-scrub-target) .card-plan,
 .timeline-list.is-card-scrubbing .timeline-card-slot:not(.is-scrub-target) .daily-checkin-brief,
+.timeline-list.is-card-scrubbing .timeline-card-slot:not(.is-scrub-target) .daily-checkin-list,
 .timeline-list.is-card-scrubbing .timeline-card-slot:not(.is-scrub-target) .step-meter,
 .timeline-list.is-card-scrubbing .timeline-card-slot:not(.is-scrub-target) .card-detail,
 .timeline-list.is-card-scrubbing .timeline-card-slot:not(.is-scrub-target) .checkin-meter,
@@ -3373,6 +3375,7 @@ button.cat-word-mini:hover {
 .timeline-list.is-card-focused .timeline-card-slot:not(.is-scrub-target) .card-audit,
 .timeline-list.is-card-focused .timeline-card-slot:not(.is-scrub-target) .card-plan,
 .timeline-list.is-card-focused .timeline-card-slot:not(.is-scrub-target) .daily-checkin-brief,
+.timeline-list.is-card-focused .timeline-card-slot:not(.is-scrub-target) .daily-checkin-list,
 .timeline-list.is-card-focused .timeline-card-slot:not(.is-scrub-target) .step-meter,
 .timeline-list.is-card-focused .timeline-card-slot:not(.is-scrub-target) .card-detail,
 .timeline-list.is-card-focused .timeline-card-slot:not(.is-scrub-target) .checkin-meter,
@@ -3891,6 +3894,70 @@ button.cat-word-mini:hover {
   font-weight: 950;
 }
 
+.daily-checkin-list {
+  display: grid;
+  gap: 7px;
+  min-width: 0;
+}
+
+.daily-checkin-row {
+  display: grid;
+  grid-template-columns: minmax(96px, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+  min-width: 0;
+  min-height: 40px;
+  padding: 7px 8px;
+  border-radius: 13px;
+  background: color-mix(in srgb, var(--type) 7%, rgba(255, 255, 255, 0.74));
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--type) 13%, transparent);
+}
+
+.daily-checkin-row.is-done {
+  background: rgba(36, 185, 154, 0.09);
+  box-shadow: inset 0 0 0 1px rgba(36, 185, 154, 0.14);
+}
+
+.daily-checkin-row-title {
+  display: inline-flex;
+  gap: 7px;
+  align-items: center;
+  min-width: 0;
+  color: color-mix(in srgb, var(--type) 78%, var(--ink));
+  font-size: 0.84rem;
+  font-weight: 950;
+}
+
+.daily-checkin-row-title svg {
+  width: 14px;
+  height: 14px;
+  flex: 0 0 auto;
+  color: color-mix(in srgb, var(--type) 72%, rgba(46, 38, 48, 0.42));
+  stroke-width: 2.5;
+}
+
+.daily-checkin-row-title b {
+  overflow: hidden;
+  min-width: 0;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.daily-checkin-row-people {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 5px;
+  min-width: 0;
+}
+
+.daily-checkin-row .checkin-person.is-inline {
+  min-height: 28px;
+  padding: 0 8px;
+  background: rgba(255, 255, 255, 0.72);
+  box-shadow: none;
+}
+
 .card-checkin-board {
   display: flex;
   flex-wrap: wrap;
@@ -3976,6 +4043,10 @@ button.cat-word-mini:hover {
 
 .life-card.is-daily-checkin .checkin-person:not(:disabled) {
   box-shadow: 0 6px 14px color-mix(in srgb, var(--person-color) 12%, transparent);
+}
+
+.life-card.is-daily-checkin .daily-checkin-row .checkin-person.is-inline:not(:disabled) {
+  box-shadow: none;
 }
 
 .life-card.is-daily-checkin .checkin-person:disabled:not(.is-done) {
@@ -7990,7 +8061,7 @@ button.detail-step:hover {
   background: rgba(255, 246, 250, 0.7);
 }
 
-.detail-step > span:not(.step-dot):not(.avatar-pair) {
+.detail-step > span:not(.step-dot):not(.avatar-pair):not(.detail-step-people) {
   display: grid;
   gap: 2px;
   min-width: 0;
@@ -8046,6 +8117,48 @@ button.detail-step:hover {
   --cat-w: 24px;
   --cat-h: 22px;
   --cat-border: 1.5px;
+}
+
+.detail-step-people {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 5px;
+  min-width: 0;
+}
+
+.detail-step-people button {
+  --person-color: var(--type);
+  display: inline-flex;
+  gap: 4px;
+  align-items: center;
+  min-height: 28px;
+  padding: 0 8px;
+  border: 1px solid color-mix(in srgb, var(--person-color) 16%, rgba(46, 38, 48, 0.08));
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.66);
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 0.72rem;
+  font-weight: 950;
+}
+
+.detail-step-people button.is-done {
+  border-color: rgba(36, 185, 154, 0.2);
+  background: rgba(36, 185, 154, 0.1);
+  color: #14957c;
+}
+
+.detail-step-people button:disabled {
+  cursor: default;
+  opacity: 0.75;
+}
+
+.detail-step-people svg {
+  width: 12px;
+  height: 12px;
+  flex: 0 0 auto;
+  stroke-width: 2.6;
 }
 
 .step-dot {
@@ -8296,12 +8409,15 @@ button.detail-step:hover {
   .timeline-card-slot.is-compact .next-step-row,
   .timeline-card-slot.is-compact .card-checkin-board,
   .timeline-card-slot.is-compact .daily-checkin-brief,
+  .timeline-card-slot.is-compact .daily-checkin-list,
   .timeline-list.is-card-scrubbing .timeline-card-slot:not(.is-scrub-target) .next-step-row,
   .timeline-list.is-card-scrubbing .timeline-card-slot:not(.is-scrub-target) .card-checkin-board,
   .timeline-list.is-card-scrubbing .timeline-card-slot:not(.is-scrub-target) .daily-checkin-brief,
+  .timeline-list.is-card-scrubbing .timeline-card-slot:not(.is-scrub-target) .daily-checkin-list,
   .timeline-list.is-card-focused .timeline-card-slot:not(.is-scrub-target) .next-step-row,
   .timeline-list.is-card-focused .timeline-card-slot:not(.is-scrub-target) .card-checkin-board,
-  .timeline-list.is-card-focused .timeline-card-slot:not(.is-scrub-target) .daily-checkin-brief {
+  .timeline-list.is-card-focused .timeline-card-slot:not(.is-scrub-target) .daily-checkin-brief,
+  .timeline-list.is-card-focused .timeline-card-slot:not(.is-scrub-target) .daily-checkin-list {
     display: none;
   }
 

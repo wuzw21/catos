@@ -1196,6 +1196,49 @@ function dailyCheckinItems(card) {
     .filter(Boolean);
 }
 
+function dailyCheckinStepStatus(step, card, userId) {
+  if (!step || !userId) return "todo";
+  if (step.statusByUser?.[userId] === "done" || step.statusByUser?.[userId] === "todo") return step.statusByUser[userId];
+  return isCardDoneForUser(card, userId) ? "done" : "todo";
+}
+
+function dailyCheckinStepDone(step, card, userId) {
+  return dailyCheckinStepStatus(step, card, userId) === "done";
+}
+
+function dailyCheckinRows(card, profiles, currentUser = null) {
+  const participants = cardParticipantIds(card, profiles, currentUser);
+  const rawSteps = (Array.isArray(card?.steps) ? card.steps : []).filter((step) => cleanCardText(step?.title || ""));
+  const steps = rawSteps.length ? rawSteps : [{ id: "daily-checkin-fallback", title: "完成打卡" }];
+  return steps.map((step, index) => {
+    const people = participants.map((id) => {
+      const profile = profiles.find((item) => item.id === id);
+      const done = dailyCheckinStepDone(step, card, id);
+      return {
+        id,
+        done,
+        label: profile?.displayName || ownerLabel(id, currentUser),
+        shortLabel: participantShortName(id, profiles, currentUser, profile?.displayName || "对方"),
+        color: profileColor(profiles, id, id === currentUser?.id ? avatarColor(currentUser) : "#24b99a"),
+      };
+    });
+    return {
+      id: step.id || `daily-checkin-step-${index + 1}`,
+      title: compactCheckinItemTitle(step.title || ""),
+      fullTitle: cleanCardText(step.title || ""),
+      allDone: people.length ? people.every((person) => person.done) : false,
+      people,
+    };
+  }).filter((row) => row.title || row.fullTitle);
+}
+
+function dailyCheckinProgress(card, profiles, currentUser = null) {
+  const rows = dailyCheckinRows(card, profiles, currentUser);
+  const total = rows.reduce((sum, row) => sum + row.people.length, 0);
+  const done = rows.reduce((sum, row) => sum + row.people.filter((person) => person.done).length, 0);
+  return { rows, done, total };
+}
+
 function dailyCheckinSummary(card, fallback = "打卡") {
   const items = dailyCheckinItems(card);
   if (!items.length) return fallback;
@@ -1206,10 +1249,14 @@ function dailyCheckinSummary(card, fallback = "打卡") {
 function dailyCheckinProgressText(card) {
   const participants = Array.isArray(card?.participants) ? card.participants : [];
   if (!participants.length) return statusText(card) || "";
-  const done = participants.filter((id) => isCardDoneForUser(card, id)).length;
-  if (done === participants.length) return "都打卡了";
+  const steps = (Array.isArray(card?.steps) ? card.steps : []).filter((step) => cleanCardText(step?.title || ""));
+  const total = steps.length ? participants.length * steps.length : participants.length;
+  const done = steps.length
+    ? steps.reduce((sum, step) => sum + participants.filter((id) => dailyCheckinStepDone(step, card, id)).length, 0)
+    : participants.filter((id) => isCardDoneForUser(card, id)).length;
+  if (done === total) return "都打卡了";
   if (!done) return "还没打卡";
-  return `${done}/${participants.length} 已打卡`;
+  return `${done}/${total} 已打卡`;
 }
 
 function completionSummaryForCard(card, profiles, currentUser = null) {
@@ -1445,19 +1492,43 @@ const detailBuilders = {
           status: item.completion?.allDone ? "done" : "todo",
         }))
       : (Array.isArray(card.steps) ? card.steps : []);
+    const checkinRowsById = isDailyCheckin
+      ? new Map(dailyCheckinRows(card, profiles, currentUser).map((row) => [row.id, row]))
+      : new Map();
     const steps = rawSteps
       .map((step) => {
         const ownerIds = stepOwnerIds(step, participants);
-        const state = isDailyCheckin ? "打卡项" : stepStateLabel(step, profiles, participants, currentUser);
+        const checkinRow = isDailyCheckin ? checkinRowsById.get(step.id || step.title) : null;
+        const checkinDone = checkinRow ? checkinRow.people.filter((person) => person.done).length : 0;
+        const state = isDailyCheckin
+          ? (checkinRow?.people.length ? `${checkinDone}/${checkinRow.people.length} 已打卡` : "打卡项")
+          : stepStateLabel(step, profiles, participants, currentUser);
         const owner = isDailyCheckin ? "" : stepOwnerLabel(step, profiles, participants, currentUser);
         return {
           id: step.id || step.title,
           title: cleanCardText(step.title || ""),
-          done: isDailyCheckin ? false : step.status === "done",
+          done: isDailyCheckin ? Boolean(checkinRow?.allDone) : step.status === "done",
           ownerIds: isDailyCheckin ? [] : ownerIds,
           owner,
           state,
           hint: durationLabel(step.estimateMin),
+          people: isDailyCheckin && checkinRow
+            ? checkinRow.people.map((person) => ({
+                ...person,
+                action: !readOnly
+                  ? {
+                      type: "toggle-step",
+                      card,
+                      step: {
+                        id: step.id || step.title,
+                        title: cleanCardText(step.title || ""),
+                        ownerId: person.id,
+                        status: person.done ? "done" : "todo",
+                      },
+                    }
+                  : null,
+              }))
+            : [],
           action: !isDailyCheckin && !readOnly && card.sourceType !== "checkin" && (!step.ownerId || step.ownerId === currentUser?.id || step.ownerId === targetUserId)
             ? { type: "toggle-step", card, step }
             : null,
@@ -1515,7 +1586,7 @@ const detailBuilders = {
       moreSections: lifeCardDetailSections(card, context),
       images: [],
       actions: [
-        !readOnly && !isArchived && targetUserId ? { type: "toggle-card", icon: primaryActionIcon, label: primaryActionLabel, card } : null,
+        !isDailyCheckin && !readOnly && !isArchived && targetUserId ? { type: "toggle-card", icon: primaryActionIcon, label: primaryActionLabel, card } : null,
         !readOnly && !isArchived && !card.isDraft && card.sourceType !== "checkin" && !isDailyCheckin ? { type: "timer-card", icon: timerActive ? "stop" : "clock", label: timerActive ? "停止" : "计时", card } : null,
         canQuickPatch ? { type: "set-card-priority", icon: "star", label: card.priority === "high" ? "普通" : "重要", card, priority: card.priority === "high" ? "normal" : "high" } : null,
         !isDailyCheckin && !readOnly && ["schedule", "todo"].includes(card.sourceType) ? { type: "archive-card", icon: isArchived ? "undo" : "archive", label: isArchived ? "恢复" : "归档", card } : null,
@@ -2218,12 +2289,17 @@ export function App() {
     if (!currentUser || !card || !step || card.readOnly || card.sourceType === "insight" || card.sourceType === "checkin") return;
     const targetUserId = step.ownerId || currentUser.id;
     const isProxy = Boolean(targetUserId && targetUserId !== currentUser.id);
+    const isCheckin = isCheckinSurfaceCard(card);
     if (isProxy) {
       const targetName = actorName(targetUserId, profiles, "对方");
-      const actionText = step.status === "done" ? "取消完成" : "完成";
+      const actionText = isCheckin
+        ? (step.status === "done" ? "取消打卡" : "打卡")
+        : (step.status === "done" ? "取消完成" : "完成");
       const accepted = await askConfirmation({
-        title: `帮 ${targetName} ${actionText}这一步？`,
-        body: `这会把 ${targetName} 的这一步记为由 ${currentUser?.displayName || "你"} 操作。`,
+        title: isCheckin ? `帮 ${targetName} ${actionText}？` : `帮 ${targetName} ${actionText}这一步？`,
+        body: isCheckin
+          ? `这会把 ${targetName} 的「${step.title || "打卡项"}」记为由 ${currentUser?.displayName || "你"} 操作。`
+          : `这会把 ${targetName} 的这一步记为由 ${currentUser?.displayName || "你"} 操作。`,
         confirmLabel: `确认${actionText}`,
         cancelLabel: "先不动",
         tone: "proxy",
@@ -2846,10 +2922,14 @@ function Dashboard(props) {
 function CheckinLane({ cards = [], profiles, currentUser, selectedDate, toggleCard, archiveCard, toggleStep, toggleTimer, setCardPriority, openDetail, setEditingCard }) {
   if (!cards.length) return null;
   const doneCount = cards.reduce((sum, card) => {
+    if (isDailyCheckinCard(card)) return sum + dailyCheckinProgress(card, profiles, currentUser).done;
     const participants = cardParticipantIds(card, profiles, currentUser);
     return sum + participants.filter((id) => isCardDoneForUser(card, id)).length;
   }, 0);
-  const totalCount = cards.reduce((sum, card) => sum + cardParticipantIds(card, profiles, currentUser).length, 0);
+  const totalCount = cards.reduce((sum, card) => {
+    if (isDailyCheckinCard(card)) return sum + dailyCheckinProgress(card, profiles, currentUser).total;
+    return sum + cardParticipantIds(card, profiles, currentUser).length;
+  }, 0);
   return (
     <section className="checkin-lane" aria-label="打卡">
       <div className="checkin-lane-head">
@@ -3051,9 +3131,12 @@ function Composer({ text, setText, saveRawCapture, profiles, currentUser, busy, 
   const confirmationPeople = draft ? cardParticipantIds(draft, profiles, currentUser) : [];
   const visibleDecision = ["schedule", "capture"].includes(draft?.decision) ? draft.decision : "";
   const decisionMeta = captureDecisionMeta(draft?.decision);
-  const confirmationType = decisionMeta.label;
+  const isRoutineConfirmation = draft?.decision === "schedule" && ["checkin", "habit"].includes(draft?.itemType || "");
+  const confirmationType = isRoutineConfirmation ? "打卡" : decisionMeta.label;
   const routeWhen = draft?.decision === "schedule"
-    ? [shortDate(draft.date), segmentLabels[draft.segment || "allDay"], itemTypeLabels[draft.itemType || "thing"]].filter(Boolean).join(" · ")
+    ? (isRoutineConfirmation
+        ? ["加入固定打卡", shortDate(draft.date), itemTypeLabels[draft.itemType || "checkin"]].filter(Boolean).join(" · ")
+        : [shortDate(draft.date), segmentLabels[draft.segment || "allDay"], itemTypeLabels[draft.itemType || "thing"]].filter(Boolean).join(" · "))
     : decisionMeta.hint;
   const memoryHint = draft?.decision === "memory"
     ? memoryKindText(draft.memoryKinds || draft.memoryKind, "长期记忆")
@@ -3066,7 +3149,7 @@ function Composer({ text, setText, saveRawCapture, profiles, currentUser, busy, 
     { id: "shared", label: "共同" },
     ...profiles.map((profile) => ({ id: profile.id, label: profile.displayName })),
   ];
-  const ownerText = draft?.decision === "schedule"
+  const ownerText = draft?.decision === "schedule" && !isRoutineConfirmation
     ? (ownerOptions.find((option) => option.id === (draft.ownerId || currentUser?.id || ""))?.label || "我")
     : "";
   const participantsForOwner = (ownerId) => ownerId === "shared" ? profiles.map((profile) => profile.id) : [ownerId].filter(Boolean);
@@ -3174,7 +3257,9 @@ function Composer({ text, setText, saveRawCapture, profiles, currentUser, busy, 
       ? "保存记忆"
       : draft?.decision === "dailyStory"
         ? "进日总结"
-        : "确认";
+        : isRoutineConfirmation
+          ? "加入打卡"
+          : "确认";
 
   return (
     <section className={cx("composer-band", draft && "has-confirmation", selectedAssets.length && "has-assets")}>
@@ -3242,7 +3327,7 @@ function Composer({ text, setText, saveRawCapture, profiles, currentUser, busy, 
             <strong>
               {draft.analysisMode === "agent" ? "Agent" : "默认"}
               {" · "}
-              保存到 {confirmationType}
+              {isRoutineConfirmation ? "加入" : "保存到"} {confirmationType}
               {relatedDraftItems.length ? ` · ${enabledConfirmCount}/${confirmRows.length} 条` : ""}
             </strong>
             {draft.title ? <span>{draft.title}</span> : null}
@@ -4284,10 +4369,14 @@ function LifeCard({ card, profiles, currentUser, compact = false, toggleCard, ar
         };
       })
     : [];
-  const checkinDoneCount = checkinPeople.filter((person) => person.done).length;
+  const dailyRows = isDailyCheckin ? dailyCheckinRows(card, profiles, currentUser) : [];
+  const dailyProgressInfo = isDailyCheckin ? dailyCheckinProgress(card, profiles, currentUser) : { done: 0, total: 0 };
+  const checkinDoneCount = isDailyCheckin ? dailyProgressInfo.done : checkinPeople.filter((person) => person.done).length;
   const isGroupCard = participants.length > 1 || card.ownerId === "shared";
   const pendingOwnerIds = [...new Set(
-    isLegacyCheckin
+    isDailyCheckin
+      ? participants.filter((id) => dailyRows.some((row) => row.people.some((person) => person.id === id && !person.done)))
+      : isLegacyCheckin
       ? checkinPeople.filter((person) => !person.done).map((person) => person.id)
       : allSteps.length
         ? allSteps
@@ -4298,7 +4387,9 @@ function LifeCard({ card, profiles, currentUser, compact = false, toggleCard, ar
             })
         : participants.filter((id) => !isCardDoneForUser(card, id))
   )];
-  const groupAllDone = isLegacyCheckin && checkinPeople.length
+  const groupAllDone = isDailyCheckin
+    ? Boolean(dailyProgressInfo.total && dailyProgressInfo.done === dailyProgressInfo.total)
+    : isLegacyCheckin && checkinPeople.length
     ? checkinDoneCount === checkinPeople.length
     : allSteps.length
       ? allSteps.every((step) => step.status === "done")
@@ -4396,13 +4487,19 @@ function LifeCard({ card, profiles, currentUser, compact = false, toggleCard, ar
   };
   const toggleStepAction = (event, step) => {
     stopAction(event);
-    if (isLegacyCheckin || isDailyCheckin) {
+    if (isDailyCheckin) {
+      if (step.id && step.ownerId) toggleStep?.(card, step);
+      return;
+    }
+    if (isLegacyCheckin) {
       if (step.ownerId) toggleCard?.(card, { targetUserId: step.ownerId });
       return;
     }
     if (!readOnly && (!step.ownerId || step.ownerId === currentUser?.id || step.ownerId === completionTarget)) toggleStep?.(card, step);
   };
-  const checkinBoardLabel = checkinPeople.length ? `${checkinDoneCount}/${checkinPeople.length}` : "";
+  const checkinBoardLabel = isDailyCheckin
+    ? (dailyProgressInfo.total ? `${dailyProgressInfo.done}/${dailyProgressInfo.total}` : "")
+    : (checkinPeople.length ? `${checkinDoneCount}/${checkinPeople.length}` : "");
   return (
     <article
       className={cx("life-card", `type-${itemType}`, card.priority === "high" && "is-important", isLegacyCheckin && "is-checkin", isDailyCheckin && "is-daily-checkin", isDone && "is-done", isArchived && "is-archived", ageNotice && "is-aged", ageNotice?.level === "strong" && "is-aged-strong", readOnly && "is-readonly", isInsight && "is-insight", isDraft && "is-draft")}
@@ -4431,13 +4528,45 @@ function LifeCard({ card, profiles, currentUser, compact = false, toggleCard, ar
             <strong>{title}</strong>
           </div>
         </button>
-        {!compact && isDailyCheckin ? (
-          <div className="daily-checkin-brief" aria-label="打卡项">
-            <span>{checkinSummary}</span>
-            {checkinBoardLabel ? <em>{checkinBoardLabel}</em> : null}
+        {!compact && isDailyCheckin && dailyRows.length ? (
+          <div className="daily-checkin-list" aria-label="打卡项">
+            {dailyRows.map((row) => (
+              <div className={cx("daily-checkin-row", row.allDone && "is-done")} key={row.id}>
+                <span className="daily-checkin-row-title" title={row.fullTitle || row.title}>
+                  <Icon name={row.allDone ? "check" : "circle"} />
+                  <b>{row.title || row.fullTitle}</b>
+                </span>
+                <span className="daily-checkin-row-people">
+                  {row.people.map((person) => {
+                    const disabled = readOnly;
+                    const stepStatus = person.done ? "done" : "todo";
+                    return (
+                      <button
+                        key={`${row.id}-${person.id}`}
+                        className={cx("checkin-person is-inline", person.done && "is-done")}
+                        style={{ "--person-color": person.color }}
+                        type="button"
+                        aria-label={disabled ? `${person.label}${person.done ? "已打卡" : "未打卡"}` : person.done ? `取消 ${person.label} ${row.fullTitle || row.title}` : `${person.label} ${row.fullTitle || row.title} 打卡`}
+                        title={person.done ? `${person.label} 已打卡` : `${person.label} 未打卡`}
+                        onClick={(event) => toggleStepAction(event, {
+                          id: row.id,
+                          title: row.fullTitle || row.title,
+                          ownerId: person.id,
+                          status: stepStatus,
+                        })}
+                        disabled={disabled}
+                      >
+                        <span>{person.label}</span>
+                        <b aria-hidden="true"><Icon name={person.done ? "check" : "circle"} /></b>
+                      </button>
+                    );
+                  })}
+                </span>
+              </div>
+            ))}
           </div>
         ) : null}
-        {!compact && checkinPeople.length ? (
+        {!compact && !isDailyCheckin && checkinPeople.length ? (
           <div className="card-checkin-board" aria-label="共同打卡完成情况">
             {checkinPeople.map((person) => {
               const disabled = readOnly;
@@ -4506,7 +4635,7 @@ function LifeCard({ card, profiles, currentUser, compact = false, toggleCard, ar
       </div>
       {!readOnly && !isDraft ? (
         <div className="card-actions">
-          {compact && !isArchived && completionTarget ? (
+          {compact && !isArchived && !isDailyCheckin && completionTarget ? (
             <button
               className={cx("action-chip compact-only-action", targetDone ? "done-mark" : "complete-toggle")}
               type="button"
@@ -4519,7 +4648,7 @@ function LifeCard({ card, profiles, currentUser, compact = false, toggleCard, ar
               <span>{currentActionLabel}</span>
             </button>
           ) : null}
-          {!compact && !isArchived && !isLegacyCheckin && completionTarget && targetDone ? (
+          {!compact && !isArchived && !isLegacyCheckin && !isDailyCheckin && completionTarget && targetDone ? (
             <button
               className="action-chip done-mark"
               type="button"
@@ -4531,7 +4660,7 @@ function LifeCard({ card, profiles, currentUser, compact = false, toggleCard, ar
               <Icon name={currentActionIcon} />
               <span>{currentActionLabel}</span>
             </button>
-          ) : !compact && !isArchived && !isLegacyCheckin && completionTarget ? (
+          ) : !compact && !isArchived && !isLegacyCheckin && !isDailyCheckin && completionTarget ? (
             <button
               className="action-chip complete-toggle"
               type="button"
@@ -5352,7 +5481,24 @@ function DetailDrawer({ detail, profiles, onClose, onAction }) {
                       {step.hint ? <small>{step.hint}</small> : null}
                     </em>
                   </span>
-                  {step.ownerIds?.length ? <AvatarPair profiles={profiles} ids={step.ownerIds} /> : null}
+                  {step.people?.length ? (
+                    <span className="detail-step-people" aria-label="打卡人">
+                      {step.people.map((person) => (
+                        <button
+                          key={person.id}
+                          className={cx(person.done && "is-done")}
+                          style={{ "--person-color": person.color }}
+                          type="button"
+                          onClick={() => person.action ? onAction(person.action) : null}
+                          disabled={!person.action}
+                          title={`${person.label}${person.done ? "已打卡" : "未打卡"}`}
+                        >
+                          <span>{person.label}</span>
+                          <Icon name={person.done ? "check" : "circle"} />
+                        </button>
+                      ))}
+                    </span>
+                  ) : step.ownerIds?.length ? <AvatarPair profiles={profiles} ids={step.ownerIds} /> : null}
                 </>
               );
               return step.action ? (

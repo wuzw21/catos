@@ -80,6 +80,7 @@ const captureAgentPrompt = [
   "如果输入是在定义纪念日、周年、生日、在一起、相识、领证、结婚、第一次等重要日期，而不是安排庆祝动作，返回 memory，memoryKind=anniversary。",
   "纪念日定义支持无年份日期，例如“纪念日：1月9日在一起”“1.9 是在一起的日子”；date 用 selectedDate/currentDate 所在年份补齐，repeatRule 用 yearly，ownerId 用 shared，participants 用双方。",
   "纪念日记忆会用于倒计时、今年第几天、提前提醒和准备建议；如果用户明确说要提醒、准备、买礼物、订餐厅、整理照片、写信或庆祝，才返回 schedule，并把 memoryKinds 包含 anniversary，多个准备动作拆进 relatedItems。",
+  "如果输入是在新增日常打卡或习惯，例如运动打卡、喝水打卡、每天早睡，返回 schedule 且 itemType=checkin/habit；后端会把它加入当天固定“打卡”生活卡的子项，不要再生成一张独立普通生活卡。",
   "如果输入包含图片，图片也是 raw capture 的一部分；分析图片只能生成轻确认，不能覆盖 raw。",
   "如果图片是截图、手写清单、便签或 todolist，先识别文字与勾选状态，再把未完成的明确行动拆成 schedule/relatedItems；已勾选内容可写入 detail 或 dailyStory，不要当成待办。",
   "如果只是偏好、边界、愿望、承诺或照顾线索，不要强行生成 Schedule Item，返回 memory。",
@@ -1079,7 +1080,7 @@ function normalizeLifeCardSteps(steps, participants = [], parentTitle = "") {
       if (key && seen.has(key)) return null;
       if (key) seen.add(key);
       const ownerId = participants.includes(source.ownerId) ? source.ownerId : "";
-      return {
+      const normalized = {
         id: sanitizeText(source.id, 80) || `step-${index + 1}`,
         title,
         ownerId,
@@ -1087,6 +1088,21 @@ function normalizeLifeCardSteps(steps, participants = [], parentTitle = "") {
         status: validStatuses.has(source.status) ? source.status : "todo",
         sortOrder: Number.isFinite(Number(source.sortOrder)) ? Number(source.sortOrder) : index,
       };
+      if (source.statusByUser && typeof source.statusByUser === "object" && !Array.isArray(source.statusByUser)) {
+        normalized.statusByUser = Object.fromEntries(
+          participants.map((id) => [
+            id,
+            validStatuses.has(source.statusByUser?.[id]) ? source.statusByUser[id] : "todo",
+          ])
+        );
+      }
+      if (source.statusUpdatedBy && typeof source.statusUpdatedBy === "object" && !Array.isArray(source.statusUpdatedBy)) {
+        normalized.statusUpdatedBy = sanitizeTextMap(source.statusUpdatedBy);
+      }
+      if (source.statusUpdatedAt && typeof source.statusUpdatedAt === "object" && !Array.isArray(source.statusUpdatedAt)) {
+        normalized.statusUpdatedAt = sanitizeTextMap(source.statusUpdatedAt, 40);
+      }
+      return normalized;
     })
     .filter(Boolean)
     .sort((a, b) => a.sortOrder - b.sortOrder)
@@ -1674,6 +1690,72 @@ function lifeCardStatusByUserFromSteps(item, steps = normalizeLifeCardSteps(item
   );
 }
 
+function dailyCheckinStepStatusForUser(step, item, userId) {
+  if (!step || !userId) return "todo";
+  if (validStatuses.has(step.statusByUser?.[userId])) return step.statusByUser[userId];
+  if (validStatuses.has(item?.statusByUser?.[userId])) return item.statusByUser[userId];
+  if (validStatuses.has(step.status)) return step.status;
+  return "todo";
+}
+
+function normalizeDailyCheckinStepsForItem(item) {
+  const participants = Array.isArray(item?.participants) ? item.participants : [];
+  return normalizeLifeCardSteps(item?.steps, participants, item?.title).map((step) => {
+    const statusByUser = Object.fromEntries(
+      participants.map((id) => [id, dailyCheckinStepStatusForUser(step, item, id)])
+    );
+    const statusUpdatedBy = sanitizeTextMap(step.statusUpdatedBy);
+    const statusUpdatedAt = sanitizeTextMap(step.statusUpdatedAt, 40);
+    return {
+      ...step,
+      status: participants.length && participants.every((id) => statusByUser[id] === "done") ? "done" : "todo",
+      statusByUser,
+      statusUpdatedBy,
+      statusUpdatedAt,
+    };
+  });
+}
+
+function dailyCheckinStatusByUserFromSteps(item, steps = normalizeDailyCheckinStepsForItem(item)) {
+  const participants = Array.isArray(item?.participants) ? item.participants : [];
+  if (!steps.length) {
+    return Object.fromEntries(
+      participants.map((id) => [id, validStatuses.has(item?.statusByUser?.[id]) ? item.statusByUser[id] : "todo"])
+    );
+  }
+  return Object.fromEntries(
+    participants.map((id) => {
+      const done = steps.every((step) => dailyCheckinStepStatusForUser(step, item, id) === "done");
+      return [id, done ? "done" : "todo"];
+    })
+  );
+}
+
+function setDailyCheckinStepUserStatus(step, item, targetUserId, nextStatus, userId, timestamp = nowIso()) {
+  const participants = Array.isArray(item?.participants) ? item.participants : [];
+  const statusByUser = Object.fromEntries(
+    participants.map((id) => [
+      id,
+      id === targetUserId ? nextStatus : dailyCheckinStepStatusForUser(step, item, id),
+    ])
+  );
+  const statusUpdatedBy = {
+    ...(step.statusUpdatedBy || {}),
+    [targetUserId]: userId,
+  };
+  const statusUpdatedAt = {
+    ...(step.statusUpdatedAt || {}),
+    [targetUserId]: timestamp,
+  };
+  return {
+    ...step,
+    status: participants.length && participants.every((id) => statusByUser[id] === "done") ? "done" : "todo",
+    statusByUser,
+    statusUpdatedBy,
+    statusUpdatedAt,
+  };
+}
+
 function syncArchiveWithCompletion(item, userId) {
   const participants = Array.isArray(item.participants) ? item.participants : [];
   const steps = normalizeLifeCardSteps(item.steps, participants, item.title);
@@ -1759,10 +1841,19 @@ function applyStepAwareStatusToggle(item, targetUserId, userId, payload = {}) {
   if (isDailyCheckinLifeCard(item)) {
     const participants = Array.isArray(item.participants) ? item.participants : [];
     const nextStatus = requestedStatus || (currentStatus === "done" ? "todo" : "done");
-    item.statusByUser = Object.fromEntries(
-      participants.map((id) => [id, validStatuses.has(item.statusByUser?.[id]) ? item.statusByUser[id] : "todo"])
+    const timestamp = nowIso();
+    const steps = normalizeDailyCheckinStepsForItem(item).map((step) =>
+      setDailyCheckinStepUserStatus(step, item, targetUserId, nextStatus, userId, timestamp)
     );
-    item.statusByUser[targetUserId] = nextStatus;
+    item.steps = steps;
+    item.statusByUser = steps.length
+      ? dailyCheckinStatusByUserFromSteps(item, steps)
+      : {
+          ...Object.fromEntries(
+            participants.map((id) => [id, validStatuses.has(item.statusByUser?.[id]) ? item.statusByUser[id] : "todo"])
+          ),
+          [targetUserId]: nextStatus,
+        };
     item.archivedAt = "";
     item.archivedBy = "";
     return;
@@ -1868,6 +1959,45 @@ function toggleLifeCardStep(userId, payload = {}) {
     const stepIndex = steps.findIndex((step) => step.id === stepId);
     if (stepIndex === -1) {
       throw new Error("life card step not found");
+    }
+    if (isDailyCheckinLifeCard(item)) {
+      const dailySteps = normalizeDailyCheckinStepsForItem(item);
+      const dailyStepIndex = dailySteps.findIndex((step) => step.id === stepId);
+      if (dailyStepIndex === -1) {
+        throw new Error("life card step not found");
+      }
+      const targetUserId = requestedTargetUserId;
+      if (targetUserId !== userId && payload.proxyConfirmed !== true) {
+        throw new Error("proxy completion requires confirmation");
+      }
+      if (!item.participants.includes(targetUserId)) {
+        item.participants.push(targetUserId);
+      }
+
+      const currentStatus = dailyCheckinStepStatusForUser(dailySteps[dailyStepIndex], item, targetUserId);
+      const nextStatus = validStatuses.has(payload.status)
+        ? payload.status
+        : currentStatus === "done" ? "todo" : "done";
+      const timestamp = nowIso();
+      dailySteps[dailyStepIndex] = setDailyCheckinStepUserStatus(dailySteps[dailyStepIndex], item, targetUserId, nextStatus, userId, timestamp);
+      item.steps = dailySteps;
+      item.statusByUser = dailyCheckinStatusByUserFromSteps(item, dailySteps);
+      item.archivedAt = "";
+      item.archivedBy = "";
+      markStatusOperation(item, targetUserId, userId, timestamp);
+      item.updatedBy = userId;
+      item.updatedAt = timestamp;
+      recordOperation(store, userId, "toggle-step", sourceType, item.id, {
+        date: item.date,
+        title: item.title,
+        stepId,
+        stepTitle: dailySteps[dailyStepIndex].title,
+        targetUserId,
+        status: nextStatus,
+        sourceType,
+      });
+
+      return publicSourceItem(store, item, sourceType, userId);
     }
     const stepOwnerId = sanitizeText(steps[stepIndex].ownerId, 80);
     const targetUserId = stepOwnerId || requestedTargetUserId;
@@ -2116,14 +2246,29 @@ function createTodoItem(store, payload, userId) {
   return item;
 }
 
-function makeDailyCheckinStep(title, index, existing = null) {
+function makeDailyCheckinStep(title, index, existing = null, participants = [], fallbackStatusByUser = {}) {
   const source = existing && typeof existing === "object" ? existing : {};
+  const statusByUser = Object.fromEntries(
+    participants.map((id) => [
+      id,
+      validStatuses.has(source.statusByUser?.[id])
+        ? source.statusByUser[id]
+        : validStatuses.has(fallbackStatusByUser?.[id])
+          ? fallbackStatusByUser[id]
+          : validStatuses.has(source.status)
+            ? source.status
+            : "todo",
+    ])
+  );
   return {
     id: sanitizeText(source.id, 80) || `daily-checkin-step-${index + 1}`,
     title: sanitizeText(title || source.title, 120),
     ownerId: sanitizeText(source.ownerId || "", 80),
     estimateMin: normalizeDurationMin(source.estimateMin, 0),
-    status: "todo",
+    status: participants.length && participants.every((id) => statusByUser[id] === "done") ? "done" : "todo",
+    statusByUser,
+    statusUpdatedBy: sanitizeTextMap(source.statusUpdatedBy),
+    statusUpdatedAt: sanitizeTextMap(source.statusUpdatedAt, 40),
     sortOrder: Number.isFinite(Number(source.sortOrder)) ? Number(source.sortOrder) : index,
   };
 }
@@ -2142,7 +2287,7 @@ function ensureDailyCheckinCard(store, date = businessDate(), userId = "system")
     ...dailyCheckinDefaultSteps.map((title, index) => {
       const key = normalizedTitleKey(title);
       usedKeys.add(key);
-      return makeDailyCheckinStep(title, index, existingSteps.find((step) => normalizedTitleKey(step.title) === key));
+      return makeDailyCheckinStep(title, index, existingSteps.find((step) => normalizedTitleKey(step.title) === key), profileIds, existing?.statusByUser);
     }),
     ...existingSteps
       .filter((step) => {
@@ -2151,8 +2296,9 @@ function ensureDailyCheckinCard(store, date = businessDate(), userId = "system")
         usedKeys.add(key);
         return true;
       })
-      .map((step, index) => makeDailyCheckinStep(step.title, dailyCheckinDefaultSteps.length + index, step)),
+      .map((step, index) => makeDailyCheckinStep(step.title, dailyCheckinDefaultSteps.length + index, step, profileIds, existing?.statusByUser)),
   ];
+  const aggregateStatusByUser = dailyCheckinStatusByUserFromSteps({ ...existing, participants: profileIds }, steps);
 
   if (existing) {
     let changed = false;
@@ -2171,9 +2317,7 @@ function ensureDailyCheckinCard(store, date = businessDate(), userId = "system")
     assignIfChanged("tags", normalizeLifeCardTags([...(existing.tags || []), dailyCheckinCardTag], { ...existing, itemType: "checkin", title: dailyCheckinCardTitle }));
     assignIfChanged("repeatRule", "daily@03:00");
     assignIfChanged("priority", normalizePriority(existing.priority || "normal"));
-    assignIfChanged("statusByUser", Object.fromEntries(
-      profileIds.map((id) => [id, validStatuses.has(existing.statusByUser?.[id]) ? existing.statusByUser[id] : "todo"])
-    ));
+    assignIfChanged("statusByUser", aggregateStatusByUser);
     assignIfChanged("steps", steps);
     if (!existing.updatedAt) existing.updatedAt = timestamp;
     if (!existing.updatedBy) existing.updatedBy = userId;
@@ -2203,7 +2347,7 @@ function ensureDailyCheckinCard(store, date = businessDate(), userId = "system")
     manualOrder: normalizeManualOrder(existing?.manualOrder, 0),
     ownerId: "shared",
     participants: profileIds,
-    statusByUser: Object.fromEntries(profileIds.map((id) => [id, "todo"])),
+    statusByUser: aggregateStatusByUser,
     statusUpdatedBy: {},
     statusUpdatedAt: {},
     plannedAt: "",
@@ -3504,6 +3648,7 @@ function buildCaptureAgentStructuredPrompt(facts) {
     "- decision=dailyStory：适合进入当天日总结素材，但不是未来行动或长期记忆。",
     "- decision=capture：只保留 raw，不需要任何生活卡或长期记忆。",
     "- itemType 默认 thing；工作/作业/会议用 work；购买用 purchase；约会/一起出去用 date；提醒/截止用 reminder；打卡用 checkin；周期习惯用 habit。",
+    "- 新增日常打卡/习惯时，仍返回 decision=schedule 和 itemType=checkin/habit，但语义是加入当天固定“打卡”生活卡的打卡项；不要把它描述成独立普通任务。",
     "- ownerId 默认当前用户；只有明确共同参与才用 shared。participants 必须从 profileIds 或 shared 对应成员中选择。",
     "- 相对日期必须按 selectedDate 解析，例如今天下午、周日、下周一。",
     "- 如果 rawCapture.assets 非空，你会收到同顺序的图片附件；必须结合图片内容和 rawCapture.text 分析。",
@@ -4795,7 +4940,10 @@ function publicScheduleItemCard(store, publicItem, sourceType, userId, options =
   const isDailyCheckin = tags.includes(dailyCheckinCardTag) ||
     (itemType === "checkin" && publicItem.repeatRule === "daily@03:00");
   const completionSteps = isDailyCheckin ? [] : steps;
-  const doneUsers = participants.filter((id) => publicItem.statusByUser?.[id] === "done");
+  const publicStatusByUser = isDailyCheckin
+    ? dailyCheckinStatusByUserFromSteps(publicItem, steps)
+    : publicItem.statusByUser || {};
+  const doneUsers = participants.filter((id) => publicStatusByUser?.[id] === "done");
   const stepsDone = completionSteps.length ? completionSteps.filter((step) => step.status === "done").length : 0;
   const stepsAllDone = Boolean(completionSteps.length && stepsDone === completionSteps.length);
   const currentUserHasTodoStep = completionSteps.some((step) => (!step.ownerId || step.ownerId === userId) && step.status !== "done");
@@ -4814,14 +4962,14 @@ function publicScheduleItemCard(store, publicItem, sourceType, userId, options =
     timeLabel: options.timeLabel || (publicItem.segment ? segmentDefinitions.find((item) => item.key === normalizeSegment(publicItem.segment))?.label : ""),
     ownerId: publicItem.ownerId || "shared",
     participants,
-    statusByUser: publicItem.statusByUser || {},
+    statusByUser: publicStatusByUser,
     statusUpdatedBy: publicItem.statusUpdatedBy || {},
     statusUpdatedAt: publicItem.statusUpdatedAt || {},
     completion: {
       done: completionSteps.length ? stepsDone : doneUsers.length,
       total: completionSteps.length || participants.length,
       allDone: completionSteps.length ? stepsAllDone : Boolean(participants.length && doneUsers.length === participants.length),
-      currentUserDone: completionSteps.length ? !currentUserHasTodoStep : publicItem.statusByUser?.[userId] === "done",
+      currentUserDone: completionSteps.length ? !currentUserHasTodoStep : publicStatusByUser?.[userId] === "done",
     },
     priority: publicItem.priority || "",
     manualOrder: normalizeManualOrder(publicItem.manualOrder, 0),
@@ -5203,6 +5351,81 @@ function buildHomeFocus(store, userId, selectedDate, options = {}) {
   });
 }
 
+function shouldAppendToDailyCheckinCard(itemType, input = {}) {
+  const normalized = normalizeScheduleItemType(itemType, "thing");
+  if (normalized === "checkin") return true;
+  if (normalized !== "habit") return false;
+  const text = `${input.title || ""} ${input.detail || ""} ${input.repeatRule || ""}`.trim();
+  return !text || /每天|每日|daily|打卡|签到|习惯|固定|运动|锻炼|喝水|早睡|早起/i.test(text);
+}
+
+function dailyCheckinAppendTitle(input = {}) {
+  const raw = sanitizeText(input.title || input.detail || input.slot || "完成打卡", 120);
+  const cleaned = raw
+    .replace(/^(?:每天|每日|固定|周期|习惯|打卡)\s*[:：-]?\s*/i, "")
+    .replace(/\s*(?:打卡|签到|记录)$/i, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  return sanitizeText(cleaned || raw || "完成打卡", 120);
+}
+
+function appendDailyCheckinStepFromConfirmation(store, userId, body = {}) {
+  const profileIds = getProfileIds(store);
+  const date = normalizeDate(body.date);
+  const { item } = ensureDailyCheckinCard(store, date, userId);
+  item.participants = profileIds;
+  item.ownerId = "shared";
+  item.itemType = "checkin";
+  item.repeatRule = "daily@03:00";
+  item.tags = normalizeLifeCardTags([...(item.tags || []), dailyCheckinCardTag], { ...item, itemType: "checkin" });
+
+  const title = dailyCheckinAppendTitle(body);
+  const titleKey = normalizedTitleKey(title);
+  const steps = normalizeDailyCheckinStepsForItem(item);
+  const existingIndex = steps.findIndex((step) => normalizedTitleKey(step.title) === titleKey);
+  const timestamp = nowIso();
+  let changed = false;
+  if (existingIndex >= 0) {
+    const existing = steps[existingIndex];
+    const estimateMin = normalizeDurationMin(body.durationMin, existing.estimateMin);
+    if (estimateMin !== existing.estimateMin) {
+      steps[existingIndex] = { ...existing, estimateMin };
+      changed = true;
+    }
+  } else {
+    steps.push({
+      id: makeId("daily-checkin-step"),
+      title,
+      ownerId: "",
+      estimateMin: normalizeDurationMin(body.durationMin, 0),
+      status: "todo",
+      statusByUser: Object.fromEntries(profileIds.map((id) => [id, "todo"])),
+      statusUpdatedBy: {},
+      statusUpdatedAt: {},
+      sortOrder: steps.length,
+    });
+    changed = true;
+  }
+
+  item.steps = steps.map((step, index) => ({ ...step, sortOrder: index }));
+  item.statusByUser = dailyCheckinStatusByUserFromSteps(item, item.steps);
+  item.archivedAt = "";
+  item.archivedBy = "";
+  item.updatedBy = userId;
+  item.updatedAt = timestamp;
+  if (changed) {
+    recordOperation(store, userId, "merge-checkin-step", "todo", item.id, {
+      date,
+      title,
+      sourceType: "todo",
+    });
+  }
+  return {
+    raw: item,
+    card: publicScheduleItemCard(store, publicTodoItem(item, profileIds), "todo", userId),
+  };
+}
+
 function createLifeCardsFromConfirmation(userId, payload = {}) {
   return mutateStore((store) => {
     const profileIds = getProfileIds(store);
@@ -5243,6 +5466,10 @@ function createLifeCardsFromConfirmation(userId, payload = {}) {
       };
 
       if (!body.title) return null;
+
+      if (shouldAppendToDailyCheckinCard(itemType, body)) {
+        return appendDailyCheckinStepFromConfirmation(store, userId, body);
+      }
 
       let created;
       let publicItem;
@@ -5296,7 +5523,7 @@ function createLifeCardsFromConfirmation(userId, payload = {}) {
       .map((item) => createOne(item, primary.raw.id))
       .filter(Boolean);
 
-    return [primary.card, ...relatedCards.map((item) => item.card)];
+    return [...new Map([primary.card, ...relatedCards.map((item) => item.card)].map((card) => [card.id, card])).values()];
   });
 }
 
@@ -6481,9 +6708,8 @@ function upsertTodoItem(userId, payload) {
       existing.participants = profileIds;
       existing.tags = normalizeLifeCardTags([...(existing.tags || []), dailyCheckinCardTag], { ...existing, itemType: "checkin" });
       existing.repeatRule = "daily@03:00";
-      existing.statusByUser = Object.fromEntries(
-        profileIds.map((id) => [id, validStatuses.has(existing.statusByUser?.[id]) ? existing.statusByUser[id] : "todo"])
-      );
+      existing.steps = normalizeDailyCheckinStepsForItem(existing);
+      existing.statusByUser = dailyCheckinStatusByUserFromSteps(existing, existing.steps);
     }
     existing.updatedBy = userId;
     existing.updatedAt = nowIso();

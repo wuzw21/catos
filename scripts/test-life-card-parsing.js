@@ -234,6 +234,59 @@ try {
   assert.equal(resetOwnSteps.statusByUser.partner, "todo");
   assert(resetOwnSteps.steps.filter((step) => step.ownerId === "you").every((step) => step.status === "todo"));
   assert(resetOwnSteps.steps.filter((step) => step.ownerId === "partner").every((step) => step.status === "todo"));
+
+  const checkinState = store.getState("you", { date: "2026-05-12" });
+  const checkinCard = checkinState.scheduleItemCards.find((card) => card.tags.includes("daily-checkin-card"));
+  assert(checkinCard);
+  assert(checkinCard.steps.length >= 2);
+  assert.deepEqual(checkinCard.steps[0].statusByUser, { you: "todo", partner: "todo" });
+
+  store.toggleLifeCardStep("you", {
+    sourceType: "todo",
+    id: checkinCard.sourceId,
+    stepId: checkinCard.steps[0].id,
+    targetUserId: "you",
+  });
+  const oneCheckinStepState = store.getState("you", { date: "2026-05-12" });
+  const oneCheckinStepCard = oneCheckinStepState.scheduleItemCards.find((card) => card.sourceId === checkinCard.sourceId);
+  assert.equal(oneCheckinStepCard.steps[0].statusByUser.you, "done");
+  assert.equal(oneCheckinStepCard.steps[0].statusByUser.partner, "todo");
+  assert.equal(oneCheckinStepCard.steps[1].statusByUser.you, "todo");
+  assert.equal(oneCheckinStepCard.statusByUser.you, "todo");
+
+  store.toggleLifeCardStep("you", {
+    sourceType: "todo",
+    id: checkinCard.sourceId,
+    stepId: checkinCard.steps[1].id,
+    targetUserId: "you",
+  });
+  const allOwnCheckinState = store.getState("you", { date: "2026-05-12" });
+  const allOwnCheckinCard = allOwnCheckinState.scheduleItemCards.find((card) => card.sourceId === checkinCard.sourceId);
+  assert.equal(allOwnCheckinCard.statusByUser.you, "done");
+  assert.equal(allOwnCheckinCard.statusByUser.partner, "todo");
+
+  const appendedCheckin = store.createLifeCardsFromConfirmation("you", {
+    decision: "schedule",
+    date: "2026-05-13",
+    title: "喝水打卡",
+    itemType: "checkin",
+    ownerId: "shared",
+  }).result;
+  assert.equal(appendedCheckin.length, 1);
+  assert.equal(appendedCheckin[0].sourceType, "todo");
+  assert(appendedCheckin[0].tags.includes("daily-checkin-card"));
+  assert(appendedCheckin[0].steps.some((step) => step.title === "喝水"));
+
+  const appendedHabit = store.createLifeCardsFromConfirmation("you", {
+    decision: "schedule",
+    date: "2026-05-13",
+    title: "每天早睡",
+    itemType: "habit",
+    ownerId: "you",
+  }).result;
+  assert.equal(appendedHabit.length, 1);
+  assert.equal(appendedHabit[0].sourceId, appendedCheckin[0].sourceId);
+  assert(appendedHabit[0].steps.some((step) => step.title === "早睡"));
 } finally {
   fs.rmSync(tempRoot, { recursive: true, force: true });
 }
