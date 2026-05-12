@@ -80,6 +80,9 @@ const editorStepSchema = z.object({
   ownerId: z.string().optional().default(""),
   estimateMin: z.coerce.number().min(0, "分钟不能小于 0").optional().default(0),
   status: z.enum(["todo", "done"]).optional().default("todo"),
+  statusByUser: z.record(z.string(), z.enum(["todo", "done"])).optional().default({}),
+  statusUpdatedBy: z.record(z.string(), z.string()).optional().default({}),
+  statusUpdatedAt: z.record(z.string(), z.string()).optional().default({}),
 });
 const cardEditorSchema = z.object({
   title: z.string().trim().min(1, "标题不能为空").max(120, "标题太长了"),
@@ -979,6 +982,20 @@ function isCardDoneForUser(card, userId) {
   return card.statusByUser?.[userId] === "done" || (!card.statusByUser?.[userId] && isCompletedCard(card));
 }
 
+function stepStatusForUser(step, card, userId) {
+  if (!step || !userId) return "todo";
+  const participants = Array.isArray(card?.participants) ? card.participants : [];
+  if (step.ownerId && step.ownerId !== userId && participants.includes(userId)) return "skip";
+  if (step.statusByUser?.[userId] === "done" || step.statusByUser?.[userId] === "todo") return step.statusByUser[userId];
+  if (step.status === "done" || step.status === "todo") return step.status;
+  return isCardDoneForUser(card, userId) ? "done" : "todo";
+}
+
+function stepDoneForUser(step, card, userId) {
+  const status = stepStatusForUser(step, card, userId);
+  return status === "done" || status === "skip";
+}
+
 function userDisplayName(id, profiles, fallback = "对方") {
   return profiles.find((profile) => profile.id === id)?.displayName || fallback;
 }
@@ -1023,10 +1040,12 @@ function stepOwnerLabel(step, profiles, participants = [], currentUser = null) {
 }
 
 function stepStateLabel(step, profiles, participants = [], currentUser = null) {
-  if (step?.status === "done") return "已完成";
   const ids = stepOwnerIds(step, participants);
+  const pending = ids.filter((id) => stepStatusForUser(step, { participants }, id) !== "done");
+  if (!pending.length && ids.length) return "已完成";
+  if (step?.status === "done") return "已完成";
   if (!step?.ownerId && ids.length > 1) {
-    return `待${ids.map((id) => participantShortName(id, profiles, currentUser)).join("、")}完成`;
+    return `待${pending.map((id) => participantShortName(id, profiles, currentUser)).join("、")}完成`;
   }
   const id = ids[0] || "";
   if (!id || id === currentUser?.id) return "待我完成";
@@ -1339,6 +1358,47 @@ function completionSummaryForCard(card, profiles, currentUser = null) {
     .join(" · ");
 }
 
+function lifeCardPersonProgress(card, profiles, currentUser = null) {
+  const participants = cardParticipantIds(card, profiles, currentUser);
+  const steps = (Array.isArray(card?.steps) ? card.steps : []).filter((step) => step?.title);
+  return sortPeopleProgress(participants.map((id) => {
+    const profile = profiles.find((item) => item.id === id);
+    const accountableSteps = steps.filter((step) => !step.ownerId || step.ownerId === id);
+    const total = accountableSteps.length || 1;
+    const done = accountableSteps.length
+      ? accountableSteps.filter((step) => stepDoneForUser(step, card, id)).length
+      : steps.length ? 1 : isCardDoneForUser(card, id) ? 1 : 0;
+    return {
+      id,
+      done,
+      total,
+      complete: total > 0 && done >= total,
+      label: profile?.displayName || ownerLabel(id, currentUser),
+      shortLabel: participantShortName(id, profiles, currentUser, profile?.displayName || "对方"),
+      color: profileColor(profiles, id, id === currentUser?.id ? avatarColor(currentUser) : "#24b99a"),
+    };
+  }), profiles);
+}
+
+function lifeCardPersonProgressText(card, profiles, currentUser = null) {
+  return peopleProgressText(lifeCardPersonProgress(card, profiles, currentUser));
+}
+
+function stepPeopleForCard(step, card, profiles, currentUser = null) {
+  const ids = stepOwnerIds(step, cardParticipantIds(card, profiles, currentUser));
+  return sortPeopleProgress(ids.map((id) => {
+    const profile = profiles.find((item) => item.id === id);
+    const done = stepDoneForUser(step, card, id);
+    return {
+      id,
+      done,
+      label: profile?.displayName || ownerLabel(id, currentUser),
+      shortLabel: participantShortName(id, profiles, currentUser, profile?.displayName || "对方"),
+      color: profileColor(profiles, id, id === currentUser?.id ? avatarColor(currentUser) : "#24b99a"),
+    };
+  }), profiles);
+}
+
 function actionableStepsForTarget(card, targetUserId) {
   if (!card || isDailyCheckinCard(card) || card.sourceType === "checkin") return [];
   const steps = Array.isArray(card.steps) ? card.steps : [];
@@ -1346,7 +1406,7 @@ function actionableStepsForTarget(card, targetUserId) {
 }
 
 function nextActionableStep(card, targetUserId) {
-  return actionableStepsForTarget(card, targetUserId).find((step) => step.status !== "done") || null;
+  return actionableStepsForTarget(card, targetUserId).find((step) => !stepDoneForUser(step, card, targetUserId)) || null;
 }
 
 function cardToggleLabel(card, { itemType, targetUserId, targetDone, isProxy, targetName, compact = false } = {}) {
@@ -1568,10 +1628,26 @@ const detailBuilders = {
           ? (checkinRow?.people.length ? dailyCheckinRowStatusText(checkinRow) : "打卡项")
           : stepStateLabel(step, profiles, participants, currentUser);
         const owner = isDailyCheckin ? "" : stepOwnerLabel(step, profiles, participants, currentUser);
+        const regularPeople = !isDailyCheckin && card.sourceType !== "checkin"
+          ? stepPeopleForCard(step, card, profiles, currentUser).map((person) => ({
+              ...person,
+              action: !readOnly
+                ? {
+                    type: "toggle-step",
+                    card,
+                    step: {
+                      ...step,
+                      ownerId: person.id,
+                      status: person.done ? "done" : "todo",
+                    },
+                  }
+                : null,
+            }))
+          : [];
         return {
           id: step.id || step.title,
           title: cleanCardText(step.title || ""),
-          done: isDailyCheckin ? Boolean(checkinRow?.allDone) : step.status === "done",
+          done: isDailyCheckin ? Boolean(checkinRow?.allDone) : regularPeople.length ? regularPeople.every((person) => person.done) : step.status === "done",
           ownerIds: isDailyCheckin ? [] : ownerIds,
           owner,
           state,
@@ -1592,7 +1668,7 @@ const detailBuilders = {
                     }
                   : null,
               }))
-            : [],
+            : regularPeople,
           action: !isDailyCheckin && !readOnly && card.sourceType !== "checkin" && (!step.ownerId || step.ownerId === currentUser?.id || step.ownerId === targetUserId)
             ? { type: "toggle-step", card, step }
             : null,
@@ -1602,10 +1678,13 @@ const detailBuilders = {
     const hasMemory = Boolean(memoryKindText(card.memoryKinds) || card.memoryLinks?.length);
     const participantLine = namesForIds(participants, profiles);
     const completionLine = completionSummaryForCard(card, profiles, currentUser);
+    const personProgressLine = !isDailyCheckin && participants.length > 1
+      ? lifeCardPersonProgressText(card, profiles, currentUser)
+      : "";
     const statusValue = isDailyCheckin
       ? dailyCheckinProgressText(card, profiles, currentUser)
-      : participants.length && completionLine
-        ? completionLine
+      : personProgressLine || completionLine
+        ? personProgressLine || completionLine
         : stepStatus || statusText(card) || card.statusLabel;
     const timeValue = primaryTimeLabel(card);
     const repeatValue = card.repeatRule ? repeatRuleLabel(card.repeatRule) : "";
@@ -1633,7 +1712,7 @@ const detailBuilders = {
             card.priority === "high" ? { label: "重要", value: "已标记" } : null,
           ]).filter((item) => item && item.value),
       rows: detailRows([
-        completionLine && participants.length > 1 ? { label: isDailyCheckin ? "打卡情况" : "双人进度", value: completionLine, wide: true } : null,
+        (personProgressLine || completionLine) && participants.length > 1 ? { label: isDailyCheckin ? "打卡情况" : "完成情况", value: personProgressLine || completionLine, wide: true } : null,
         targetNextStep?.title ? { label: "下一步", value: targetNextStep.title, wide: true } : null,
         card.nextStep?.title && !steps.length && !targetNextStep?.title ? { label: "下一步", value: card.nextStep.title, wide: true } : null,
       ]),
@@ -2272,11 +2351,12 @@ export function App() {
     }
   }
 
-  async function saveRawCapture(mode, assets = []) {
+  async function saveRawCapture(mode, assets = [], options = {}) {
     const text = composerText.trim() || (assets.length ? "图片随手记" : "");
     if (!text) return false;
     setBusy(true);
     try {
+      const catWordMode = options.rawKind === "cat-word";
       const captureResult = await request("/api/couple/capture", {
         method: "POST",
         body: {
@@ -2285,14 +2365,14 @@ export function App() {
           mode: "save",
           visibility: "shared",
           assets,
-          rawKind: "raw",
-          rawFormat: assets.length ? "markdown+photo" : "markdown",
-          analysisIntent: mode === "agent" ? "agent" : mode === "template" ? "template" : "",
+          rawKind: options.rawKind || "raw",
+          rawFormat: options.rawFormat || (assets.length ? "markdown+photo" : "markdown"),
+          analysisIntent: catWordMode ? "gift" : mode === "agent" ? "agent" : mode === "template" ? "template" : "",
         },
       });
       if (!captureResult) return false;
       setData(captureResult.state);
-      if (mode === "agent" || mode === "template") {
+      if (!catWordMode && (mode === "agent" || mode === "template")) {
         const analyzed = await request("/api/couple/capture/analyze", {
           method: "POST",
           body: {
@@ -2316,7 +2396,7 @@ export function App() {
         }
       } else {
         setConfirmation(null);
-        toast.success("已保存随手记");
+        toast.success(catWordMode ? "已送出猫猫的话" : "已保存随手记");
       }
       setComposerText("");
       return true;
@@ -2932,10 +3012,6 @@ function Dashboard(props) {
           <StoryDayContext dayContext={data.dayContext} calendarContext={data.calendarContext} className="home-day-context" />
         </div>
         <HomeFocusNote focus={data.homeFocus} data={data} profiles={profiles} onOpen={openDetail} />
-        <button className="partner-note-link" type="button" onClick={() => { window.location.hash = "cat-note"; }}>
-          <Icon name="send" />
-          <span>给对方留一句</span>
-        </button>
       </section>
       <Composer
         text={composerText}
@@ -3224,6 +3300,10 @@ function Composer({ text, setText, saveRawCapture, profiles, currentUser, busy, 
     const ok = await saveRawCapture(mode, selectedAssets.map(({ name, dataUrl }) => ({ name, dataUrl })));
     if (ok) setSelectedAssets([]);
   }
+  async function sendCatWord() {
+    const ok = await saveRawCapture("cat-word", [], { rawKind: "cat-word", rawFormat: "text/cat-word" });
+    if (ok) setSelectedAssets([]);
+  }
   async function chooseCaptureFiles(event) {
     const slots = Math.max(0, 3 - selectedAssets.length);
     const files = Array.from(event.target.files || []).filter((file) => file.type.startsWith("image/")).slice(0, slots);
@@ -3408,6 +3488,7 @@ function Composer({ text, setText, saveRawCapture, profiles, currentUser, busy, 
             <Icon name="image" />
             <input ref={fileInputRef} type="file" accept="image/png,image/jpeg,image/webp,image/gif" multiple disabled={busy || selectedAssets.length >= 3} onChange={chooseCaptureFiles} />
           </label>
+          <IconButton icon="send" label="猫猫的话" disabled={busy || agentRunning || !text.trim() || selectedAssets.length > 0} onClick={sendCatWord} className="cat-word-inline-action" />
           <IconButton icon="bookmark" label="默认" disabled={busy || !canSubmit} onClick={() => submit("template")} />
           <IconButton icon="sparkle" label="Agent" primary disabled={busy || agentRunning || !canSubmit} onClick={() => submit("agent")} />
         </div>
@@ -3831,6 +3912,7 @@ function LifeCardTimeline({ cards, profiles, currentUser, now, selectedDate, fil
   const [scrubTargetId, setScrubTargetId] = useState("");
   const [axisFocusId, setAxisFocusId] = useState("");
   const [compactDates, setCompactDates] = useState(() => new Set());
+  const [mobileToolOpen, setMobileToolOpen] = useState(false);
   const liveAxisPercent = `${dayProgressPercent(selectedDate, now)}%`;
   const [axisHandleY, setAxisHandleY] = useState(liveAxisPercent);
   const listRef = useRef(null);
@@ -3920,12 +4002,15 @@ function LifeCardTimeline({ cards, profiles, currentUser, now, selectedDate, fil
       staleCount: staleCards.length,
     };
   }, [lifeCards, currentUser?.id, profileIds]);
+  const selectedCompact = compactDates.has(selectedDate);
   const filters = [
     ["all", "rows", "全部"],
     ["mine", "user", "自己"],
     ["shared", "users", "双人"],
     ["archived", "archive", "归档"],
   ];
+  const activeFilter = filters.find(([id]) => id === filter) || filters[0];
+  const mobileToolLabel = activeFilter[0] === "all" ? "筛选" : activeFilter[2];
   const scopes = [
     ["today", "focus", "今天"],
     ["future", "calendar", "未来"],
@@ -4177,7 +4262,12 @@ function LifeCardTimeline({ cards, profiles, currentUser, now, selectedDate, fil
       return next;
     });
   };
-  const selectedCompact = compactDates.has(selectedDate);
+  const chooseTimelineFilter = (id) => {
+    setAxisFocusId("");
+    setScrubTargetId("");
+    setFilter(id);
+    setMobileToolOpen(false);
+  };
   const moveRolloverCards = async () => {
     if (!rolloverAllCards.length || rolloverBusy) return;
     setRolloverBusy(true);
@@ -4251,11 +4341,7 @@ function LifeCardTimeline({ cards, profiles, currentUser, now, selectedDate, fil
                 variant="ghost"
                 radius="full"
                 size="1"
-                onClick={() => {
-                  setAxisFocusId("");
-                  setScrubTargetId("");
-                  setFilter(id);
-                }}
+                onClick={() => chooseTimelineFilter(id)}
                 aria-label={label}
                 title={label}
               >
@@ -4263,6 +4349,37 @@ function LifeCardTimeline({ cards, profiles, currentUser, now, selectedDate, fil
                 <span>{label}</span>
               </ThemeButton>
             ))}
+          </div>
+          <div className={cx("mobile-tool-menu", mobileToolOpen && "is-open")}>
+            <button
+              className="mobile-tool-toggle"
+              type="button"
+              aria-expanded={mobileToolOpen}
+              aria-label="展开筛选"
+              onClick={() => setMobileToolOpen((value) => !value)}
+            >
+              <span>
+                <Icon name="settings" />
+                <b>{mobileToolLabel}</b>
+              </span>
+              <Icon name={mobileToolOpen ? "chevronUp" : "chevronDown"} />
+            </button>
+            <div className="mobile-tool-list" aria-label="筛选">
+              {filters.map(([id, icon, label]) => (
+                <button
+                  className={cx("mobile-tool-row", filter === id && "is-active")}
+                  type="button"
+                  key={id}
+                  onClick={() => chooseTimelineFilter(id)}
+                >
+                  <Icon name={icon} />
+                  <span>
+                    <b>{label}</b>
+                    <em>{id === "mine" ? "只看自己" : id === "shared" ? "双人项目" : id === "archived" ? "已归档" : "当前任务"}</em>
+                  </span>
+                </button>
+              ))}
+            </div>
           </div>
         </div>
       </div>
@@ -4373,16 +4490,13 @@ function LifeCardTimeline({ cards, profiles, currentUser, now, selectedDate, fil
           const visible = isFocusMode ? dayCards : (isExpanded || isSelectedDay || isTodayGroup ? dayCards : dayCards.slice(0, 3));
           const visibleGroups = groupCardsByTimelineSlot(visible);
           const hiddenCount = isFocusMode ? 0 : dayCards.length - visible.length;
-          const openCount = dayCards.filter((card) => !isCompletedCard(card) && !isArchivedCard(card)).length;
           const hasHigh = dayCards.some((card) => card.priority === "high" || Number(card.rankScore || 0) >= 60);
           const hasScrubTarget = Boolean(focusedCardId && dayCards.some((card) => card.id === focusedCardId));
           return (
             <section key={date} className={cx("timeline-day", date === selectedDate && "is-selected", date === todayKey && "is-today", isCompactDay && "is-compact-day", hasHigh && "has-high", hasScrubTarget && "has-scrub-target")}>
-              <button className="timeline-node" type="button" onClick={() => selectDate(date)} aria-label={date === todayKey ? `今天 ${date}` : date}>
-                <span>{openCount || dayCards.length}</span>
-              </button>
+              <button className="timeline-node" type="button" onClick={() => selectDate(date)} aria-label={`选择 ${shortDate(date)}`} />
               <button className="day-label" type="button" onClick={() => selectDate(date)} title={date}>
-                <strong>{date === todayKey ? "今天" : shortDate(date)}</strong>
+                <strong>{shortDate(date)}</strong>
               </button>
               <div className="day-cards">
                 {visibleGroups.map((group) => (
@@ -4498,9 +4612,15 @@ function LifeCard({ card, profiles, currentUser, compact = false, toggleCard, ar
       }))
     : [];
   const allSteps = (isLegacyCheckin ? checkinSteps : (Array.isArray(card.steps) ? card.steps : [])).filter((step) => step.title);
-  const pendingStep = !isLegacyCheckin ? allSteps.find((step) => step.status !== "done") : null;
-  const progressTotal = Number(card.stepProgress?.total);
-  const progressDone = Number(card.stepProgress?.done);
+  const pendingStep = !isLegacyCheckin ? allSteps.find((step) => !stepDoneForUser(step, card, completionTarget || currentUser?.id)) : null;
+  const isGroupCard = participants.length > 1 || card.ownerId === "shared";
+  const personProgress = !isLegacyCheckin && !isDailyCheckin ? lifeCardPersonProgress(card, profiles, currentUser) : [];
+  const progressTotal = isGroupCard && personProgress.length
+    ? personProgress.reduce((sum, person) => sum + person.total, 0)
+    : Number(card.stepProgress?.total);
+  const progressDone = isGroupCard && personProgress.length
+    ? personProgress.reduce((sum, person) => sum + person.done, 0)
+    : Number(card.stepProgress?.done);
   const stepTotal = Number.isFinite(progressTotal) && progressTotal > 0 ? progressTotal : allSteps.length;
   const stepDone = Number.isFinite(progressDone) && progressDone >= 0 ? progressDone : allSteps.filter((step) => step.status === "done").length;
   const compactStepTitle = isLegacyCheckin ? "" : pendingStep?.title || (stepTotal ? "都完成了" : "");
@@ -4520,7 +4640,6 @@ function LifeCard({ card, profiles, currentUser, compact = false, toggleCard, ar
   const dailyRows = isDailyCheckin ? dailyCheckinRows(card, profiles, currentUser) : [];
   const dailyProgressInfo = isDailyCheckin ? dailyCheckinProgress(card, profiles, currentUser) : { done: 0, total: 0 };
   const checkinDoneCount = isDailyCheckin ? dailyProgressInfo.done : checkinPeople.filter((person) => person.done).length;
-  const isGroupCard = participants.length > 1 || card.ownerId === "shared";
   const pendingOwnerIds = [...new Set(
     isDailyCheckin
       ? participants.filter((id) => dailyRows.some((row) => row.people.some((person) => person.id === id && !person.done)))
@@ -4528,10 +4647,12 @@ function LifeCard({ card, profiles, currentUser, compact = false, toggleCard, ar
       ? checkinPeople.filter((person) => !person.done).map((person) => person.id)
       : allSteps.length
         ? allSteps
-            .filter((step) => step.status !== "done")
+            .filter((step) => !stepDoneForUser(step, card, completionTarget || currentUser?.id))
             .flatMap((step) => {
               const owners = stepOwnerIds(step, participants);
-              return owners.length ? owners : [completionTarget || currentUser?.id].filter(Boolean);
+              return owners.filter((id) => !stepDoneForUser(step, card, id)).length
+                ? owners.filter((id) => !stepDoneForUser(step, card, id))
+                : [completionTarget || currentUser?.id].filter(Boolean);
             })
         : participants.filter((id) => !isCardDoneForUser(card, id))
   )];
@@ -4540,7 +4661,11 @@ function LifeCard({ card, profiles, currentUser, compact = false, toggleCard, ar
     : isLegacyCheckin && checkinPeople.length
     ? checkinDoneCount === checkinPeople.length
     : allSteps.length
-      ? allSteps.every((step) => step.status === "done")
+      ? participants.length
+        ? participants.every((id) => allSteps
+            .filter((step) => !step.ownerId || step.ownerId === id)
+            .every((step) => stepDoneForUser(step, card, id)))
+        : allSteps.every((step) => step.status === "done")
       : participants.length
         ? participants.every((id) => isCardDoneForUser(card, id))
         : storedDone;
@@ -4564,7 +4689,11 @@ function LifeCard({ card, profiles, currentUser, compact = false, toggleCard, ar
   const waitLabel = !isDone && !isArchived && isGroupCard
     ? (currentUserPending ? "等我" : pendingOwnerIds.length ? "等对方" : "")
     : "";
-  const participantCompletionLine = participants.length ? completionSummaryForCard(card, profiles, currentUser) : "";
+  const participantCompletionLine = participants.length
+    ? !isLegacyCheckin && !isDailyCheckin && personProgress.length
+      ? peopleProgressText(personProgress)
+      : completionSummaryForCard(card, profiles, currentUser)
+    : "";
   const displayedStatus = isArchived
     ? "已归档"
     : participantCompletionLine
@@ -4609,16 +4738,17 @@ function LifeCard({ card, profiles, currentUser, compact = false, toggleCard, ar
       ? `完成下一步：${nextTargetStep.title}`
       : cardToggleLabel(card, { itemType, targetUserId: completionTarget, targetDone: false, isProxy, targetName });
   const participantStates = !isLegacyCheckin && !isDailyCheckin && isGroupCard
-    ? participants.map((id) => {
+    ? personProgress.map((progress) => {
+        const id = progress.id;
         const profile = profileById.get(id);
-        const done = isCardDoneForUser(card, id);
+        const done = progress.complete;
         return {
           id,
           done,
           label: participantShortName(id, profiles, currentUser, profile?.displayName || "对方"),
           initials: profile?.initials || (profile?.displayName || participantShortName(id, profiles, currentUser)).slice(0, 1),
           color: profileColor(profiles, id, id === currentUser?.id ? avatarColor(currentUser) : "#24b99a"),
-          state: done ? "已完成" : id === currentUser?.id ? "等我" : "待完成",
+          state: progress.total > 1 ? `${progress.done}/${progress.total}` : done ? "已完成" : id === currentUser?.id ? "等我" : "待完成",
         };
       })
     : [];
@@ -4914,6 +5044,9 @@ function makeEditorStep(step = {}, index = 0) {
     estimateMin: step.estimateMin || "",
     status: step.status === "done" ? "done" : "todo",
     ownerId: step.ownerId || "",
+    statusByUser: step.statusByUser || {},
+    statusUpdatedBy: step.statusUpdatedBy || {},
+    statusUpdatedAt: step.statusUpdatedAt || {},
   };
 }
 
@@ -5075,6 +5208,9 @@ function CardEditor({ card, profiles, onClose, onSave, onDelete, confirmLeave })
           ownerId: step.ownerId,
           estimateMin: Number(step.estimateMin) || 0,
           status: step.status === "done" ? "done" : "todo",
+          statusByUser: step.statusByUser || {},
+          statusUpdatedBy: step.statusUpdatedBy || {},
+          statusUpdatedAt: step.statusUpdatedAt || {},
           sortOrder: index,
         }))
         .filter((step) => step.title),
@@ -5192,8 +5328,8 @@ function CardEditor({ card, profiles, onClose, onSave, onDelete, confirmLeave })
 
               <Tabs.Content className="edit-section-panel" value="compose">
                 <label className="edit-line-field edit-note-field">
-                  <span>注意</span>
-                  <textarea rows={4} {...register("detail")} placeholder="补一句需要记住的提醒、背景或关照方式" />
+                  <span>备注</span>
+                  <textarea rows={4} {...register("detail")} placeholder="写一点背景、提醒或需要照顾的地方" />
                 </label>
                 <div className="edit-field-grid">
                   <div className="edit-line-field edit-date-field">

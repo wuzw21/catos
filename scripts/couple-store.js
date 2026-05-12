@@ -1711,13 +1711,55 @@ function lifeCardStatusByUserFromSteps(item, steps = normalizeLifeCardSteps(item
 
   return Object.fromEntries(
     participants.map((id) => {
-      const hasPendingStep = steps.some((step) =>
-        (!step.ownerId || step.ownerId === id) &&
-        step.status !== "done"
-      );
+      const accountableSteps = steps.filter((step) => !step.ownerId || step.ownerId === id);
+      if (!accountableSteps.length) {
+        return [id, "done"];
+      }
+      const hasPendingStep = accountableSteps.some((step) => {
+        const status = lifeCardStepStatusForUser(step, item, id);
+        return status !== "done" && status !== "skip";
+      });
       return [id, hasPendingStep ? "todo" : "done"];
     })
   );
+}
+
+function lifeCardStepStatusForUser(step, item, userId) {
+  if (!step || !userId) return "todo";
+  const participants = Array.isArray(item?.participants) ? item.participants : [];
+  if (step.ownerId && step.ownerId !== userId && participants.includes(userId)) return "skip";
+  if (validStatuses.has(step.statusByUser?.[userId])) return step.statusByUser[userId];
+  if (validStatuses.has(step.status)) return step.status;
+  if (validStatuses.has(item?.statusByUser?.[userId])) return item.statusByUser[userId];
+  return "todo";
+}
+
+function setLifeCardStepUserStatus(step, item, targetUserId, nextStatus, userId, timestamp = nowIso()) {
+  const participants = Array.isArray(item?.participants) ? item.participants : [];
+  const accountableIds = step.ownerId
+    ? participants.filter((id) => id === step.ownerId)
+    : participants;
+  const statusByUser = Object.fromEntries(
+    accountableIds.map((id) => [
+      id,
+      id === targetUserId ? nextStatus : lifeCardStepStatusForUser(step, item, id),
+    ])
+  );
+  const statusUpdatedBy = {
+    ...(step.statusUpdatedBy || {}),
+    [targetUserId]: userId,
+  };
+  const statusUpdatedAt = {
+    ...(step.statusUpdatedAt || {}),
+    [targetUserId]: timestamp,
+  };
+  return {
+    ...step,
+    status: accountableIds.length && accountableIds.every((id) => statusByUser[id] === "done") ? "done" : "todo",
+    statusByUser,
+    statusUpdatedBy,
+    statusUpdatedAt,
+  };
 }
 
 function dailyCheckinStepStatusForUser(step, item, userId) {
@@ -1807,11 +1849,22 @@ function syncArchiveWithCompletion(item, userId) {
   }
 }
 
+function stepOwnerIdsForStoredStep(step, participants = []) {
+  if (step?.ownerId) return participants.includes(step.ownerId) ? [step.ownerId] : [];
+  return participants;
+}
+
 function resetLifeCardCompletion(item) {
   const participants = Array.isArray(item.participants) ? item.participants : [];
   const steps = normalizeLifeCardSteps(item.steps, participants, item.title);
   if (steps.length) {
-    item.steps = steps.map((step) => ({ ...step, status: "todo" }));
+    item.steps = steps.map((step) => ({
+      ...step,
+      status: "todo",
+      statusByUser: Object.fromEntries(stepOwnerIdsForStoredStep(step, participants).map((id) => [id, "todo"])),
+      statusUpdatedBy: {},
+      statusUpdatedAt: {},
+    }));
   }
   item.statusByUser = Object.fromEntries(participants.map((id) => [id, "todo"]));
   item.statusUpdatedBy = {};
@@ -1895,18 +1948,23 @@ function applyStepAwareStatusToggle(item, targetUserId, userId, payload = {}) {
     const isAccountableStep = (step) => !step.ownerId || step.ownerId === targetUserId;
     const shouldUndo = requestedStatus === "todo" || currentStatus === "done" || item.archivedAt;
     if (shouldUndo) {
-      item.steps = steps.map((step) =>
-        isAccountableStep(step) && step.status === "done"
-          ? { ...step, status: "todo" }
-          : step
-      );
+      const timestamp = nowIso();
+      item.steps = steps.map((step) => {
+        if (!isAccountableStep(step) || lifeCardStepStatusForUser(step, item, targetUserId) !== "done") return step;
+        return setLifeCardStepUserStatus(step, item, targetUserId, "todo", userId, timestamp);
+      });
       item.statusByUser = lifeCardStatusByUserFromSteps(item, item.steps);
       syncArchiveWithCompletion(item, userId);
       return;
     }
 
-    const nextTodoIndex = steps.findIndex((step) => isAccountableStep(step) && step.status !== "done");
-    if (nextTodoIndex >= 0) steps[nextTodoIndex] = { ...steps[nextTodoIndex], status: "done" };
+    const nextTodoIndex = steps.findIndex((step) => {
+      const status = lifeCardStepStatusForUser(step, item, targetUserId);
+      return isAccountableStep(step) && status !== "done" && status !== "skip";
+    });
+    if (nextTodoIndex >= 0) {
+      steps[nextTodoIndex] = setLifeCardStepUserStatus(steps[nextTodoIndex], item, targetUserId, "done", userId);
+    }
     item.steps = steps;
     item.statusByUser = lifeCardStatusByUserFromSteps(item, steps);
     syncArchiveWithCompletion(item, userId);
@@ -2038,19 +2096,16 @@ function toggleLifeCardStep(userId, payload = {}) {
       item.participants.push(targetUserId);
     }
 
-    const currentStatus = steps[stepIndex].status === "done" ? "done" : "todo";
+    const currentStatus = lifeCardStepStatusForUser(steps[stepIndex], item, targetUserId);
     const nextStatus = validStatuses.has(payload.status)
       ? payload.status
       : currentStatus === "done" ? "todo" : "done";
-    steps[stepIndex] = {
-      ...steps[stepIndex],
-      status: nextStatus,
-    };
+    const timestamp = nowIso();
+    steps[stepIndex] = setLifeCardStepUserStatus(steps[stepIndex], item, targetUserId, nextStatus, userId, timestamp);
     item.steps = steps;
     item.statusByUser = lifeCardStatusByUserFromSteps(item, steps);
     syncArchiveWithCompletion(item, userId);
 
-    const timestamp = nowIso();
     markStatusOperation(item, targetUserId, userId, timestamp);
     item.updatedBy = userId;
     item.updatedAt = timestamp;
@@ -3049,6 +3104,15 @@ function publicScheduleItem(item, profileIds) {
   const participants = (Array.isArray(item.participants) ? item.participants : [])
     .filter((id) => profileIds.includes(id));
   const normalizedParticipants = participants.length ? participants : profileIds;
+  const planning = publicPlanningFields({ ...item, participants: normalizedParticipants });
+  const statusByUser = planning.steps.length
+    ? lifeCardStatusByUserFromSteps({ ...item, participants: normalizedParticipants, steps: planning.steps }, planning.steps)
+    : Object.fromEntries(
+        normalizedParticipants.map((id) => [
+          id,
+          validStatuses.has(item.statusByUser?.[id]) ? item.statusByUser[id] : "todo",
+        ])
+      );
   return {
     id: item.id,
     date: item.date,
@@ -3068,12 +3132,7 @@ function publicScheduleItem(item, profileIds) {
     manualOrder: normalizeManualOrder(item.manualOrder, 0),
     ownerId: item.ownerId || "shared",
     participants: normalizedParticipants,
-    statusByUser: Object.fromEntries(
-      normalizedParticipants.map((id) => [
-        id,
-        validStatuses.has(item.statusByUser?.[id]) ? item.statusByUser[id] : "todo",
-      ])
-    ),
+    statusByUser,
     statusUpdatedBy: sanitizeTextMap(item.statusUpdatedBy),
     statusUpdatedAt: sanitizeTextMap(item.statusUpdatedAt, 40),
     createdBy: item.createdBy || "",
@@ -3082,7 +3141,7 @@ function publicScheduleItem(item, profileIds) {
     updatedAt: item.updatedAt || "",
     archivedAt: item.archivedAt || "",
     archivedBy: item.archivedBy || "",
-    ...publicPlanningFields(item),
+    ...planning,
   };
 }
 
@@ -3090,6 +3149,15 @@ function publicTodoItem(item, profileIds) {
   const participants = (Array.isArray(item.participants) ? item.participants : [])
     .filter((id) => profileIds.includes(id));
   const normalizedParticipants = participants.length ? participants : profileIds;
+  const planning = publicPlanningFields({ ...item, participants: normalizedParticipants });
+  const statusByUser = planning.steps.length
+    ? lifeCardStatusByUserFromSteps({ ...item, participants: normalizedParticipants, steps: planning.steps }, planning.steps)
+    : Object.fromEntries(
+        normalizedParticipants.map((id) => [
+          id,
+          validStatuses.has(item.statusByUser?.[id]) ? item.statusByUser[id] : "todo",
+        ])
+      );
   return {
     id: item.id,
     date: normalizeDate(item.date),
@@ -3109,12 +3177,7 @@ function publicTodoItem(item, profileIds) {
     bucket: normalizeTodoBucket(item.bucket),
     ownerId: item.ownerId || "shared",
     participants: normalizedParticipants,
-    statusByUser: Object.fromEntries(
-      normalizedParticipants.map((id) => [
-        id,
-        validStatuses.has(item.statusByUser?.[id]) ? item.statusByUser[id] : "todo",
-      ])
-    ),
+    statusByUser,
     statusUpdatedBy: sanitizeTextMap(item.statusUpdatedBy),
     statusUpdatedAt: sanitizeTextMap(item.statusUpdatedAt, 40),
     createdBy: item.createdBy || "",
@@ -3123,7 +3186,7 @@ function publicTodoItem(item, profileIds) {
     updatedAt: item.updatedAt || "",
     archivedAt: item.archivedAt || "",
     archivedBy: item.archivedBy || "",
-    ...publicPlanningFields(item),
+    ...planning,
   };
 }
 
@@ -3181,6 +3244,15 @@ function publicDeadlineItem(item, profileIds) {
   const participants = (Array.isArray(item.participants) ? item.participants : [])
     .filter((id) => profileIds.includes(id));
   const normalizedParticipants = participants.length ? participants : profileIds;
+  const planning = publicPlanningFields({ ...item, participants: normalizedParticipants });
+  const statusByUser = planning.steps.length
+    ? lifeCardStatusByUserFromSteps({ ...item, participants: normalizedParticipants, steps: planning.steps }, planning.steps)
+    : Object.fromEntries(
+        normalizedParticipants.map((id) => [
+          id,
+          validStatuses.has(item.statusByUser?.[id]) ? item.statusByUser[id] : "todo",
+        ])
+      );
   return {
     id: item.id,
     date: normalizeDate(item.date),
@@ -3199,12 +3271,7 @@ function publicDeadlineItem(item, profileIds) {
     manualOrder: normalizeManualOrder(item.manualOrder, 0),
     ownerId: item.ownerId || "shared",
     participants: normalizedParticipants,
-    statusByUser: Object.fromEntries(
-      normalizedParticipants.map((id) => [
-        id,
-        validStatuses.has(item.statusByUser?.[id]) ? item.statusByUser[id] : "todo",
-      ])
-    ),
+    statusByUser,
     statusUpdatedBy: sanitizeTextMap(item.statusUpdatedBy),
     statusUpdatedAt: sanitizeTextMap(item.statusUpdatedAt, 40),
     createdBy: item.createdBy || "",
@@ -3213,7 +3280,7 @@ function publicDeadlineItem(item, profileIds) {
     updatedAt: item.updatedAt || "",
     archivedAt: item.archivedAt || "",
     archivedBy: item.archivedBy || "",
-    ...publicPlanningFields(item),
+    ...planning,
   };
 }
 

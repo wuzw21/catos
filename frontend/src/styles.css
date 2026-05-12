@@ -1105,6 +1105,12 @@ button.cat-word-mini:hover {
   color: #c13d65;
 }
 
+.icon-button.cat-word-inline-action {
+  border-color: rgba(219, 67, 129, 0.2);
+  background: rgba(255, 231, 243, 0.72);
+  color: var(--pink-deep);
+}
+
 .icon-button.is-spinning svg {
   animation: agentPulse 1.2s ease-in-out infinite;
 }
@@ -2884,6 +2890,10 @@ button.cat-word-mini:hover {
 
 .density-chip.rt-Button {
   box-shadow: none;
+}
+
+.mobile-tool-menu {
+  display: none;
 }
 
 .life-title {
@@ -8844,7 +8854,7 @@ button.detail-step:hover {
   }
 
   .home-paper {
-    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-columns: minmax(0, 1fr);
     align-items: stretch;
     gap: 6px;
     padding: 0;
@@ -8891,7 +8901,7 @@ button.detail-step:hover {
   }
 
   .home-focus-note {
-    grid-column: 1;
+    grid-column: 1 / -1;
     grid-template-columns: 28px minmax(0, 1fr) minmax(0, auto);
     justify-self: stretch;
     min-height: 40px;
@@ -9040,6 +9050,139 @@ button.detail-step:hover {
     min-width: 0;
   }
 
+  .tool-groups > .icon-segment {
+    display: none;
+  }
+
+  .mobile-tool-menu {
+    position: relative;
+    display: grid;
+    flex: 0 0 auto;
+    min-width: 0;
+  }
+
+  .mobile-tool-toggle {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 3px;
+    min-width: 46px;
+    height: 28px;
+    padding: 0 7px;
+    border: 1px solid rgba(219, 67, 129, 0.14);
+    border-radius: 999px;
+    background: rgba(255, 255, 255, 0.68);
+    color: var(--pink-deep);
+    cursor: pointer;
+    font-size: 0.68rem;
+    font-weight: 950;
+    box-shadow: none;
+  }
+
+  .mobile-tool-menu.is-open .mobile-tool-toggle {
+    border-color: rgba(219, 67, 129, 0.24);
+    background: rgba(255, 231, 243, 0.82);
+  }
+
+  .mobile-tool-toggle span {
+    display: inline-flex;
+    align-items: center;
+    gap: 0;
+    min-width: 0;
+  }
+
+  .mobile-tool-toggle span svg {
+    display: none;
+  }
+
+  .mobile-tool-toggle b {
+    overflow: hidden;
+    max-width: 3.4em;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .mobile-tool-toggle svg {
+    flex: 0 0 auto;
+    width: 12px;
+    height: 12px;
+  }
+
+  .mobile-tool-list {
+    position: absolute;
+    top: calc(100% + 7px);
+    right: 0;
+    z-index: 25;
+    display: none;
+    width: min(204px, calc(100vw - 24px));
+    padding: 5px;
+    border: 1px solid rgba(46, 38, 48, 0.09);
+    border-radius: 14px;
+    background: rgba(255, 253, 249, 0.98);
+    box-shadow: 0 16px 34px rgba(68, 46, 58, 0.14);
+    backdrop-filter: blur(18px);
+  }
+
+  .mobile-tool-menu.is-open .mobile-tool-list {
+    display: grid;
+    gap: 4px;
+  }
+
+  .mobile-tool-row {
+    display: grid;
+    grid-template-columns: 26px minmax(0, 1fr);
+    align-items: center;
+    gap: 7px;
+    min-height: 38px;
+    padding: 4px 7px 4px 4px;
+    border: 0;
+    border-radius: 12px;
+    background: transparent;
+    color: var(--ink);
+    cursor: pointer;
+    text-align: left;
+  }
+
+  .mobile-tool-row:hover,
+  .mobile-tool-row.is-active {
+    background: rgba(255, 231, 243, 0.76);
+  }
+
+  .mobile-tool-row > svg {
+    width: 26px;
+    height: 26px;
+    padding: 7px;
+    border-radius: 9px;
+    background: rgba(255, 255, 255, 0.74);
+    color: var(--pink-deep);
+  }
+
+  .mobile-tool-row span {
+    display: grid;
+    gap: 1px;
+    min-width: 0;
+  }
+
+  .mobile-tool-row b,
+  .mobile-tool-row em {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .mobile-tool-row b {
+    color: var(--ink);
+    font-size: 0.78rem;
+    font-weight: 950;
+  }
+
+  .mobile-tool-row em {
+    color: var(--muted);
+    font-size: 0.64rem;
+    font-style: normal;
+    font-weight: 850;
+  }
+
   .life-toolbar {
     display: flex;
     flex-wrap: wrap;
@@ -9070,7 +9213,6 @@ button.detail-step:hover {
     white-space: nowrap;
   }
 
-  .density-chip span,
   .filter-button span,
   .range-segment span {
     display: none;
@@ -9084,14 +9226,21 @@ button.detail-step:hover {
   }
 
   .range-segment button,
-  .filter-button,
-  .density-chip {
+  .filter-button {
     width: 28px;
     min-width: 28px;
     height: 28px;
     min-height: 28px;
     justify-content: center;
     padding: 0;
+  }
+
+  .density-chip {
+    width: auto;
+    min-width: 60px;
+    height: 32px;
+    min-height: 32px;
+    padding: 0 9px;
   }
 
   .next-up-strip {
@@ -9662,7 +9811,7 @@ button.detail-step:hover {
   }
 
   .home-focus-note {
-    grid-column: 1;
+    grid-column: 1 / -1;
     justify-self: stretch;
     min-height: 40px;
     border-left-width: 2px;
@@ -10621,7 +10770,6 @@ button.detail-step:hover {
     overflow: visible;
   }
 
-  .density-chip span,
   .filter-button span,
   .range-segment span {
     display: none;
@@ -10640,12 +10788,12 @@ button.detail-step:hover {
   }
 
   .density-chip {
-    width: 28px;
-    min-width: 28px;
-    min-height: 28px;
-    height: 28px;
+    width: auto;
+    min-width: 60px;
+    min-height: 32px;
+    height: 32px;
     justify-content: center;
-    padding: 0;
+    padding: 0 9px;
   }
 
   .icon-segment {
