@@ -1128,6 +1128,16 @@ function completionSummaryForCard(card, profiles, currentUser = null) {
     .join(" · ");
 }
 
+function nextUpPeopleLabel(card, profiles, currentUser = null) {
+  const participants = cardParticipantIds(card, profiles, currentUser);
+  if (!participants.length) return statusText(card) || "";
+  const pending = participants.filter((id) => !isCardDoneForUser(card, id));
+  if (!pending.length) return "都完成了";
+  return pending
+    .map((id) => id === currentUser?.id ? "等我" : `等${participantShortName(id, profiles, currentUser, "对方")}`)
+    .join(" · ");
+}
+
 function compactLifeCardRow(card, context, activeId = "") {
   const itemType = card.itemType && itemTypeLabels[card.itemType] ? card.itemType : "thing";
   return {
@@ -3206,6 +3216,12 @@ function LifeCardTimeline({ cards, profiles, currentUser, selectedDate, filter, 
     .filter((card) => String(card.date || todayKey) === selectedDate)
     .filter(isPriorityPinnedCard)
   ).slice(0, 3), [visibleCards, selectedDate, todayKey]);
+  const nextUpCard = useMemo(() => sortCards(visibleCards
+    .filter((card) => String(card.date || todayKey) === selectedDate)
+    .filter((card) => !isArchivedCard(card) && !isCompletedCard(card))
+  )[0] || null, [visibleCards, selectedDate, todayKey]);
+  const nextUpTime = nextUpCard ? primaryTimeLabel(nextUpCard) : "";
+  const nextUpPeople = nextUpCard ? nextUpPeopleLabel(nextUpCard, profiles, currentUser) : "";
   const summary = useMemo(() => {
     const activeCards = lifeCards.filter((card) => !isArchivedCard(card));
     const openCards = activeCards.filter((card) => !isCompletedCard(card));
@@ -3533,6 +3549,24 @@ function LifeCardTimeline({ cards, profiles, currentUser, selectedDate, filter, 
           </div>
         </div>
       </div>
+      {nextUpCard ? (
+        <button
+          className={cx("next-up-strip", nextUpCard.priority === "high" && "is-important")}
+          type="button"
+          onClick={() => openDetail?.("lifeCard", nextUpCard)}
+          title={lifeCardDisplayTitle(nextUpCard, "生活卡")}
+        >
+          <span className="next-up-kicker">
+            <Icon name="sparkle" />
+            <b>接下来</b>
+          </span>
+          <span className="next-up-main">
+            <strong>{lifeCardDisplayTitle(nextUpCard, "生活卡")}</strong>
+            {nextUpTime ? <em>{nextUpTime}</em> : null}
+          </span>
+          {nextUpPeople ? <span className="next-up-people">{nextUpPeople}</span> : null}
+        </button>
+      ) : null}
       {pinnedCards.length ? (
         <section className="priority-strip" aria-label="置顶生活卡">
           <div className="priority-strip-head">
