@@ -207,8 +207,17 @@ function stableIndex(key, size) {
 function useMinuteNow() {
   const [now, setNow] = useState(() => new Date());
   useEffect(() => {
-    const timer = window.setInterval(() => setNow(new Date()), 60000);
-    return () => window.clearInterval(timer);
+    let timer = 0;
+    const scheduleNextTick = () => {
+      const current = new Date();
+      const nextMinuteDelay = 60000 - (current.getSeconds() * 1000 + current.getMilliseconds());
+      timer = window.setTimeout(() => {
+        setNow(new Date());
+        scheduleNextTick();
+      }, Math.max(250, nextMinuteDelay));
+    };
+    scheduleNextTick();
+    return () => window.clearTimeout(timer);
   }, []);
   return now;
 }
@@ -830,7 +839,7 @@ function dayProgressPercent(date, nowValue = new Date()) {
   if (date < currentDate) return 100;
   if (date > currentDate) return 0;
   const shiftedMinutes = ((nowDate.getHours() - dayRolloverHour + 24) % 24) * 60 + nowDate.getMinutes();
-  return Math.round((shiftedMinutes / 1440) * 100);
+  return Number(((shiftedMinutes / 1440) * 100).toFixed(2));
 }
 
 function cleanCardText(value) {
@@ -984,7 +993,7 @@ function statusRowsForCard(card, profiles, currentUser = null) {
     .map((id) => {
       const name = participantShortName(id, profiles, currentUser, id);
       const done = statusByUser[id] === "done";
-      const actor = updatedBy[id] && updatedBy[id] !== id ? userDisplayName(updatedBy[id], profiles, updatedBy[id]) : "";
+      const actor = done && updatedBy[id] && updatedBy[id] !== id ? userDisplayName(updatedBy[id], profiles, updatedBy[id]) : "";
       return `${name}：${done ? "已完成" : "待完成"}${actor ? `（${actor}代点）` : ""}`;
     })
     .filter(Boolean);
@@ -1208,10 +1217,38 @@ function completionSummaryForCard(card, profiles, currentUser = null) {
     .map((id) => {
       const name = userDisplayName(id, profiles, participantShortName(id, profiles, currentUser, id));
       const done = isCardDoneForUser(card, id);
-      const actor = updatedBy[id] && updatedBy[id] !== id ? userDisplayName(updatedBy[id], profiles, updatedBy[id]) : "";
+      const actor = done && updatedBy[id] && updatedBy[id] !== id ? userDisplayName(updatedBy[id], profiles, updatedBy[id]) : "";
       return `${name}${done ? (isCheckin ? "已打卡" : "已完成") : (isCheckin ? "未打卡" : "未完成")}${actor ? `（${actor}代点）` : ""}`;
     })
     .join(" · ");
+}
+
+function actionableStepsForTarget(card, targetUserId) {
+  if (!card || isDailyCheckinCard(card) || card.sourceType === "checkin") return [];
+  const steps = Array.isArray(card.steps) ? card.steps : [];
+  return steps.filter((step) => step?.title && (!step.ownerId || step.ownerId === targetUserId));
+}
+
+function nextActionableStep(card, targetUserId) {
+  return actionableStepsForTarget(card, targetUserId).find((step) => step.status !== "done") || null;
+}
+
+function cardToggleLabel(card, { itemType, targetUserId, targetDone, isProxy, targetName, compact = false } = {}) {
+  const hasSteps = actionableStepsForTarget(card, targetUserId).length > 0;
+  if (isDailyCheckinCard(card)) {
+    if (targetDone) return isProxy ? `取消${targetName}打卡` : "取消打卡";
+    return isProxy ? `帮${targetName}打卡` : "我打卡";
+  }
+  if (itemType === "checkin") {
+    if (targetDone) return isProxy ? `取消${targetName}打卡` : "取消打卡";
+    return isProxy ? `帮${targetName}打卡` : "打卡";
+  }
+  if (hasSteps) {
+    if (targetDone) return compact ? "恢复" : isProxy ? `恢复${targetName}步骤` : "恢复我的步骤";
+    return compact ? "下一步" : "完成下一步";
+  }
+  if (targetDone) return isProxy ? `取消${targetName}` : "取消";
+  return isProxy ? `帮${targetName}完成` : "完成";
 }
 
 function nextUpPeopleLabel(card, profiles, currentUser = null) {
@@ -1389,6 +1426,8 @@ const detailBuilders = {
     const targetDone = targetUserId ? isCardDoneForUser(card, targetUserId) : isDone;
     const timerActive = Boolean(card.timeTracking?.currentUserActive);
     const isDailyCheckin = isDailyCheckinCard(card);
+    const targetStepCount = actionableStepsForTarget(card, targetUserId).length;
+    const targetNextStep = nextActionableStep(card, targetUserId);
     const detail = lifeCardSurfaceText(isDailyCheckin ? dailyCheckinSummary(card) : summaryLine(card) || cleanCardText(card.detail || card.slot || ""), "");
     const peerCheckinCards = card.sourceType === "checkin"
       ? (Array.isArray(context.cards) ? context.cards : [])
@@ -1430,9 +1469,8 @@ const detailBuilders = {
     const canQuickPatch = canPatchLifeCard(card) && !isArchived && !isDailyCheckin;
     const quickMoveDate = card.date === today() ? addDays(card.date, 1) : today();
     const quickMoveLabel = card.date === today() ? "明天" : "本日";
-    const primaryActionLabel = isDailyCheckin || itemType === "checkin"
-      ? (targetDone ? "取消打卡" : isProxy ? `帮${targetName}打卡` : isDailyCheckin ? "我打卡" : "打卡")
-      : (targetDone ? "取消" : isProxy ? `帮${targetName}完成` : "完成");
+    const primaryActionLabel = cardToggleLabel(card, { itemType, targetUserId, targetDone, isProxy, targetName });
+    const primaryActionIcon = targetDone ? "undo" : targetStepCount ? "chevronRight" : "check";
     return {
       type: "lifeCard",
       label: itemTypeLabels[itemType],
@@ -1453,7 +1491,8 @@ const detailBuilders = {
           ]).filter((item) => item && item.value),
       rows: detailRows([
         completionLine && participants.length > 1 ? { label: isDailyCheckin ? "打卡情况" : "双人进度", value: completionLine, wide: true } : null,
-        card.nextStep?.title && !steps.length ? { label: "下一步", value: card.nextStep.title, wide: true } : null,
+        targetNextStep?.title ? { label: "下一步", value: targetNextStep.title, wide: true } : null,
+        card.nextStep?.title && !steps.length && !targetNextStep?.title ? { label: "下一步", value: card.nextStep.title, wide: true } : null,
       ]),
       moreRows: detailRows([
         { label: "类型", value: itemTypeLabels[itemType] },
@@ -1472,7 +1511,7 @@ const detailBuilders = {
       moreSections: lifeCardDetailSections(card, context),
       images: [],
       actions: [
-        !readOnly && !isArchived && targetUserId ? { type: "toggle-card", icon: targetDone ? "undo" : "check", label: primaryActionLabel, card } : null,
+        !readOnly && !isArchived && targetUserId ? { type: "toggle-card", icon: primaryActionIcon, label: primaryActionLabel, card } : null,
         !readOnly && !isArchived && !card.isDraft && card.sourceType !== "checkin" && !isDailyCheckin ? { type: "timer-card", icon: timerActive ? "stop" : "clock", label: timerActive ? "停止" : "计时", card } : null,
         canQuickPatch ? { type: "set-card-priority", icon: "star", label: card.priority === "high" ? "普通" : "重要", card, priority: card.priority === "high" ? "normal" : "high" } : null,
         !isDailyCheckin && !readOnly && ["schedule", "todo"].includes(card.sourceType) ? { type: "archive-card", icon: isArchived ? "undo" : "archive", label: isArchived ? "恢复" : "归档", card } : null,
@@ -2229,13 +2268,18 @@ export function App() {
     if (!targetUserId) return;
     const isProxy = targetUserId !== currentUser.id;
     const wasCompleted = isCardDoneForUser(card, targetUserId);
+    const hasTargetSteps = actionableStepsForTarget(card, targetUserId).length > 0;
     if (isProxy) {
       const targetName = actorName(targetUserId, profiles, "对方");
-      const actionText = wasCompleted ? "取消完成" : "完成";
+      const actionText = hasTargetSteps
+        ? (wasCompleted ? "恢复相关步骤" : "完成下一步")
+        : (wasCompleted ? "取消完成" : "完成");
       const accepted = await askConfirmation({
-        title: `帮 ${targetName} ${actionText}这张卡？`,
-        body: `这会把 ${targetName} 的完成状态记为由 ${currentUser?.displayName || "你"} 操作。`,
-        confirmLabel: `确认${actionText}`,
+        title: `帮 ${targetName} ${actionText}？`,
+        body: hasTargetSteps
+          ? `这会把 ${targetName} 的子任务状态记为由 ${currentUser?.displayName || "你"} 操作。`
+          : `这会把 ${targetName} 的完成状态记为由 ${currentUser?.displayName || "你"} 操作。`,
+        confirmLabel: actionText,
         cancelLabel: "先不动",
         tone: "proxy",
         icon: "users",
@@ -2257,7 +2301,11 @@ export function App() {
       setData(result.state);
       refreshDetailCardFromState(result.state, card);
       if (wasCompleted) setFilter("all");
-      toast.success(isDailyCheckinCard(card) || card.itemType === "checkin" ? (wasCompleted ? "已取消打卡" : "已打卡") : (wasCompleted ? "已恢复待办" : "已完成"));
+      toast.success(isDailyCheckinCard(card) || card.itemType === "checkin"
+        ? (wasCompleted ? "已取消打卡" : "已打卡")
+        : hasTargetSteps
+          ? (wasCompleted ? "已恢复相关步骤" : "已完成下一步")
+          : (wasCompleted ? "已恢复待办" : "已完成"));
     }
   }
 
@@ -4235,9 +4283,19 @@ function LifeCard({ card, profiles, currentUser, compact = false, toggleCard, ar
     event.stopPropagation();
   };
   const { isProxy, targetName } = proxyActionMeta(card, currentUser, profiles);
-  const completeLabel = isDailyCheckin ? (isProxy ? `帮${targetName}打卡` : "我打卡") : itemType === "checkin" ? (isProxy ? `帮${targetName}打卡` : "打卡") : isProxy ? `帮${targetName}完成` : "完成";
-  const undoLabel = isDailyCheckin || itemType === "checkin" ? (isProxy ? `取消${targetName}打卡` : "取消打卡") : isProxy ? `取消${targetName}` : "取消";
   const targetDone = completionTarget ? isCardDoneForUser(card, completionTarget) : isDone;
+  const hasTargetSteps = actionableStepsForTarget(card, completionTarget).length > 0;
+  const nextTargetStep = nextActionableStep(card, completionTarget);
+  const cardActionCompact = compact || hasTargetSteps;
+  const completeLabel = cardToggleLabel(card, { itemType, targetUserId: completionTarget, targetDone: false, isProxy, targetName, compact: cardActionCompact });
+  const undoLabel = cardToggleLabel(card, { itemType, targetUserId: completionTarget, targetDone: true, isProxy, targetName, compact: cardActionCompact });
+  const currentActionLabel = targetDone ? undoLabel : completeLabel;
+  const currentActionIcon = targetDone ? "undo" : hasTargetSteps ? "chevronRight" : "circle";
+  const currentActionTitle = targetDone
+    ? cardToggleLabel(card, { itemType, targetUserId: completionTarget, targetDone: true, isProxy, targetName })
+    : nextTargetStep?.title
+      ? `完成下一步：${nextTargetStep.title}`
+      : cardToggleLabel(card, { itemType, targetUserId: completionTarget, targetDone: false, isProxy, targetName });
   const participantStates = !isLegacyCheckin && !isDailyCheckin && isGroupCard
     ? participants.map((id) => {
         const profile = profileById.get(id);
@@ -4382,38 +4440,38 @@ function LifeCard({ card, profiles, currentUser, compact = false, toggleCard, ar
             <button
               className={cx("action-chip compact-only-action", targetDone ? "done-mark" : "complete-toggle")}
               type="button"
-              aria-label={targetDone ? undoLabel : completeLabel}
+              aria-label={currentActionTitle}
               aria-pressed={targetDone ? "true" : "false"}
-              title={targetDone ? undoLabel : completeLabel}
+              title={currentActionTitle}
               onClick={completeCard}
             >
-              <Icon name={targetDone ? "check" : "circle"} />
-              <span>{targetDone ? undoLabel : completeLabel}</span>
+              <Icon name={currentActionIcon} />
+              <span>{currentActionLabel}</span>
             </button>
           ) : null}
           {!compact && !isArchived && !isLegacyCheckin && completionTarget && targetDone ? (
             <button
               className="action-chip done-mark"
               type="button"
-              aria-label={undoLabel}
+              aria-label={currentActionTitle}
               aria-pressed="true"
-              title={undoLabel}
+              title={currentActionTitle}
               onClick={completeCard}
             >
-              <Icon name="check" />
-              <span>{undoLabel}</span>
+              <Icon name={currentActionIcon} />
+              <span>{currentActionLabel}</span>
             </button>
           ) : !compact && !isArchived && !isLegacyCheckin && completionTarget ? (
             <button
               className="action-chip complete-toggle"
               type="button"
-              aria-label={completeLabel}
+              aria-label={currentActionTitle}
               aria-pressed="false"
-              title={completeLabel}
+              title={currentActionTitle}
               onClick={completeCard}
             >
-              <Icon name="circle" />
-              <span>{completeLabel}</span>
+              <Icon name={currentActionIcon} />
+              <span>{currentActionLabel}</span>
             </button>
           ) : null}
           {canQuickPatch ? (

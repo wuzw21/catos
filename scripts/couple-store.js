@@ -1774,14 +1774,12 @@ function applyStepAwareStatusToggle(item, targetUserId, userId, payload = {}) {
     const isAccountableStep = (step) => !step.ownerId || step.ownerId === targetUserId;
     const shouldUndo = requestedStatus === "todo" || currentStatus === "done" || item.archivedAt;
     if (shouldUndo) {
-      const lastDoneIndex = steps
-        .map((step, index) => ({ step, index }))
-        .filter(({ step }) => isAccountableStep(step) && step.status === "done")
-        .map(({ index }) => index)
-        .pop();
-      if (lastDoneIndex >= 0) steps[lastDoneIndex] = { ...steps[lastDoneIndex], status: "todo" };
-      item.steps = steps;
-      item.statusByUser = lifeCardStatusByUserFromSteps(item, steps);
+      item.steps = steps.map((step) =>
+        isAccountableStep(step) && step.status === "done"
+          ? { ...step, status: "todo" }
+          : step
+      );
+      item.statusByUser = lifeCardStatusByUserFromSteps(item, item.steps);
       syncArchiveWithCompletion(item, userId);
       return;
     }

@@ -211,6 +211,29 @@ try {
   assert(restored.steps.every((step) => step.status === "todo"));
   assert.deepEqual(restored.statusByUser, { you: "todo", partner: "todo" });
   assert.deepEqual(restored.statusUpdatedBy, {});
+
+  const steppedTodo = store.upsertTodoItem("you", {
+    date: "2026-05-12",
+    title: "分步骤测试",
+    ownerId: "shared",
+    participants: ["you", "partner"],
+    steps: [
+      { id: "step-you-1", title: "大猫第一步", ownerId: "you" },
+      { id: "step-you-2", title: "大猫第二步", ownerId: "you" },
+      { id: "step-partner-1", title: "小猫一步", ownerId: "partner" },
+    ],
+  }).result;
+  store.toggleTodoItem("you", { id: steppedTodo.id, targetUserId: "you", status: "done" });
+  const oneStepDone = store.toggleTodoItem("you", { id: steppedTodo.id, targetUserId: "you", status: "done" }).result;
+  assert.equal(oneStepDone.statusByUser.you, "done");
+  assert.equal(oneStepDone.statusByUser.partner, "todo");
+  assert.equal(oneStepDone.steps.filter((step) => step.ownerId === "you" && step.status === "done").length, 2);
+
+  const resetOwnSteps = store.toggleTodoItem("you", { id: steppedTodo.id, targetUserId: "you", status: "todo" }).result;
+  assert.equal(resetOwnSteps.statusByUser.you, "todo");
+  assert.equal(resetOwnSteps.statusByUser.partner, "todo");
+  assert(resetOwnSteps.steps.filter((step) => step.ownerId === "you").every((step) => step.status === "todo"));
+  assert(resetOwnSteps.steps.filter((step) => step.ownerId === "partner").every((step) => step.status === "todo"));
 } finally {
   fs.rmSync(tempRoot, { recursive: true, force: true });
 }
