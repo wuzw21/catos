@@ -2772,6 +2772,12 @@ button.cat-word-mini:hover {
   color: var(--pink-deep);
 }
 
+.priority-pin.is-routine {
+  border-color: rgba(36, 185, 154, 0.16);
+  background: rgba(232, 249, 244, 0.7);
+  color: #167d68;
+}
+
 .priority-pin b,
 .priority-pin strong,
 .priority-pin em {
@@ -4227,6 +4233,37 @@ button.cat-word-mini:hover {
   color: rgba(46, 38, 48, 0.5);
 }
 
+.card-actions .priority-toggle,
+.card-actions .archive-toggle {
+  min-width: 54px;
+  height: 32px;
+  padding: 0 10px;
+}
+
+.card-actions .priority-toggle {
+  border-color: rgba(211, 144, 33, 0.18);
+  background: rgba(255, 225, 118, 0.22);
+  color: #7a551a;
+}
+
+.card-actions .priority-toggle.is-active {
+  border-color: rgba(211, 144, 33, 0.34);
+  background: rgba(255, 214, 88, 0.42);
+  color: #6c460d;
+}
+
+.card-actions .archive-toggle {
+  border-color: rgba(46, 38, 48, 0.08);
+  background: rgba(255, 255, 255, 0.42);
+  color: rgba(46, 38, 48, 0.56);
+}
+
+.card-actions .archive-toggle.is-restore {
+  border-color: rgba(36, 185, 154, 0.2);
+  background: rgba(36, 185, 154, 0.1);
+  color: #14957c;
+}
+
 .card-actions .detail-toggle {
   width: 32px;
   min-width: 32px;
@@ -4238,6 +4275,7 @@ button.cat-word-mini:hover {
 }
 
 .archive-toggle,
+.priority-toggle,
 .edit-toggle,
 .detail-toggle {
   border: 1px solid rgba(46, 38, 48, 0.08);
@@ -4248,6 +4286,7 @@ button.cat-word-mini:hover {
 }
 
 .archive-toggle:hover,
+.priority-toggle:hover,
 .edit-toggle:hover,
 .detail-toggle:hover {
   border-color: color-mix(in srgb, var(--type) 30%, rgba(46, 38, 48, 0.1));

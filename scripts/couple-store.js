@@ -1368,10 +1368,16 @@ function rankScheduleItemCard(card, selectedDate) {
 
   let score = 0;
   const reasons = [];
+  const routine = isRoutineLifeCardItem(card);
   const cardDate = normalizeDate(card.date, anchorDate);
   const plannedDate = normalizeDate(String(card.plannedAt || "").slice(0, 10), "");
   const dueDate = normalizeDate(String(card.dueAt || "").slice(0, 10), "");
   const dueDays = dueDate ? daysBetween(anchorDate, dueDate) : null;
+
+  if (routine) {
+    score += 72;
+    reasons.push(card.itemType === "habit" ? "习惯" : "打卡");
+  }
 
   if (card.priority === "high") {
     score += 30;
@@ -1418,7 +1424,9 @@ function rankScheduleItemCard(card, selectedDate) {
   if (card.stepProgress?.total) score += Math.min(10, card.stepProgress.total * 2);
   if (card.durationMin && card.durationMin <= 30) score += 4;
 
-  const rankLane = Number.isFinite(dueDays) && dueDays < 0
+  const rankLane = routine
+    ? "routine"
+    : Number.isFinite(dueDays) && dueDays < 0
     ? "overdue"
     : (plannedDate === anchorDate || cardDate === anchorDate)
         ? "today"
@@ -2457,6 +2465,15 @@ function isDailyCheckinLifeCard(item) {
   if (!item) return false;
   return normalizeLifeCardTags(item.tags, item).includes(dailyCheckinCardTag) ||
     (normalizeScheduleItemType(item.itemType, "") === "checkin" && item.repeatRule === "daily@03:00");
+}
+
+function isRoutineLifeCardItem(item) {
+  if (!item) return false;
+  const itemType = normalizeScheduleItemType(item.itemType, "");
+  return isDailyCheckinLifeCard(item) ||
+    item.sourceType === "checkin" ||
+    itemType === "habit" ||
+    (itemType === "checkin" && Boolean(item.repeatRule));
 }
 
 function readStore() {

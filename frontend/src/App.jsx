@@ -935,6 +935,14 @@ function isDailyCheckinCard(card) {
   );
 }
 
+function isRoutineLifeCard(card) {
+  if (!card) return false;
+  return isDailyCheckinCard(card) ||
+    card.sourceType === "checkin" ||
+    card.itemType === "habit" ||
+    (card.itemType === "checkin" && Boolean(card.repeatRule));
+}
+
 function canCurrentUserCompleteCard(card, currentUser) {
   const userId = currentUser?.id || "";
   if (!card || !userId) return false;
@@ -1465,12 +1473,12 @@ const detailBuilders = {
       actions: [
         !readOnly && !isArchived && targetUserId ? { type: "toggle-card", icon: targetDone ? "undo" : "check", label: primaryActionLabel, card } : null,
         !readOnly && !isArchived && !card.isDraft && card.sourceType !== "checkin" && !isDailyCheckin ? { type: "timer-card", icon: timerActive ? "stop" : "clock", label: timerActive ? "停止" : "计时", card } : null,
+        canQuickPatch ? { type: "set-card-priority", icon: "star", label: card.priority === "high" ? "普通" : "重要", card, priority: card.priority === "high" ? "normal" : "high" } : null,
+        !isDailyCheckin && !readOnly && ["schedule", "todo"].includes(card.sourceType) ? { type: "archive-card", icon: isArchived ? "undo" : "archive", label: isArchived ? "恢复" : "归档", card } : null,
         !readOnly ? { type: "edit-card", icon: "edit", label: "编辑", card } : null,
       ].filter(Boolean),
       moreActions: [
         canQuickPatch ? { type: "move-card-date", icon: "calendar", label: quickMoveLabel, card, date: quickMoveDate } : null,
-        canQuickPatch ? { type: "set-card-priority", icon: "star", label: card.priority === "high" ? "普通" : "重要", card, priority: card.priority === "high" ? "normal" : "high" } : null,
-        !isDailyCheckin && !readOnly && ["schedule", "todo"].includes(card.sourceType) ? { type: "archive-card", icon: isArchived ? "undo" : "archive", label: isArchived ? "恢复" : "归档", card } : null,
         !readOnly && !card.isDraft ? { type: "remember-card", icon: "bookmark", label: hasMemory ? "已记" : "记忆", card } : null,
         card.date ? { type: "go-date", icon: "calendar", label: "月历", date: card.date, page: "month" } : null,
       ].filter(Boolean),
@@ -1649,12 +1657,14 @@ function summaryRow(item, status, context) {
 function sortCards(cards) {
   const manualOrder = (card) => Number(card.manualOrder || 0);
   const lifecycleRank = (card) => isArchivedCard(card) ? 2 : isCompletedCard(card) ? 1 : 0;
+  const routineRank = (card) => isRoutineLifeCard(card) ? 0 : 1;
   return [...cards].sort((a, b) => {
     const timeA = cardTimelineSlot(a);
     const timeB = cardTimelineSlot(b);
     return String(a.date || "").localeCompare(String(b.date || "")) ||
     timeA.bucket - timeB.bucket ||
     timeA.minutes - timeB.minutes ||
+    routineRank(a) - routineRank(b) ||
     (timeA.bucket === timeB.bucket && timeA.minutes === timeB.minutes && (manualOrder(a) || manualOrder(b)) ? (manualOrder(a) || 1000000) - (manualOrder(b) || 1000000) : 0) ||
     lifecycleRank(a) - lifecycleRank(b) ||
     Number(a.sourceType === "insight") - Number(b.sourceType === "insight") ||
@@ -1724,6 +1734,7 @@ function groupCardsByTimelineSlot(cards) {
 
 function isPriorityPinnedCard(card) {
   return !isArchivedCard(card) && !isCompletedCard(card) && (
+    isRoutineLifeCard(card) ||
     card?.priority === "high" ||
     card?.rankLane === "overdue" ||
     lifeCardAgeNotice(card)?.level === "strong"
@@ -1731,6 +1742,7 @@ function isPriorityPinnedCard(card) {
 }
 
 function priorityPinLabel(card) {
+  if (isRoutineLifeCard(card)) return isDailyCheckinCard(card) ? "日常" : card?.itemType === "habit" ? "习惯" : "打卡";
   if (card?.rankLane === "overdue" || lifeCardAgeNotice(card)?.level === "strong") return "已过期";
   return "重要";
 }
@@ -2492,6 +2504,7 @@ export function App() {
               toggleTimer={toggleCardTimer}
               moveCardsDate={moveCardsDate}
               archiveCards={archiveCards}
+              setCardPriority={setCardPriority}
               setEditingCard={setEditingCard}
               openDetail={openDetail}
               reorderCards={reorderCards}
@@ -2686,6 +2699,7 @@ function Dashboard(props) {
     toggleTimer,
     moveCardsDate,
     archiveCards,
+    setCardPriority,
     setEditingCard,
     openDetail,
     reorderCards,
@@ -2740,6 +2754,7 @@ function Dashboard(props) {
         toggleTimer={toggleTimer}
         moveCardsDate={moveCardsDate}
         archiveCards={archiveCards}
+        setCardPriority={setCardPriority}
         setEditingCard={setEditingCard}
         openDetail={openDetail}
         reorderCards={reorderCards}
@@ -3463,7 +3478,7 @@ function MonthPage({ data, selectedDate, chooseDate, setPage }) {
   );
 }
 
-function LifeCardTimeline({ cards, profiles, currentUser, selectedDate, filter, setFilter, timelineScope = "today", setTimelineScope, expanded, setExpanded, toggleCard, archiveCard, toggleStep, toggleTimer, moveCardsDate, archiveCards, setEditingCard, openDetail, chooseDate, reorderCards }) {
+function LifeCardTimeline({ cards, profiles, currentUser, selectedDate, filter, setFilter, timelineScope = "today", setTimelineScope, expanded, setExpanded, toggleCard, archiveCard, toggleStep, toggleTimer, moveCardsDate, archiveCards, setCardPriority, setEditingCard, openDetail, chooseDate, reorderCards }) {
   const [isScrollDragging, setIsScrollDragging] = useState(false);
   const [isCardScrubbing, setIsCardScrubbing] = useState(false);
   const [rolloverBusy, setRolloverBusy] = useState(false);
@@ -3484,10 +3499,11 @@ function LifeCardTimeline({ cards, profiles, currentUser, selectedDate, filter, 
     .filter((card) => card.sourceType !== "insight")
     .filter((card) => {
       const cardDate = String(card.date || todayKey);
+      const carryForward = !isRoutineLifeCard(card) && !isArchivedCard(card) && !isCompletedCard(card);
       if (timelineScope === "today") {
-        return cardDate === selectedDate || (!isArchivedCard(card) && !isCompletedCard(card) && cardDate < selectedDate);
+        return cardDate === selectedDate || (carryForward && cardDate < selectedDate);
       }
-      return cardDate >= selectedDate || (!isArchivedCard(card) && !isCompletedCard(card));
+      return cardDate >= selectedDate || carryForward;
     }), [cards, selectedDate, todayKey, timelineScope]);
   const profileIds = useMemo(() => new Set(profiles.map((profile) => profile.id)), [profiles]);
   const isSharedCard = (card) => card.ownerId === "shared" || (card.participants || []).length > 1;
@@ -3530,11 +3546,12 @@ function LifeCardTimeline({ cards, profiles, currentUser, selectedDate, filter, 
     .filter((card) => String(card.date || todayKey) === selectedDate)
     .filter((card) => !isArchivedCard(card) && !isCompletedCard(card))
   )[0] || null, [visibleCards, selectedDate, todayKey]);
-  const nextUpTime = nextUpCard ? primaryTimeLabel(nextUpCard) : "";
+  const nextUpTime = nextUpCard ? (isDailyCheckinCard(nextUpCard) ? dailyCheckinSummary(nextUpCard) : primaryTimeLabel(nextUpCard)) : "";
   const nextUpPeople = nextUpCard ? nextUpPeopleLabel(nextUpCard, profiles, currentUser) : "";
   const rolloverAllCards = useMemo(() => sortCards(visibleCards
     .filter((card) => String(card.date || todayKey) < selectedDate)
     .filter((card) => !isArchivedCard(card) && !isCompletedCard(card))
+    .filter((card) => !isRoutineLifeCard(card))
     .filter(canPatchLifeCard)
   ), [visibleCards, selectedDate, todayKey]);
   const rolloverCards = rolloverAllCards.slice(0, 4);
@@ -3965,7 +3982,7 @@ function LifeCardTimeline({ cards, profiles, currentUser, selectedDate, filter, 
             {pinnedCards.map((card) => (
               <button
                 key={card.id}
-                className={cx("priority-pin", card.rankLane === "overdue" && "is-overdue")}
+                className={cx("priority-pin", isRoutineLifeCard(card) && "is-routine", card.rankLane === "overdue" && "is-overdue")}
                 type="button"
                 onClick={() => openDetail?.("lifeCard", card)}
                 title={lifeCardDisplayTitle(card, "生活卡")}
@@ -4050,6 +4067,7 @@ function LifeCardTimeline({ cards, profiles, currentUser, selectedDate, filter, 
                               archiveCard={archiveCard}
                               toggleStep={toggleStep}
                               toggleTimer={toggleTimer}
+                              setCardPriority={setCardPriority}
                               setEditingCard={setEditingCard}
                               openDetail={openDetail}
                             />
@@ -4095,7 +4113,7 @@ function LifeCardTimeline({ cards, profiles, currentUser, selectedDate, filter, 
   );
 }
 
-function LifeCard({ card, profiles, currentUser, compact = false, toggleCard, archiveCard, toggleStep, toggleTimer, setEditingCard, openDetail }) {
+function LifeCard({ card, profiles, currentUser, compact = false, toggleCard, archiveCard, toggleStep, toggleTimer, setCardPriority, setEditingCard, openDetail }) {
   if (isDefaultPromptCard(card)) return null;
   const itemType = card.itemType && itemTypeLabels[card.itemType] ? card.itemType : "thing";
   const participants = cardParticipantIds(card, profiles, currentUser);
@@ -4104,6 +4122,9 @@ function LifeCard({ card, profiles, currentUser, compact = false, toggleCard, ar
   const isDraft = Boolean(card.isDraft);
   const storedDone = isCompletedCard(card);
   const isArchived = isArchivedCard(card);
+  const canPatch = canPatchLifeCard(card);
+  const canQuickPatch = canPatch && !isArchived && !isDailyCheckinCard(card);
+  const canArchive = ["schedule", "todo"].includes(card.sourceType) && !isDailyCheckinCard(card);
   const completionTarget = completionTargetUserId(card, currentUser);
   const isLegacyCheckin = card.sourceType === "checkin";
   const isDailyCheckin = isDailyCheckinCard(card);
@@ -4228,6 +4249,16 @@ function LifeCard({ card, profiles, currentUser, compact = false, toggleCard, ar
   const completeCard = (event) => {
     stopAction(event);
     toggleCard(card);
+  };
+  const togglePriorityAction = (event) => {
+    stopAction(event);
+    if (!canQuickPatch) return;
+    setCardPriority?.(card, card.priority === "high" ? "normal" : "high");
+  };
+  const archiveCardAction = (event) => {
+    stopAction(event);
+    if (!canArchive) return;
+    archiveCard?.(card);
   };
   const toggleStepAction = (event, step) => {
     stopAction(event);
@@ -4379,6 +4410,31 @@ function LifeCard({ card, profiles, currentUser, compact = false, toggleCard, ar
               <span>{completeLabel}</span>
             </button>
           ) : null}
+          {canQuickPatch ? (
+            <button
+              className={cx("action-chip priority-toggle", compact && "compact-only-action", card.priority === "high" && "is-active")}
+              type="button"
+              aria-label={card.priority === "high" ? "取消重要" : "标为重要"}
+              aria-pressed={card.priority === "high" ? "true" : "false"}
+              title={card.priority === "high" ? "取消重要" : "标为重要"}
+              onClick={togglePriorityAction}
+            >
+              <Icon name="star" />
+              <span>重要</span>
+            </button>
+          ) : null}
+          {canArchive ? (
+            <button
+              className={cx("action-chip archive-toggle", compact && "compact-only-action", isArchived && "is-restore")}
+              type="button"
+              aria-label={isArchived ? "恢复归档" : "归档"}
+              title={isArchived ? "恢复归档" : "归档"}
+              onClick={archiveCardAction}
+            >
+              <Icon name={isArchived ? "undo" : "archive"} />
+              <span>{isArchived ? "恢复" : "归档"}</span>
+            </button>
+          ) : null}
           {!compact && !isArchived && !isLegacyCheckin && !isDailyCheckin ? (
             <button
               className={cx("action-chip timer-toggle", timerActive && "is-active")}
@@ -4393,21 +4449,6 @@ function LifeCard({ card, profiles, currentUser, compact = false, toggleCard, ar
             >
               <Icon name={timerActive ? "stop" : "clock"} />
               <span>{timerActive ? "停止" : "计时"}</span>
-            </button>
-          ) : null}
-          {!compact && isArchived && ["schedule", "todo"].includes(card.sourceType) ? (
-            <button
-              className="action-chip archive-toggle"
-              type="button"
-              aria-label="恢复归档"
-              title="恢复归档"
-              onClick={(event) => {
-                stopAction(event);
-                archiveCard?.(card);
-              }}
-            >
-              <Icon name="undo" />
-              <span>恢复</span>
             </button>
           ) : null}
           {!compact ? (
