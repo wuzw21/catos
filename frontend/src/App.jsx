@@ -495,7 +495,7 @@ function shortDate(value) {
 function detailDateLabel(value) {
   const text = String(value || "").trim();
   if (!/^\d{4}-\d{2}-\d{2}$/.test(text)) return "";
-  return text;
+  return shortDate(text);
 }
 
 function cx(...parts) {
@@ -1548,7 +1548,6 @@ function memoryLinkRow(item, context) {
 }
 
 function lifeCardDetailSections(card, context) {
-  const cards = Array.isArray(context.cards) ? context.cards.filter((item) => !isDefaultPromptCard(item)) : [];
   const relationRows = (Array.isArray(card.relations) ? card.relations : [])
     .map((item) => relationLifeCardRow(item, context, card.id))
     .filter((row) => row.title)
@@ -1557,17 +1556,7 @@ function lifeCardDetailSections(card, context) {
     .map((item) => memoryLinkRow(item, context))
     .filter((row) => row.title)
     .slice(0, 6);
-  if (!cards.length && !relationRows.length && !memoryRows.length) return [];
-  const anchorDate = card.date || context.selectedDate || today();
-  const sameDayCards = sortCards(cards
-    .filter((item) => !isArchivedCard(item))
-    .filter((item) => item.date === anchorDate));
-  const futureTodoCards = sortCards(cards
-    .filter((item) => !isArchivedCard(item) && !isCompletedCard(item))
-    .filter((item) => item.sourceType === "todo")
-    .filter((item) => String(item.date || "") > anchorDate || item.bucket === "future")
-    .filter((item) => item.id !== card.id))
-    .slice(0, 5);
+  if (!relationRows.length && !memoryRows.length) return [];
   return [
     memoryRows.length ? {
       title: "长期记忆",
@@ -1576,14 +1565,6 @@ function lifeCardDetailSections(card, context) {
     relationRows.length ? {
       title: "关联",
       rows: relationRows,
-    } : null,
-    sameDayCards.length ? {
-      title: shortDate(anchorDate) || "同日",
-      rows: sameDayCards.map((item) => compactLifeCardRow(item, context, card.id)),
-    } : null,
-    futureTodoCards.length ? {
-      title: "接下来",
-      rows: futureTodoCards.map((item) => compactLifeCardRow(item, context, card.id)),
     } : null,
   ].filter(Boolean);
 }
@@ -1603,7 +1584,6 @@ const detailBuilders = {
     const timerActive = Boolean(card.timeTracking?.currentUserActive);
     const isDailyCheckin = isDailyCheckinCard(card);
     const targetStepCount = actionableStepsForTarget(card, targetUserId).length;
-    const targetNextStep = nextActionableStep(card, targetUserId);
     const detail = lifeCardSurfaceText(isDailyCheckin ? dailyCheckinSummary(card) : summaryLine(card) || cleanCardText(card.detail || card.slot || ""), "");
     const peerCheckinCards = card.sourceType === "checkin"
       ? (Array.isArray(context.cards) ? context.cards : [])
@@ -1698,6 +1678,7 @@ const detailBuilders = {
       label: itemTypeLabels[itemType],
       title,
       body: detail,
+      noteHint: !isDailyCheckin && !detail ? "还没有备注" : "",
       date: detailDateLabel(card.date),
       ownerIds: participants,
       chips: (isDailyCheckin
@@ -1713,8 +1694,6 @@ const detailBuilders = {
           ]).filter((item) => item && item.value),
       rows: detailRows([
         (personProgressLine || completionLine) && participants.length > 1 ? { label: isDailyCheckin ? "打卡情况" : "完成情况", value: personProgressLine || completionLine, wide: true } : null,
-        targetNextStep?.title ? { label: "下一步", value: targetNextStep.title, wide: true } : null,
-        card.nextStep?.title && !steps.length && !targetNextStep?.title ? { label: "下一步", value: card.nextStep.title, wide: true } : null,
       ]),
       moreRows: detailRows([
         { label: "类型", value: itemTypeLabels[itemType] },
@@ -1737,7 +1716,7 @@ const detailBuilders = {
         !readOnly && !isArchived && !card.isDraft && card.sourceType !== "checkin" && !isDailyCheckin ? { type: "timer-card", icon: timerActive ? "stop" : "clock", label: timerActive ? "停止" : "计时", card } : null,
         canQuickPatch ? { type: "set-card-priority", icon: "star", label: card.priority === "high" ? "普通" : "重要", card, priority: card.priority === "high" ? "normal" : "high" } : null,
         !isDailyCheckin && !readOnly && ["schedule", "todo"].includes(card.sourceType) ? { type: "archive-card", icon: isArchived ? "undo" : "archive", label: isArchived ? "恢复" : "归档", card } : null,
-        !readOnly ? { type: "edit-card", icon: "edit", label: "编辑", card } : null,
+        !readOnly ? { type: "edit-card", icon: "edit", label: detail ? "改备注" : "加备注", card } : null,
       ].filter(Boolean),
       moreActions: [
         canQuickPatch ? { type: "move-card-date", icon: "calendar", label: quickMoveLabel, card, date: quickMoveDate } : null,
@@ -1778,7 +1757,7 @@ const detailBuilders = {
     const text = cleanCardText(capture.text || "");
     return {
       type: "capture",
-      label: capture.rawKind === "raw" ? "Raw" : "随手记",
+      label: capture.rawKind === "cat-word" ? "猫猫的话" : "随手记",
       title: shortText(text || "随手记", 42),
       body: text,
       date: detailDateLabel(capture.date),
@@ -1916,6 +1895,61 @@ function summaryRow(item, status, context) {
   };
 }
 
+function lifeCardTimelineEntry(card) {
+  return {
+    id: card.id,
+    entryType: "lifeCard",
+    date: card.date || today(),
+    card,
+  };
+}
+
+function captureTimelineEntry(capture) {
+  const createdDate = String(capture?.createdAt || "").slice(0, 10);
+  return {
+    id: capture.id || `capture-${capture.date || createdDate || today()}-${capture.createdAt || capture.text || ""}`,
+    entryType: "capture",
+    date: capture.date || createdDate || today(),
+    capture,
+  };
+}
+
+function timelineEntrySlot(entry) {
+  if (entry?.entryType === "capture") return captureTimelineSlot(entry.capture);
+  return cardTimelineSlot(entry?.card || entry);
+}
+
+function sortTimelineEntries(entries) {
+  return [...entries].sort((a, b) => {
+    const timeA = timelineEntrySlot(a);
+    const timeB = timelineEntrySlot(b);
+    const dateA = a?.date || a?.card?.date || a?.capture?.date || "";
+    const dateB = b?.date || b?.card?.date || b?.capture?.date || "";
+    const typeRankA = a?.entryType === "capture" ? 1 : 0;
+    const typeRankB = b?.entryType === "capture" ? 1 : 0;
+    return String(dateA).localeCompare(String(dateB)) ||
+      timeA.bucket - timeB.bucket ||
+      timeA.minutes - timeB.minutes ||
+      typeRankA - typeRankB ||
+      String(a?.card?.createdAt || a?.capture?.createdAt || "").localeCompare(String(b?.card?.createdAt || b?.capture?.createdAt || ""));
+  });
+}
+
+function groupTimelineEntriesBySlot(entries) {
+  const groups = [];
+  entries.forEach((entry) => {
+    const slot = timelineEntrySlot(entry);
+    const key = `${slot.group}-${slot.label}`;
+    const last = groups[groups.length - 1];
+    if (last?.key === key) {
+      last.cards.push(entry);
+      return;
+    }
+    groups.push({ key, slot, cards: [entry] });
+  });
+  return groups;
+}
+
 function sortCards(cards) {
   const manualOrder = (card) => Number(card.manualOrder || 0);
   const lifecycleRank = (card) => isArchivedCard(card) ? 2 : isCompletedCard(card) ? 1 : 0;
@@ -1949,6 +1983,12 @@ function timeLabelMinutes(value) {
   return Number(match[1]) * 60 + Number(match[2]);
 }
 
+function timestampTimeMinutes(value) {
+  const match = String(value || "").match(/T(\d{2}):(\d{2})/);
+  if (!match) return null;
+  return Number(match[1]) * 60 + Number(match[2]);
+}
+
 function minutesLabel(minutes) {
   const value = Math.max(0, Number(minutes) || 0);
   const hour = Math.floor(value / 60);
@@ -1977,6 +2017,12 @@ function cardTimelineSlot(card) {
   const segmentMinutes = { morning: 9 * 60, noon: 12 * 60 + 30, afternoon: 15 * 60, evening: 19 * 60 + 30 };
   if (Object.prototype.hasOwnProperty.call(segmentMinutes, card?.segment)) return { group: "segment", label: segmentLabels[card.segment], bucket: 1, minutes: segmentMinutes[card.segment] };
   return { group: "unscheduled", label: "待安排", bucket: 3, minutes: 0 };
+}
+
+function captureTimelineSlot(capture) {
+  const minutes = timestampTimeMinutes(capture?.createdAt);
+  if (minutes !== null) return { group: "capture", label: minutesLabel(minutes), bucket: 1, minutes };
+  return { group: "capture", label: "随手记", bucket: 3, minutes: 30 };
 }
 
 function groupCardsByTimelineSlot(cards) {
@@ -3044,6 +3090,7 @@ function Dashboard(props) {
       />
       <LifeCardTimeline
         cards={allCards}
+        captures={data.captures || []}
         profiles={profiles}
         currentUser={currentUser}
         now={now}
@@ -3466,7 +3513,7 @@ function Composer({ text, setText, saveRawCapture, profiles, currentUser, busy, 
           : "确认";
 
   return (
-    <section className={cx("composer-band", draft && "has-confirmation", selectedAssets.length && "has-assets")}>
+    <section className={cx("composer-band", draft && "has-confirmation", selectedAssets.length && "has-assets", text.trim() && "has-text", agentJob && "has-agent")}>
       <form className="composer" onSubmit={(event) => event.preventDefault()}>
         <textarea
           value={text}
@@ -3489,8 +3536,8 @@ function Composer({ text, setText, saveRawCapture, profiles, currentUser, busy, 
             <input ref={fileInputRef} type="file" accept="image/png,image/jpeg,image/webp,image/gif" multiple disabled={busy || selectedAssets.length >= 3} onChange={chooseCaptureFiles} />
           </label>
           <IconButton icon="send" label="猫猫的话" disabled={busy || agentRunning || !text.trim() || selectedAssets.length > 0} onClick={sendCatWord} className="cat-word-inline-action" />
-          <IconButton icon="bookmark" label="默认" disabled={busy || !canSubmit} onClick={() => submit("template")} />
-          <IconButton icon="sparkle" label="Agent" primary disabled={busy || agentRunning || !canSubmit} onClick={() => submit("agent")} />
+          <IconButton icon="bookmark" label="默认" disabled={busy || !canSubmit} onClick={() => submit("template")} className="template-inline-action" />
+          <IconButton icon="sparkle" label="Agent" primary disabled={busy || agentRunning || !canSubmit} onClick={() => submit("agent")} className="agent-inline-action" />
         </div>
       </form>
       {selectedAssets.length ? (
@@ -3905,7 +3952,7 @@ function MonthPage({ data, selectedDate, chooseDate, setPage }) {
   );
 }
 
-function LifeCardTimeline({ cards, profiles, currentUser, now, selectedDate, filter, setFilter, timelineScope = "today", setTimelineScope, expanded, setExpanded, toggleCard, archiveCard, toggleStep, toggleTimer, moveCardsDate, archiveCards, setCardPriority, setEditingCard, openDetail, chooseDate, reorderCards }) {
+function LifeCardTimeline({ cards, captures = [], profiles, currentUser, now, selectedDate, filter, setFilter, timelineScope = "today", setTimelineScope, expanded, setExpanded, toggleCard, archiveCard, toggleStep, toggleTimer, moveCardsDate, archiveCards, setCardPriority, setEditingCard, openDetail, chooseDate, reorderCards }) {
   const [isScrollDragging, setIsScrollDragging] = useState(false);
   const [isCardScrubbing, setIsCardScrubbing] = useState(false);
   const [rolloverBusy, setRolloverBusy] = useState(false);
@@ -3956,7 +4003,26 @@ function LifeCardTimeline({ cards, profiles, currentUser, now, selectedDate, fil
   }, [lifeCards, currentUser?.id, filter, profileIds]);
 
   const visibleCards = filteredCards;
-  const grouped = groupByDate(visibleCards);
+  const timelineCaptures = useMemo(() => (captures || [])
+    .filter((capture) => capture?.rawKind !== "cat-word")
+    .filter((capture) => cleanStoryText(capture.text || "") || capture.assets?.length)
+    .filter((capture) => {
+      const captureDate = String(capture.date || capture.createdAt || todayKey).slice(0, 10);
+      if (timelineScope === "today") return captureDate === selectedDate;
+      return captureDate >= selectedDate;
+    })
+    .filter((capture) => {
+      if (filter === "archived" || filter === "shared") return false;
+      if (filter === "mine") return !currentUser?.id || capture.createdBy === currentUser.id;
+      return true;
+    })
+    .map(captureTimelineEntry), [captures, currentUser?.id, filter, selectedDate, timelineScope, todayKey]);
+  const visibleEntries = useMemo(() => sortTimelineEntries([
+    ...visibleCards.map(lifeCardTimelineEntry),
+    ...timelineCaptures,
+  ]), [visibleCards, timelineCaptures]);
+  const cardGrouped = groupByDate(visibleCards);
+  const grouped = groupByDate(visibleEntries);
   const dates = [...grouped.keys()].sort((a, b) => a.localeCompare(b));
   const [orderPreview, setOrderPreview] = useState(null);
   const updateOrderPreview = useCallback((nextPreview) => {
@@ -3964,7 +4030,11 @@ function LifeCardTimeline({ cards, profiles, currentUser, now, selectedDate, fil
     setOrderPreview(nextPreview);
   }, []);
   const displayGrouped = orderPreview
-    ? new Map([...grouped].map(([date, dayCards]) => [date, date === orderPreview.date ? orderPreview.cards : dayCards]))
+    ? new Map([...grouped].map(([date, dayEntries]) => {
+        if (date !== orderPreview.date) return [date, dayEntries];
+        const captureEntries = dayEntries.filter((entry) => entry.entryType === "capture");
+        return [date, sortTimelineEntries([...orderPreview.cards.map(lifeCardTimelineEntry), ...captureEntries])];
+      }))
     : grouped;
   const focusedCardId = scrubTargetId || axisFocusId;
   const isFocusMode = Boolean(focusedCardId);
@@ -4029,8 +4099,8 @@ function LifeCardTimeline({ cards, profiles, currentUser, now, selectedDate, fil
     if (!dragState.current.active) setAxisHandleY(liveAxisPercent);
   }, [liveAxisPercent]);
   useEffect(() => {
-    if (axisFocusId && !visibleCards.some((card) => card.id === axisFocusId)) setAxisFocusId("");
-  }, [axisFocusId, visibleCards]);
+    if (axisFocusId && !visibleEntries.some((entry) => entry.id === axisFocusId)) setAxisFocusId("");
+  }, [axisFocusId, visibleEntries]);
   useEffect(() => {
     updateOrderPreview(null);
     orderDragRef.current = { active: false, cardId: "", date: "", pointerId: null, moved: false };
@@ -4082,7 +4152,7 @@ function LifeCardTimeline({ cards, profiles, currentUser, now, selectedDate, fil
     const drag = orderDragRef.current;
     if (!drag.active || !drag.cardId || !drag.date) return;
     const preview = orderPreviewRef.current;
-    const baseCards = preview?.date === drag.date ? preview.cards : (grouped.get(drag.date) || []);
+    const baseCards = preview?.date === drag.date ? preview.cards : (cardGrouped.get(drag.date) || []);
     if (baseCards.length < 2) return;
     const rows = baseCards
       .map((card, index) => ({ card, index, node: cardRefs.current.get(card.id) }))
@@ -4104,7 +4174,7 @@ function LifeCardTimeline({ cards, profiles, currentUser, now, selectedDate, fil
     drag.moved = true;
     dragState.current.blockClick = true;
     updateOrderPreview({ date: drag.date, cards: reorder(baseCards, currentIndex, nextIndex) });
-  }, [grouped, updateOrderPreview]);
+  }, [cardGrouped, updateOrderPreview]);
   const startOrderDrag = useCallback((event, card, date) => {
     if (!canReorderCard(card)) return;
     if (event.button !== undefined && event.button !== 0) return;
@@ -4115,7 +4185,7 @@ function LifeCardTimeline({ cards, profiles, currentUser, now, selectedDate, fil
     setAxisFocusId("");
     setScrubTargetId("");
     setIsCardScrubbing(false);
-    updateOrderPreview({ date, cards: grouped.get(date) || [] });
+    updateOrderPreview({ date, cards: cardGrouped.get(date) || [] });
     const target = event.currentTarget;
     target.setPointerCapture?.(pointerId);
     const onMove = (moveEvent) => {
@@ -4150,7 +4220,7 @@ function LifeCardTimeline({ cards, profiles, currentUser, now, selectedDate, fil
     window.addEventListener("pointermove", onMove, { passive: false });
     window.addEventListener("pointerup", stopDrag);
     window.addEventListener("pointercancel", stopDrag);
-  }, [canReorderCard, grouped, reorderCards, reorderCardsAtY, updateOrderPreview]);
+  }, [canReorderCard, cardGrouped, reorderCards, reorderCardsAtY, updateOrderPreview]);
   const startDragScroll = (event) => {
     if (event.pointerType === "mouse" && event.button !== 0) return;
     const axisTarget = Boolean(event.target.closest(".timeline-node"));
@@ -4482,16 +4552,19 @@ function LifeCardTimeline({ cards, profiles, currentUser, now, selectedDate, fil
       >
         {dates.length ? <span className="timeline-axis-handle" aria-hidden="true" /> : null}
         {dates.length ? dates.map((date) => {
-          const dayCards = displayGrouped.get(date) || [];
+          const dayEntries = displayGrouped.get(date) || [];
           const isExpanded = expanded.has(date);
           const isSelectedDay = date === selectedDate;
           const isTodayGroup = date === todayKey;
           const isCompactDay = compactDates.has(date);
-          const visible = isFocusMode ? dayCards : (isExpanded || isSelectedDay || isTodayGroup ? dayCards : dayCards.slice(0, 3));
-          const visibleGroups = groupCardsByTimelineSlot(visible);
-          const hiddenCount = isFocusMode ? 0 : dayCards.length - visible.length;
-          const hasHigh = dayCards.some((card) => card.priority === "high" || Number(card.rankScore || 0) >= 60);
-          const hasScrubTarget = Boolean(focusedCardId && dayCards.some((card) => card.id === focusedCardId));
+          const visible = isFocusMode ? dayEntries : (isExpanded || isSelectedDay || isTodayGroup ? dayEntries : dayEntries.slice(0, 3));
+          const visibleGroups = groupTimelineEntriesBySlot(visible);
+          const hiddenCount = isFocusMode ? 0 : dayEntries.length - visible.length;
+          const hasHigh = dayEntries.some((entry) => {
+            const card = entry.card;
+            return card && (card.priority === "high" || Number(card.rankScore || 0) >= 60);
+          });
+          const hasScrubTarget = Boolean(focusedCardId && dayEntries.some((entry) => entry.id === focusedCardId));
           return (
             <section key={date} className={cx("timeline-day", date === selectedDate && "is-selected", date === todayKey && "is-today", isCompactDay && "is-compact-day", hasHigh && "has-high", hasScrubTarget && "has-scrub-target")}>
               <button className="timeline-node" type="button" onClick={() => selectDate(date)} aria-label={`选择 ${shortDate(date)}`} />
@@ -4505,20 +4578,22 @@ function LifeCardTimeline({ cards, profiles, currentUser, now, selectedDate, fil
                       <span>{group.slot.label}</span>
                     </div>
                     <div className="timeline-time-cards">
-                      {group.cards.map((card) => {
-                        const isScrubTarget = focusedCardId === card.id;
-                        const isOrderDragging = orderDragRef.current.active && orderDragRef.current.cardId === card.id;
+                      {group.cards.map((entry) => {
+                        const card = entry.card;
+                        const capture = entry.capture;
+                        const isScrubTarget = focusedCardId === entry.id;
+                        const isOrderDragging = card && orderDragRef.current.active && orderDragRef.current.cardId === card.id;
                         const isCompactCard = (isCompactDay || (!isTodayGroup && !isSelectedDay)) && !isScrubTarget;
                         return (
                           <div
-                            key={card.id}
+                            key={entry.id}
                             className={cx("timeline-card-slot", isCompactCard && "is-compact", isScrubTarget && "is-scrub-target", isOrderDragging && "is-order-dragging")}
                             ref={(node) => {
-                              if (node) cardRefs.current.set(card.id, node);
-                              else cardRefs.current.delete(card.id);
+                              if (node) cardRefs.current.set(entry.id, node);
+                              else cardRefs.current.delete(entry.id);
                             }}
                           >
-                            {canReorderCard(card) ? (
+                            {card && canReorderCard(card) ? (
                               <button
                                 className="card-order-handle"
                                 type="button"
@@ -4529,19 +4604,29 @@ function LifeCardTimeline({ cards, profiles, currentUser, now, selectedDate, fil
                                 <Icon name="grip" />
                               </button>
                             ) : null}
-                            <LifeCard
-                              card={card}
-                              profiles={profiles}
-                              currentUser={currentUser}
-                              compact={isCompactCard}
-                              toggleCard={toggleCard}
-                              archiveCard={archiveCard}
-                              toggleStep={toggleStep}
-                              toggleTimer={toggleTimer}
-                              setCardPriority={setCardPriority}
-                              setEditingCard={setEditingCard}
-                              openDetail={openDetail}
-                            />
+                            {capture ? (
+                              <TimelineCapture
+                                capture={capture}
+                                profiles={profiles}
+                                currentUser={currentUser}
+                                compact={isCompactCard}
+                                openDetail={openDetail}
+                              />
+                            ) : (
+                              <LifeCard
+                                card={card}
+                                profiles={profiles}
+                                currentUser={currentUser}
+                                compact={isCompactCard}
+                                toggleCard={toggleCard}
+                                archiveCard={archiveCard}
+                                toggleStep={toggleStep}
+                                toggleTimer={toggleTimer}
+                                setCardPriority={setCardPriority}
+                                setEditingCard={setEditingCard}
+                                openDetail={openDetail}
+                              />
+                            )}
                           </div>
                         );
                       })}
@@ -4561,7 +4646,7 @@ function LifeCardTimeline({ cards, profiles, currentUser, now, selectedDate, fil
                     <span>{hiddenCount} 张已折叠</span>
                     <Icon name="chevronDown" />
                   </button>
-                ) : isExpanded && dayCards.length > 4 ? (
+                ) : isExpanded && dayEntries.length > 4 ? (
                   <button
                     className="fold-row"
                     type="button"
@@ -4581,6 +4666,50 @@ function LifeCardTimeline({ cards, profiles, currentUser, now, selectedDate, fil
         }) : <EmptyState profiles={profiles} />}
       </div>
     </section>
+  );
+}
+
+function captureLooksCompleted(capture) {
+  const text = cleanCardText(capture?.text || "");
+  return /完成|做完|搞定|结束|打卡了|已处理|已提交|finished|done/i.test(text);
+}
+
+function captureTimelineTitle(capture) {
+  const text = cleanStoryText(capture?.text || "") || cleanCardText(capture?.text || "");
+  if (text) return shortText(text, 54);
+  const count = capture?.assets?.length || 0;
+  return count ? `${count} 张照片` : "随手记";
+}
+
+function TimelineCapture({ capture, profiles, currentUser, compact = false, openDetail }) {
+  const ownerIds = [capture.createdBy].filter(Boolean);
+  const time = captureTimelineSlot(capture).label;
+  const completed = captureLooksCompleted(capture);
+  const assets = capture.assets?.length || 0;
+  const ownerName = capture.createdBy === currentUser?.id
+    ? "我"
+    : userDisplayName(capture.createdBy, profiles, "对方");
+  return (
+    <article className={cx("timeline-capture", completed && "is-completion", compact && "is-compact")}>
+      <button
+        className="timeline-capture-open"
+        type="button"
+        onClick={() => openDetail?.("capture", capture)}
+        aria-label="打开随手记"
+      >
+        <span className="timeline-capture-icon">
+          <Icon name={completed ? "check" : assets ? "image" : "camera"} />
+        </span>
+        <span className="timeline-capture-copy">
+          <span className="timeline-capture-meta">
+            <b>{completed ? "完成记录" : "随手记"}</b>
+            <em>{[time, ownerName, assets ? `${assets} 张` : ""].filter(Boolean).join(" · ")}</em>
+          </span>
+          <strong>{captureTimelineTitle(capture)}</strong>
+        </span>
+        <AvatarPair profiles={profiles} ids={ownerIds} />
+      </button>
+    </article>
   );
 }
 
@@ -4999,7 +5128,7 @@ function LifeCard({ card, profiles, currentUser, compact = false, toggleCard, ar
               <span>{timerActive ? "停止" : "计时"}</span>
             </button>
           ) : null}
-          {!compact ? (
+          {!compact && !isDailyCheckin ? (
             <button
               className="action-chip detail-toggle"
               type="button"
@@ -5738,6 +5867,12 @@ function DetailDrawer({ detail, profiles, onClose, onAction }) {
           {detail.date ? <em>{detail.date}</em> : null}
           <h2>{detail.title}</h2>
           {detail.body ? <p>{detail.body}</p> : null}
+          {!detail.body && detail.noteHint ? (
+            <p className="detail-note-empty">
+              <Icon name="edit" />
+              <span>{detail.noteHint}</span>
+            </p>
+          ) : null}
         </div>
         <DetailActionRow actions={detail.actions || []} onAction={onAction} />
         {detail.chips?.length ? (
