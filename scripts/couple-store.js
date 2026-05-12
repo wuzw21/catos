@@ -1666,6 +1666,36 @@ function normalizeParticipants(store, ownerId, participants, userId) {
   return [...new Set(normalized.length ? normalized : [userId])];
 }
 
+function resolveCatWordTargetUserId(store, capture, fallbackSenderId) {
+  const profileIds = getProfileIds(store);
+  const senderId = profileIds.includes(capture?.createdBy) ? capture.createdBy : fallbackSenderId;
+  const currentTarget = sanitizeText(capture?.targetUserId, 80);
+  if (profileIds.includes(currentTarget) && currentTarget !== senderId) return currentTarget;
+  return profileIds.find((id) => id !== senderId) || "";
+}
+
+function normalizeCatWordMeta(store, capture, senderId) {
+  if (capture?.rawKind !== "cat-word") return capture;
+  const createdAt = sanitizeText(capture.createdAt || nowIso(), 40);
+  capture.visibility = "shared";
+  capture.targetUserId = resolveCatWordTargetUserId(store, capture, senderId);
+  capture.deliveredAt = sanitizeText(capture.deliveredAt || createdAt, 40);
+  capture.readBy = sanitizeTextMap(capture.readBy, 40);
+  if (senderId) {
+    capture.readBy[senderId] = capture.readBy[senderId] || createdAt;
+  }
+  return capture;
+}
+
+function catWordStatusLabelForUser(store, capture, userId) {
+  const readBy = capture?.readBy && typeof capture.readBy === "object" ? capture.readBy : {};
+  if (capture?.createdBy === userId) {
+    const targetUserId = resolveCatWordTargetUserId(store, capture, capture.createdBy);
+    return targetUserId && readBy[targetUserId] ? "已看" : "已送达";
+  }
+  return readBy[userId] ? "已读" : "未读";
+}
+
 function resolveStatusTargetUserId(store, userId, targetUserId) {
   const profileIds = getProfileIds(store);
   return profileIds.includes(targetUserId) ? targetUserId : userId;
@@ -2847,6 +2877,9 @@ function publicCapture(capture) {
       }))
       .filter((route) => route.id)
       .slice(0, 8),
+    targetUserId: sanitizeText(capture.targetUserId, 80),
+    deliveredAt: sanitizeText(capture.deliveredAt, 40),
+    readBy: sanitizeTextMap(capture.readBy, 40),
     createdBy: capture.createdBy || "",
     createdAt: capture.createdAt || "",
   };
@@ -5217,10 +5250,11 @@ function buildHomeFocus(store, userId, selectedDate, options = {}) {
       tone: catWord.createdBy === userId ? "sent" : "received",
       title: "猫猫的话",
       text: catWord.text,
-      meta: catWord.createdBy === userId ? "送出" : "收到",
+      meta: catWordStatusLabelForUser(store, catWord, userId),
       sourceType: "cat-word",
       sourceId: catWord.id,
       actorId: catWord.createdBy,
+      targetUserId: catWord.targetUserId,
     });
   }
 
@@ -7087,11 +7121,56 @@ function addCapture(userId, payload) {
       createdBy: userId,
       createdAt: nowIso(),
     };
+    normalizeCatWordMeta(store, capture, userId);
     store.captures.unshift(capture);
     store.captures = store.captures.slice(0, 300);
     recordOperation(store, userId, "create", "capture", capture.id, { date, title: capture.text, sourceType: "capture" });
     return capture;
   });
+}
+
+function markCatWordsRead(userId, payload = {}) {
+  const store = readStore();
+  const profileIds = getProfileIds(store);
+  if (!profileIds.includes(userId)) {
+    throw new Error("profile not found");
+  }
+
+  const date = normalizeDate(payload.date, "");
+  const captureIds = new Set(normalizeIdList(payload.captureIds, 80));
+  const readAt = nowIso();
+  const markedIds = [];
+
+  store.captures.forEach((capture) => {
+    if (capture.rawKind !== "cat-word") return;
+    if (capture.createdBy === userId) return;
+    if (capture.visibility !== "shared" && capture.createdBy !== userId) return;
+    if (captureIds.size && !captureIds.has(capture.id)) return;
+    if (!captureIds.size && date && capture.date !== date) return;
+
+    normalizeCatWordMeta(store, capture, capture.createdBy);
+    if (capture.readBy?.[userId]) return;
+    capture.readBy[userId] = readAt;
+    markedIds.push(capture.id);
+  });
+
+  if (!markedIds.length) {
+    return {
+      result: { marked: 0, captureIds: [] },
+      store,
+    };
+  }
+
+  recordOperation(store, userId, "read", "cat-word", markedIds[0], {
+    date: date || businessDate(),
+    sourceType: "cat-word",
+    title: `已读 ${markedIds.length} 条猫猫的话`,
+  });
+  const updated = writeStore(store);
+  return {
+    result: { marked: markedIds.length, captureIds: markedIds },
+    store: updated,
+  };
 }
 
 function updatePersonalPage(userId, payload) {
@@ -7276,6 +7355,7 @@ module.exports = {
   deleteScheduleItem,
   deleteTodoItem,
   getState,
+  markCatWordsRead,
   readAuthConfig,
   readPublicBootstrap,
   readRevision,

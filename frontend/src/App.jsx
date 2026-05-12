@@ -4,6 +4,7 @@ import * as Popover from "@radix-ui/react-popover";
 import * as Select from "@radix-ui/react-select";
 import * as Tabs from "@radix-ui/react-tabs";
 import * as Tooltip from "@radix-ui/react-tooltip";
+import { Badge as ThemeBadge, Button as ThemeButton } from "@radix-ui/themes";
 import { DayPicker } from "react-day-picker";
 import { Toaster, toast } from "sonner";
 import { useFieldArray, useForm } from "react-hook-form";
@@ -4186,24 +4187,30 @@ function LifeCardTimeline({ cards, profiles, currentUser, now, selectedDate, fil
           </span>
         </div>
         <div className="tool-groups">
-          <div className="range-segment" aria-label="时间范围">
+          <div className="range-segment peos-button-group" aria-label="时间范围">
             {scopes.map(([id, icon, label]) => (
-              <button
+              <ThemeButton
                 key={id}
                 className={cx(timelineScope === id && "is-active")}
                 type="button"
+                variant="ghost"
+                radius="full"
+                size="1"
                 onClick={() => setTimelineScope?.(id)}
                 aria-label={label}
                 title={label}
               >
                 <Icon name={icon} />
                 <span>{label}</span>
-              </button>
+              </ThemeButton>
             ))}
           </div>
-          <button
+          <ThemeButton
             className={cx("density-chip", selectedCompact && "is-compact")}
             type="button"
+            variant="soft"
+            radius="full"
+            size="1"
             onClick={() => toggleDateDensity(selectedDate)}
             aria-pressed={selectedCompact ? "true" : "false"}
             title={selectedCompact ? "切到详细" : "切到简略"}
@@ -4211,24 +4218,27 @@ function LifeCardTimeline({ cards, profiles, currentUser, now, selectedDate, fil
           >
             <Icon name={selectedCompact ? "focus" : "rows"} />
             <span>{selectedCompact ? "详细" : "简略"}</span>
-          </button>
-          <div className="icon-segment" aria-label="筛选">
+          </ThemeButton>
+          <div className="icon-segment peos-button-group" aria-label="筛选">
             {filters.map(([id, icon, label]) => (
-              <button
+              <ThemeButton
                 key={id}
                 className={cx("filter-button", filter === id && "is-active")}
                 type="button"
+                variant="ghost"
+                radius="full"
+                size="1"
                 onClick={() => {
                   setAxisFocusId("");
                   setScrubTargetId("");
                   setFilter(id);
                 }}
                 aria-label={label}
-              title={label}
-            >
-              <Icon name={icon} />
-              <span>{label}</span>
-            </button>
+                title={label}
+              >
+                <Icon name={icon} />
+                <span>{label}</span>
+              </ThemeButton>
             ))}
           </div>
         </div>
@@ -4350,7 +4360,6 @@ function LifeCardTimeline({ cards, profiles, currentUser, now, selectedDate, fil
               </button>
               <button className="day-label" type="button" onClick={() => selectDate(date)} title={date}>
                 <strong>{date === todayKey ? "今天" : shortDate(date)}</strong>
-                <span>{date}</span>
               </button>
               <div className="day-cards">
                 {visibleGroups.map((group) => (
@@ -4635,13 +4644,17 @@ function LifeCard({ card, profiles, currentUser, compact = false, toggleCard, ar
           </div>
           <div className="card-copy">
             <div className="card-meta">
-              <span className="type-pill">{itemTypeLabels[itemType]}</span>
-              {contextBits.length ? <span className="context-pill">{contextBits.join(" · ")}</span> : null}
+              <ThemeBadge className="type-pill" variant="soft" radius="full" size="1">{itemTypeLabels[itemType]}</ThemeBadge>
+              {contextBits.length ? (
+                <ThemeBadge className="context-pill" variant="soft" radius="full" size="1">
+                  {contextBits.join(" · ")}
+                </ThemeBadge>
+              ) : null}
               {totalTimeLabel ? (
-                <span className={cx("time-total-pill", timerActive && "is-running")}>
+                <ThemeBadge className={cx("time-total-pill", timerActive && "is-running")} variant="soft" radius="full" size="1">
                   <Icon name="clock" />
                   {totalTimeLabel}
-                </span>
+                </ThemeBadge>
               ) : null}
             </div>
             <strong>{title}</strong>
@@ -5671,9 +5684,36 @@ function CatNoticePage({ profiles, currentUser, now, data, request, setData, set
   const catWords = useMemo(() => (data?.captures || [])
     .filter((capture) => capture.rawKind === "cat-word" && cleanNoticeBit(capture.text, 120))
     .sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt))), [data?.captures]);
-  const latestReceived = catWords.find((word) => word.createdBy && word.createdBy !== currentUser?.id);
-  const latestSent = catWords.find((word) => word.createdBy === currentUser?.id);
+  const recentCatWords = useMemo(() => catWords.slice(0, 6).reverse(), [catWords]);
+  const catWordReadDate = data?.selectedDate || notice.date;
+  const unreadCatWordIds = useMemo(() => catWords
+    .filter((word) => word.createdBy !== currentUser?.id && !word.readBy?.[currentUser?.id])
+    .map((word) => word.id)
+    .filter(Boolean), [catWords, currentUser?.id]);
+  const markingCatWordsRef = useRef(new Set());
   useEffect(() => setVariant(0), [notice.period, notice.date]);
+  useEffect(() => {
+    if (!currentUser?.id || !unreadCatWordIds.length) return undefined;
+    const captureIds = unreadCatWordIds.filter((id) => !markingCatWordsRef.current.has(id));
+    if (!captureIds.length) return undefined;
+    captureIds.forEach((id) => markingCatWordsRef.current.add(id));
+    let cancelled = false;
+    request("/api/couple/cat-words/read", {
+      method: "POST",
+      body: { date: catWordReadDate, captureIds },
+    })
+      .then((result) => {
+        if (cancelled || !result?.state) return;
+        setData(result.state);
+        setSelectedDate(result.state.selectedDate || catWordReadDate);
+      })
+      .catch(() => {
+        captureIds.forEach((id) => markingCatWordsRef.current.delete(id));
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [catWordReadDate, currentUser?.id, request, setData, setSelectedDate, unreadCatWordIds]);
 
   function beginEdit(text = notice.text) {
     setDraft(cleanStoryText(text) || notice.text);
@@ -5761,41 +5801,65 @@ function CatNoticePage({ profiles, currentUser, now, data, request, setData, set
           <em><Icon name="calendar" />{notice.date}</em>
           <em><Icon name="cloud" />{notice.weather}</em>
         </div>
-        {latestReceived || latestSent ? (
-          <div className="cat-word-tray">
-            {latestReceived ? (
-              <CatWordMini word={latestReceived} profiles={profiles} label="收到" />
-            ) : null}
-            {latestSent ? (
-              <CatWordMini word={latestSent} profiles={profiles} label="送出" onClick={() => beginEdit(latestSent.text)} />
-            ) : null}
-          </div>
-        ) : null}
+        {recentCatWords.length ? <CatWordThread words={recentCatWords} profiles={profiles} currentUser={currentUser} onReuse={(word) => beginEdit(word.text)} /> : null}
       </section>
     </section>
   );
 }
 
-function CatWordMini({ word, profiles, label, onClick }) {
-  const profile = profiles.find((item) => item.id === word.createdBy);
-  const body = cleanNoticeBit(word.text, 52);
-  const content = (
-    <>
-      <CatAvatar profile={profile} className="is-brand" />
-      <span>
-        <b>{label}</b>
-        <em>{body}</em>
-      </span>
-    </>
-  );
-  if (onClick) {
-    return (
-      <button className="cat-word-mini" type="button" onClick={onClick}>
-        {content}
-      </button>
-    );
+function catWordTimeLabel(word) {
+  const raw = String(word?.createdAt || "");
+  const match = raw.match(/^(\d{4}-\d{2}-\d{2})T(\d{2}):(\d{2})/);
+  if (!match) return shortDate(word?.date || "");
+  if (match[1] === today()) return `${match[2]}:${match[3]}`;
+  return `${shortDate(match[1])} ${match[2]}:${match[3]}`;
+}
+
+function catWordStatusLabel(word, profiles, currentUser) {
+  const currentUserId = currentUser?.id || "";
+  const readBy = word?.readBy && typeof word.readBy === "object" ? word.readBy : {};
+  if (word?.createdBy === currentUserId) {
+    const targetUserId = word.targetUserId || profiles.find((profile) => profile.id !== currentUserId)?.id || "";
+    return targetUserId && readBy[targetUserId] ? "已看" : "已送达";
   }
-  return <div className="cat-word-mini">{content}</div>;
+  return readBy[currentUserId] ? "已读" : "未读";
+}
+
+function CatWordThread({ words = [], profiles, currentUser, onReuse }) {
+  return (
+    <div className="cat-word-thread" aria-label="最近猫猫的话">
+      <div className="cat-word-thread-head">
+        <span><Icon name="send" />最近往来</span>
+        <em>{words.length}</em>
+      </div>
+      <div className="cat-word-thread-list">
+        {words.map((word) => {
+          const mine = word.createdBy === currentUser?.id;
+          const profile = profiles.find((item) => item.id === word.createdBy);
+          const body = cleanNoticeBit(word.text, 120);
+          const status = catWordStatusLabel(word, profiles, currentUser);
+          return (
+            <div className={cx("cat-word-bubble", mine && "is-mine", status === "未读" && "is-unread")} key={word.id || `${word.createdAt}-${word.text}`}>
+              <CatAvatar profile={profile} className="is-mini" />
+              <span>
+                <b>{mine ? "我送出" : `${profile?.displayName || "对方"}送来`}</b>
+                <strong>{body}</strong>
+                <em>
+                  <span>{catWordTimeLabel(word)}</span>
+                  <i>{status}</i>
+                </em>
+              </span>
+              {mine ? (
+                <button type="button" onClick={() => onReuse?.(word)}>
+                  再写
+                </button>
+              ) : null}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
 }
 
 function BreakableText({ text }) {
@@ -5874,10 +5938,10 @@ function StoryDayContext({ dayContext, calendarContext, className = "" }) {
   return (
     <div className={cx("story-day-context", className)} aria-label="当天上下文">
       {chips.map((chip) => (
-        <span className={cx(chip.tone && `is-${chip.tone}`)} key={chip.key} title={chip.text}>
+        <ThemeBadge className={cx(chip.tone && `is-${chip.tone}`)} key={chip.key} variant="soft" radius="full" size="1" title={chip.text}>
           <Icon name={chip.icon} />
           <em>{chip.text}</em>
-        </span>
+        </ThemeBadge>
       ))}
     </div>
   );

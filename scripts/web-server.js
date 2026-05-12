@@ -31,6 +31,7 @@ const {
   deleteScheduleItem: deleteCoupleScheduleItem,
   deleteTodoItem: deleteCoupleTodoItem,
   getState: getCoupleState,
+  markCatWordsRead: markCoupleCatWordsRead,
   readAuthConfig: readCoupleAuthConfig,
   readPublicBootstrap: readCouplePublicBootstrap,
   readRevision: readCoupleRevision,
@@ -1013,6 +1014,28 @@ async function handleApi(req, res, url) {
         ok: true,
         capture: result,
         state: getCoupleState(session.userId, { date: body.date || result.date }),
+      });
+    } catch (error) {
+      sendJson(res, 400, { ok: false, error: error.message });
+    }
+    return true;
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/couple/cat-words/read") {
+    const session = getCoupleSession(req);
+    if (!session) {
+      sendCoupleAuthRequired(res);
+      return true;
+    }
+
+    try {
+      const bodyText = await readBody(req);
+      const body = bodyText ? JSON.parse(bodyText) : {};
+      const { result } = markCoupleCatWordsRead(session.userId, body);
+      sendJson(res, 200, {
+        ok: true,
+        ...result,
+        state: getCoupleState(session.userId, { date: body.date }),
       });
     } catch (error) {
       sendJson(res, 400, { ok: false, error: error.message });
