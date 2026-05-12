@@ -945,6 +945,10 @@ function isDailyCheckinCard(card) {
   );
 }
 
+function isCheckinSurfaceCard(card) {
+  return Boolean(isDailyCheckinCard(card) || card?.sourceType === "checkin" || card?.itemType === "checkin");
+}
+
 function isRoutineLifeCard(card) {
   if (!card) return false;
   return isDailyCheckinCard(card) ||
@@ -2262,21 +2266,26 @@ export function App() {
     }
   }
 
-  async function toggleCard(card) {
+  async function toggleCard(card, options = {}) {
     if (!currentUser || card.readOnly || card.sourceType === "insight") return;
-    const targetUserId = completionTargetUserId(card, currentUser);
+    const targetUserId = options.targetUserId || completionTargetUserId(card, currentUser);
     if (!targetUserId) return;
     const isProxy = targetUserId !== currentUser.id;
     const wasCompleted = isCardDoneForUser(card, targetUserId);
     const hasTargetSteps = actionableStepsForTarget(card, targetUserId).length > 0;
+    const isCheckin = isCheckinSurfaceCard(card);
     if (isProxy) {
       const targetName = actorName(targetUserId, profiles, "对方");
-      const actionText = hasTargetSteps
+      const actionText = isCheckin
+        ? (wasCompleted ? "取消打卡" : "打卡")
+        : hasTargetSteps
         ? (wasCompleted ? "恢复相关步骤" : "完成下一步")
         : (wasCompleted ? "取消完成" : "完成");
       const accepted = await askConfirmation({
         title: `帮 ${targetName} ${actionText}？`,
-        body: hasTargetSteps
+        body: isCheckin
+          ? `这会把 ${targetName} 的打卡状态记为由 ${currentUser?.displayName || "你"} 操作。`
+          : hasTargetSteps
           ? `这会把 ${targetName} 的子任务状态记为由 ${currentUser?.displayName || "你"} 操作。`
           : `这会把 ${targetName} 的完成状态记为由 ${currentUser?.displayName || "你"} 操作。`,
         confirmLabel: actionText,
@@ -2756,6 +2765,11 @@ function Dashboard(props) {
     reorderCards,
     composingRef,
   } = props;
+  const allCards = data.scheduleItemCards || [];
+  const checkinCards = useMemo(() => sortCards(allCards
+    .filter(isCheckinSurfaceCard)
+    .filter((card) => String(card.date || selectedDate) === selectedDate)
+  ), [allCards, selectedDate]);
 
   return (
     <section className="dashboard">
@@ -2788,8 +2802,21 @@ function Dashboard(props) {
         composingRef={composingRef}
       />
       {error ? <p className="form-error inline">{error}</p> : null}
+      <CheckinLane
+        cards={checkinCards}
+        profiles={profiles}
+        currentUser={currentUser}
+        selectedDate={selectedDate}
+        toggleCard={toggleCard}
+        archiveCard={archiveCard}
+        toggleStep={toggleStep}
+        toggleTimer={toggleTimer}
+        setCardPriority={setCardPriority}
+        openDetail={openDetail}
+        setEditingCard={setEditingCard}
+      />
       <LifeCardTimeline
-        cards={data.scheduleItemCards || []}
+        cards={allCards}
         profiles={profiles}
         currentUser={currentUser}
         now={now}
@@ -2812,6 +2839,48 @@ function Dashboard(props) {
         reorderCards={reorderCards}
         chooseDate={chooseDate}
       />
+    </section>
+  );
+}
+
+function CheckinLane({ cards = [], profiles, currentUser, selectedDate, toggleCard, archiveCard, toggleStep, toggleTimer, setCardPriority, openDetail, setEditingCard }) {
+  if (!cards.length) return null;
+  const doneCount = cards.reduce((sum, card) => {
+    const participants = cardParticipantIds(card, profiles, currentUser);
+    return sum + participants.filter((id) => isCardDoneForUser(card, id)).length;
+  }, 0);
+  const totalCount = cards.reduce((sum, card) => sum + cardParticipantIds(card, profiles, currentUser).length, 0);
+  return (
+    <section className="checkin-lane" aria-label="打卡">
+      <div className="checkin-lane-head">
+        <div>
+          <span><Icon name="check" />日常</span>
+          <strong>打卡</strong>
+        </div>
+        <em>{selectedDate === today() ? "今天" : shortDate(selectedDate)} · {doneCount}/{totalCount || 0}</em>
+      </div>
+      <div className="checkin-lane-cards">
+        {cards.map((card) => {
+          const displayCard = { ...card, archivedAt: "", archivedBy: "" };
+          return (
+            <div className="checkin-lane-card" key={card.id}>
+              <span className="checkin-lane-badge"><Icon name="refresh" />固定打卡</span>
+              <LifeCard
+                card={displayCard}
+                profiles={profiles}
+                currentUser={currentUser}
+                toggleCard={toggleCard}
+                archiveCard={archiveCard}
+                toggleStep={toggleStep}
+                toggleTimer={toggleTimer}
+                setCardPriority={setCardPriority}
+                setEditingCard={setEditingCard}
+                openDetail={openDetail}
+              />
+            </div>
+          );
+        })}
+      </div>
     </section>
   );
 }
@@ -3549,6 +3618,7 @@ function LifeCardTimeline({ cards, profiles, currentUser, now, selectedDate, fil
   const todayKey = today();
   const lifeCards = useMemo(() => (cards || [])
     .filter((card) => !isDefaultPromptCard(card))
+    .filter((card) => !isCheckinSurfaceCard(card))
     .filter((card) => card.sourceType !== "insight")
     .filter((card) => {
       const cardDate = String(card.date || todayKey);
@@ -4327,7 +4397,7 @@ function LifeCard({ card, profiles, currentUser, compact = false, toggleCard, ar
   const toggleStepAction = (event, step) => {
     stopAction(event);
     if (isLegacyCheckin || isDailyCheckin) {
-      if (step.ownerId === currentUser?.id || step.ownerId === completionTarget) toggleCard?.(card);
+      if (step.ownerId) toggleCard?.(card, { targetUserId: step.ownerId });
       return;
     }
     if (!readOnly && (!step.ownerId || step.ownerId === currentUser?.id || step.ownerId === completionTarget)) toggleStep?.(card, step);
@@ -4370,7 +4440,7 @@ function LifeCard({ card, profiles, currentUser, compact = false, toggleCard, ar
         {!compact && checkinPeople.length ? (
           <div className="card-checkin-board" aria-label="共同打卡完成情况">
             {checkinPeople.map((person) => {
-              const disabled = readOnly || (person.id !== currentUser?.id && person.id !== completionTarget);
+              const disabled = readOnly;
               return (
                 <button
                   key={person.id}
