@@ -2849,6 +2849,7 @@ export function App() {
       durationMin: payload.durationMin || 0,
       tags: normalizeEditableTags(payload.tags),
       steps: payload.steps || card.steps || [],
+      stepsMode: "replace",
       timeBlocks: payload.timeBlocks || card.timeBlocks || [],
       bucket: card.isDraft ? (payload.date > today() ? "future" : "today") : (card.bucket || (payload.date > selectedDate ? "future" : "today")),
       priority: payload.priority || card.priority || "normal",
@@ -5328,7 +5329,7 @@ function CardEditor({ card, profiles, onClose, onSave, onDelete, confirmLeave, i
     defaultValues,
     mode: "onBlur",
   });
-  const { fields, append, remove, move } = useFieldArray({ control, name: "steps", keyName: "formId" });
+  const { fields, append, insert, remove, move } = useFieldArray({ control, name: "steps", keyName: "formId" });
   const form = watch();
   const formSteps = watch("steps") || [];
   const [dragStepId, setDragStepId] = useState("");
@@ -5337,6 +5338,7 @@ function CardEditor({ card, profiles, onClose, onSave, onDelete, confirmLeave, i
   const dragCleanupRef = useRef(null);
   const [editorSection, setEditorSection] = useState(initialSection || (isDailyCheckin ? "steps" : "compose"));
   const [stepBulkText, setStepBulkText] = useState("");
+  const bulkStepTitles = useMemo(() => parseBulkSteps(stepBulkText), [stepBulkText]);
   useEffect(() => {
     reset(defaultValues);
   }, [defaultValues, reset]);
@@ -5369,6 +5371,17 @@ function CardEditor({ card, profiles, onClose, onSave, onDelete, confirmLeave, i
     return true;
   };
   const addStep = () => appendEditorSteps({ title: "", estimateMin: "", ownerId: "" });
+  const insertStepAfter = (id) => {
+    const steps = getValues("steps") || [];
+    if (steps.length >= maxEditorSteps) {
+      toast.error(`最多 ${maxEditorSteps} 个步骤`);
+      return;
+    }
+    const index = steps.findIndex((step) => step.id === id);
+    const ownerId = steps[index]?.ownerId || "";
+    insert(index >= 0 ? index + 1 : steps.length, makeEditorStep({ title: "", estimateMin: "", ownerId }, steps.length));
+    setEditorSection("steps");
+  };
   const addStepTemplate = (templateId) => {
     const baseIndex = (getValues("steps") || []).length;
     const cardTitle = String(getValues("title") || "").trim();
@@ -5384,13 +5397,32 @@ function CardEditor({ card, profiles, onClose, onSave, onDelete, confirmLeave, i
     appendEditorSteps(templateSteps.map((step, offset) => makeEditorStep(step, baseIndex + offset)));
   };
   const addBulkSteps = () => {
-    const titles = parseBulkSteps(stepBulkText);
+    const titles = bulkStepTitles;
     if (!titles.length) {
       toast.error("先粘贴几行清单");
       return;
     }
     const ok = appendEditorSteps(titles.map((title) => ({ title, estimateMin: "", ownerId: "" })));
     if (ok) setStepBulkText("");
+  };
+  const setAllStepOwners = (ownerId) => {
+    (getValues("steps") || []).forEach((_, index) => {
+      setValue(`steps.${index}.ownerId`, ownerId, { shouldDirty: true, shouldValidate: true });
+    });
+  };
+  const splitStepOwners = () => {
+    const availableProfiles = profiles.filter((profile) => profile.id);
+    if (availableProfiles.length < 2) return;
+    (getValues("steps") || []).forEach((_, index) => {
+      setValue(`steps.${index}.ownerId`, availableProfiles[index % availableProfiles.length].id, { shouldDirty: true, shouldValidate: true });
+    });
+  };
+  const removeBlankSteps = () => {
+    const blankIndexes = (getValues("steps") || [])
+      .map((step, index) => (String(step.title || "").trim() ? -1 : index))
+      .filter((index) => index >= 0)
+      .reverse();
+    blankIndexes.forEach((index) => remove(index));
   };
   const removeStep = (id) => {
     const index = (getValues("steps") || []).findIndex((step) => step.id === id);
@@ -5741,6 +5773,16 @@ function CardEditor({ card, profiles, onClose, onSave, onDelete, confirmLeave, i
                       </button>
                     ))}
                   </div>
+                  {formSteps.length ? (
+                    <div className="step-batch-row" aria-label="批量调整步骤">
+                      <span>批量</span>
+                      <button type="button" onClick={() => setAllStepOwners("")}>全共同</button>
+                      {profiles.length > 1 ? <button type="button" onClick={splitStepOwners}>轮流分配</button> : null}
+                      {formSteps.some((step) => !String(step.title || "").trim()) ? (
+                        <button type="button" onClick={removeBlankSteps}>删空行</button>
+                      ) : null}
+                    </div>
+                  ) : null}
                   {!isDailyCheckin ? (
                     <div className="step-bulk-box">
                       <textarea
@@ -5750,9 +5792,9 @@ function CardEditor({ card, profiles, onClose, onSave, onDelete, confirmLeave, i
                         placeholder={"粘贴清单，每行一项\n- 查资料\n- 写提纲\n- 收尾确认"}
                         aria-label="批量添加步骤"
                       />
-                      <button type="button" onClick={addBulkSteps} disabled={!parseBulkSteps(stepBulkText).length}>
+                      <button type="button" onClick={addBulkSteps} disabled={!bulkStepTitles.length}>
                         <Icon name="rows" />
-                        <span>拆成步骤</span>
+                        <span>{bulkStepTitles.length ? `拆 ${bulkStepTitles.length} 项` : "拆成步骤"}</span>
                       </button>
                     </div>
                   ) : null}
@@ -5793,6 +5835,11 @@ function CardEditor({ card, profiles, onClose, onSave, onDelete, confirmLeave, i
                                 {...register(`steps.${index}.title`)}
                                 placeholder={`第 ${index + 1} 步`}
                                 aria-label={`第 ${index + 1} 步`}
+                                onKeyDown={(event) => {
+                                  if (event.key !== "Enter" || event.nativeEvent?.isComposing) return;
+                                  event.preventDefault();
+                                  insertStepAfter(step.id);
+                                }}
                               />
                               <div className="step-meta-controls">
                                 <label>
@@ -5832,6 +5879,7 @@ function CardEditor({ card, profiles, onClose, onSave, onDelete, confirmLeave, i
                             <div className="step-row-actions">
                               <IconButton icon="chevronUp" label="上移" onClick={() => moveStep(step.id, -1)} disabled={index === 0} />
                               <IconButton icon="chevronDown" label="下移" onClick={() => moveStep(step.id, 1)} disabled={index === formSteps.length - 1} />
+                              <IconButton icon="plus" label="在下方加一步" onClick={() => insertStepAfter(step.id)} disabled={formSteps.length >= maxEditorSteps} />
                               <IconButton icon="trash" label="删除" danger onClick={() => removeStep(step.id)} />
                             </div>
                           </div>

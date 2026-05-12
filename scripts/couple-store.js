@@ -1247,13 +1247,19 @@ function buildLifeCardPlanning(payload = {}, existing = {}) {
   const plannedAt = normalizeDateTime(payload.plannedAt) || normalizeDateTime(existing.plannedAt) || inferPlannedAt(text, date, segment, durationMin);
   const dueAt = normalizeDateTime(payload.dueAt) || normalizeDateTime(existing.dueAt) || inferDueAt(text, date, segment);
   const parentTitle = payload.title ?? existing.title ?? "";
+  const shouldReplaceSteps = payload.stepsMode === "replace" || payload.replaceSteps === true;
   const payloadSteps = normalizeLifeCardSteps(payload.steps, participants, parentTitle);
   const existingSteps = normalizeLifeCardSteps(existing.steps, participants, parentTitle);
-  const steps = payloadSteps.length
-    ? payloadSteps
-    : (existingSteps.length
-        ? existingSteps
-        : inferLifeCardSteps({ ...payload, title: payload.title ?? existing.title, detail: payload.detail ?? existing.detail, durationMin }, participants));
+  let steps;
+  if (shouldReplaceSteps && Array.isArray(payload.steps)) {
+    steps = payloadSteps;
+  } else if (payloadSteps.length) {
+    steps = payloadSteps;
+  } else if (existingSteps.length) {
+    steps = existingSteps;
+  } else {
+    steps = inferLifeCardSteps({ ...payload, title: payload.title ?? existing.title, detail: payload.detail ?? existing.detail, durationMin }, participants);
+  }
   const timeBlocks = normalizeLifeCardTimeBlocks(payload.timeBlocks, steps).length
     ? normalizeLifeCardTimeBlocks(payload.timeBlocks, steps)
     : (normalizeLifeCardTimeBlocks(existing.timeBlocks, steps).length

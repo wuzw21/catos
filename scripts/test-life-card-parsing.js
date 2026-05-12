@@ -235,6 +235,17 @@ try {
   assert(resetOwnSteps.steps.filter((step) => step.ownerId === "you").every((step) => step.status === "todo"));
   assert(resetOwnSteps.steps.filter((step) => step.ownerId === "partner").every((step) => step.status === "todo"));
 
+  const clearedStepsTodo = store.upsertTodoItem("you", {
+    id: steppedTodo.id,
+    date: "2026-05-12",
+    title: "分步骤测试",
+    ownerId: "shared",
+    participants: ["you", "partner"],
+    steps: [],
+    stepsMode: "replace",
+  }).result;
+  assert.deepEqual(clearedStepsTodo.steps, []);
+
   const checkinState = store.getState("you", { date: "2026-05-12" });
   const checkinCard = checkinState.scheduleItemCards.find((card) => card.tags.includes("daily-checkin-card"));
   assert(checkinCard);

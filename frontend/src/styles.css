@@ -8055,6 +8055,45 @@ button.home-focus-note:hover {
   height: 13px;
 }
 
+.step-batch-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+  min-width: 0;
+  padding: 6px 7px;
+  border: 1px solid rgba(46, 38, 48, 0.07);
+  border-radius: 13px;
+  background: rgba(255, 253, 249, 0.52);
+}
+
+.step-batch-row span {
+  color: rgba(46, 38, 48, 0.46);
+  font-size: 0.7rem;
+  font-weight: 950;
+}
+
+.step-batch-row button {
+  display: inline-flex;
+  min-height: 28px;
+  align-items: center;
+  justify-content: center;
+  padding: 0 9px;
+  border: 1px solid rgba(46, 38, 48, 0.07);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.68);
+  color: rgba(46, 38, 48, 0.62);
+  cursor: pointer;
+  font-size: 0.7rem;
+  font-weight: 950;
+}
+
+.step-batch-row button:hover {
+  border-color: rgba(219, 67, 129, 0.18);
+  background: rgba(255, 246, 250, 0.86);
+  color: var(--pink-deep);
+}
+
 .step-bulk-box {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
@@ -10709,6 +10748,19 @@ button.detail-step:hover {
 
   .step-bulk-box button {
     min-height: 38px;
+  }
+
+  .step-batch-row {
+    align-items: stretch;
+  }
+
+  .step-batch-row span {
+    width: 100%;
+  }
+
+  .step-batch-row button {
+    flex: 1 1 auto;
+    min-height: 32px;
   }
 
   .step-meta-controls label {
