@@ -3731,6 +3731,19 @@ button.cat-word-mini:hover {
   background: rgba(46, 38, 48, 0.16);
 }
 
+.timeline-capture.is-archived {
+  background: rgba(246, 243, 239, 0.56);
+  box-shadow: none;
+}
+
+.timeline-capture.is-archived::before {
+  background: rgba(46, 38, 48, 0.08);
+}
+
+.timeline-capture.is-archived .timeline-capture-copy strong {
+  color: rgba(46, 38, 48, 0.42);
+}
+
 .timeline-capture-open {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr);

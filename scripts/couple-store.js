@@ -2906,6 +2906,8 @@ function publicCapture(capture) {
     dueAt: capture.dueAt || "",
     segment: normalizeSegment(capture.segment),
     timeLabel: capture.timeLabel || "",
+    archivedAt: sanitizeText(capture.archivedAt, 40),
+    archivedBy: sanitizeText(capture.archivedBy, 80),
     assets: Array.isArray(capture.assets) ? capture.assets.map(publicDiaryAsset).filter(Boolean) : [],
     analysisRuns: (Array.isArray(capture.analysisRuns) ? capture.analysisRuns : [])
       .map((run) => ({
@@ -3048,7 +3050,7 @@ function buildTimelineDays(store, userId, selectedDate) {
       .map((item) => publicTimelineEntry(item, "todo", userId, profileIds)),
     ...store.captures
       .filter((item) => weekDates.has(item.date))
-      .filter((item) => item.visibility === "shared" || item.createdBy === userId)
+      .filter((item) => captureCountsAsVisibleMoment(item, userId))
       .map((item) => publicTimelineEntry(item, "capture", userId, profileIds)),
   ]
     .filter((item) => item.date)
@@ -4135,6 +4137,32 @@ function captureVisibleToUser(capture, userId) {
   return capture.visibility === "shared" || capture.createdBy === userId;
 }
 
+function captureHasAcceptedOutput(capture) {
+  const acceptedRoutes = Array.isArray(capture?.acceptedRoutes) ? capture.acceptedRoutes : [];
+  if (acceptedRoutes.some((route) => {
+    const decision = normalizeCaptureDecision(route?.decision, "capture");
+    return decision !== "capture" && (
+      decision === "schedule" ||
+      decision === "memory" ||
+      decision === "dailyStory" ||
+      (Array.isArray(route?.cardIds) && route.cardIds.length) ||
+      route?.memoryItemId
+    );
+  })) {
+    return true;
+  }
+  const intent = normalizeCaptureDecision(capture?.analysisIntent, "capture");
+  return capture?.mode === "analysis" && intent !== "capture" && intent !== "agent" && intent !== "template";
+}
+
+function captureCountsAsVisibleMoment(capture, userId) {
+  if (!captureVisibleToUser(capture, userId)) return false;
+  if (capture?.archivedAt) return false;
+  if (capture?.rawKind === "cat-word") return false;
+  if (captureHasAcceptedOutput(capture)) return false;
+  return Boolean(sanitizeText(capture?.text, 1200) || (Array.isArray(capture?.assets) && capture.assets.length));
+}
+
 function inferCaptureTargetUserId(store, capture) {
   const text = capture.text || "";
   const profileIds = getProfileIds(store);
@@ -4177,7 +4205,7 @@ function recentVisibleCaptures(store, userId, selectedDate, days = 365) {
   const today = normalizeDate(selectedDate);
   const startDate = addDays(today, -days);
   return store.captures
-    .filter((capture) => captureVisibleToUser(capture, userId))
+    .filter((capture) => captureCountsAsVisibleMoment(capture, userId))
     .filter((capture) => capture.date >= startDate && capture.date <= today)
     .sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)));
 }
@@ -5306,6 +5334,7 @@ function buildHomeFocus(store, userId, selectedDate, options = {}) {
   const visibleCaptures = (Array.isArray(options.captures) ? options.captures : store.captures)
     .filter((capture) => capture.date === date)
     .filter((capture) => capture.visibility === "shared" || capture.createdBy === userId)
+    .filter((capture) => captureCountsAsVisibleMoment(capture, userId))
     .map((capture) => capture.rawKind ? capture : publicCapture(capture))
     .sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)));
   const publicFocus = (candidate) => candidate ? {
@@ -5802,7 +5831,7 @@ function getCompletionForDate(store, date, userId) {
   };
 }
 
-function getMonthSummary(store, selectedDate) {
+function getMonthSummary(store, selectedDate, userId = "") {
   const monthDays = getMonthDays(selectedDate);
   const totalsByUser = {};
   const emptyCompletion = {
@@ -5852,7 +5881,7 @@ function getMonthSummary(store, selectedDate) {
       userStats,
       eventCount: store.scheduleItems.filter((item) => !isArchived(item) && item.date === day.id).length,
       todoCount: store.todoItems.filter((item) => !isArchived(item) && item.date === day.id).length,
-      captureCount: store.captures.filter((item) => item.date === day.id).length,
+      captureCount: store.captures.filter((item) => item.date === day.id && captureCountsAsVisibleMoment(item, userId || item.createdBy)).length,
       summaryGenerated: Boolean(dailySummary),
       summaryTitle: dailySummary ? normalizeSummaryTitle(dailySummary) : "",
       dailyPulses,
@@ -6374,6 +6403,7 @@ function getDailySummaryFacts(store, date, options = {}) {
   const captures = store.captures
     .filter((item) => item.date === date)
     .filter((item) => options.includePrivate || item.visibility === "shared")
+    .filter((item) => !item.archivedAt && item.rawKind !== "cat-word" && !captureHasAcceptedOutput(item))
     .map(publicCapture)
     .sort((a, b) => String(a.createdAt).localeCompare(String(b.createdAt)));
   const photos = captures.flatMap((capture) => capture.assets || []);
@@ -6582,7 +6612,7 @@ function getState(userId, options = {}) {
     homeFocus,
     weekDays,
     monthDays,
-    monthSummary: getMonthSummary(store, selectedDate),
+    monthSummary: getMonthSummary(store, selectedDate, userId),
     segments: segmentDefinitions,
     space: store.space,
     currentUser: store.profiles.map(publicProfile).find((profile) => profile.id === userId),
@@ -7220,6 +7250,35 @@ function addCapture(userId, payload) {
   });
 }
 
+function archiveCaptureItem(userId, payload = {}) {
+  return mutateStore((store) => {
+    const captureId = sanitizeText(payload.id || payload.captureId, 100);
+    const capture = store.captures.find((item) => item.id === captureId);
+    if (!capture) {
+      throw new Error("capture not found");
+    }
+    if (!captureVisibleToUser(capture, userId)) {
+      throw new Error("capture not found");
+    }
+
+    const timestamp = nowIso();
+    const restoring = Boolean(capture.archivedAt);
+    if (restoring) {
+      capture.archivedAt = "";
+      capture.archivedBy = "";
+    } else {
+      capture.archivedAt = timestamp;
+      capture.archivedBy = userId;
+    }
+    recordOperation(store, userId, restoring ? "restore" : "archive", "capture", capture.id, {
+      date: capture.date,
+      title: capture.text,
+      sourceType: "capture",
+    });
+    return publicCapture(capture);
+  });
+}
+
 function markCatWordsRead(userId, payload = {}) {
   const store = readStore();
   const profileIds = getProfileIds(store);
@@ -7437,6 +7496,7 @@ module.exports = {
   acceptCaptureRoute,
   analyzeCapture,
   analyzeCaptureWithAgent,
+  archiveCaptureItem,
   archiveScheduleItem,
   archiveTodoItem,
   businessDate,

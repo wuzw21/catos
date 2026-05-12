@@ -366,6 +366,7 @@ function buildCatNoticeCandidates(data, dateKey) {
     .filter(Boolean)
     .slice(0, 10);
   const captures = (data?.captures || [])
+    .filter(isActiveTimelineCapture)
     .map((capture) => {
       const text = cleanNoticeBit(capture.text);
       return text ? { id: capture.id, kind: "fragment", text, detail: "随手记" } : null;
@@ -939,6 +940,27 @@ function isCompletedCard(card) {
 
 function isArchivedCard(card) {
   return Boolean(card?.archivedAt);
+}
+
+function isArchivedCapture(capture) {
+  return Boolean(capture?.archivedAt);
+}
+
+function captureHasAcceptedOutput(capture) {
+  const acceptedRoutes = Array.isArray(capture?.acceptedRoutes) ? capture.acceptedRoutes : [];
+  if (acceptedRoutes.some((route) =>
+    route?.decision && route.decision !== "capture" &&
+    (["schedule", "memory", "dailyStory"].includes(route.decision) || route.memoryItemId || route.cardIds?.length)
+  )) {
+    return true;
+  }
+  return capture?.mode === "analysis" && ["schedule", "memory", "dailyStory"].includes(capture?.analysisIntent);
+}
+
+function isActiveTimelineCapture(capture) {
+  if (!capture || capture.rawKind === "cat-word" || isArchivedCapture(capture)) return false;
+  if (captureHasAcceptedOutput(capture)) return false;
+  return Boolean(cleanStoryText(capture.text || "") || capture.assets?.length);
 }
 
 function isDailyCheckinCard(card) {
@@ -1761,14 +1783,17 @@ const detailBuilders = {
   capture(capture, context) {
     const ownerIds = [capture.createdBy].filter(Boolean);
     const text = cleanCardText(capture.text || "");
+    const isCatWord = capture.rawKind === "cat-word";
+    const isArchived = isArchivedCapture(capture);
     return {
       type: "capture",
-      label: capture.rawKind === "cat-word" ? "猫猫的话" : "随手记",
+      label: isCatWord ? "猫猫的话" : "随手记",
       title: shortText(text || "随手记", 42),
       body: text,
       date: detailDateLabel(capture.date),
       ownerIds,
       chips: [
+        isArchived ? { label: "状态", value: "已归档" } : null,
         { label: "格式", value: capture.rawFormat || "markdown" },
         { label: "照片", value: capture.assets?.length ? `${capture.assets.length}` : "" },
         { label: "位置", value: capture.location },
@@ -1778,6 +1803,7 @@ const detailBuilders = {
       ]),
       images: capture.assets || [],
       actions: [
+        !isCatWord ? { type: "archive-capture", icon: isArchived ? "undo" : "archive", label: isArchived ? "恢复" : "归档", capture } : null,
         capture.date ? { type: "go-date", icon: "calendar", label: "打开日期", date: capture.date, page: "month" } : null,
       ].filter(Boolean),
     };
@@ -2296,6 +2322,15 @@ export function App() {
       : current);
   }
 
+  function refreshDetailCaptureFromState(state, capture) {
+    if (!state || !capture?.id) return;
+    const nextCapture = state.captures?.find((item) => item.id === capture.id);
+    if (!nextCapture) return;
+    setDetailRequest((current) => current?.type === "capture" && current.payload?.id === capture.id
+      ? { type: "capture", payload: nextCapture }
+      : current);
+  }
+
   function startAgentJob(jobId, meta = {}) {
     if (!jobId) return;
     setAgentJob({
@@ -2374,6 +2409,10 @@ export function App() {
     }
     if (action.type === "archive-card" && action.card) {
       await archiveCard(action.card);
+      return;
+    }
+    if (action.type === "archive-capture" && action.capture) {
+      await archiveCapture(action.capture);
       return;
     }
     if (action.type === "move-card-date" && action.card && action.date) {
@@ -2757,6 +2796,25 @@ export function App() {
       refreshDetailCardFromState(result.state, card);
       if (isArchivedCard(card)) setFilter("all");
       if (!options.silent) toast.success(isArchivedCard(card) ? "已恢复归档" : "已归档");
+    }
+  }
+
+  async function archiveCapture(capture, options = {}) {
+    if (!capture?.id || capture.rawKind === "cat-word") return;
+    const wasArchived = isArchivedCapture(capture);
+    const result = await request("/api/couple/capture/archive", {
+      method: "POST",
+      body: { id: capture.id, date: capture.date || selectedDate },
+    });
+    if (result) {
+      setData(result.state);
+      refreshDetailCaptureFromState(result.state, capture);
+      if (wasArchived) {
+        setFilter("all");
+      } else {
+        setDetailRequest(null);
+      }
+      if (!options.silent) toast.success(wasArchived ? "已恢复随手记" : "已归档随手记");
     }
   }
 
@@ -4116,7 +4174,10 @@ function LifeCardTimeline({ cards, captures = [], profiles, currentUser, now, se
       return captureDate >= selectedDate;
     })
     .filter((capture) => {
-      if (filter === "archived" || filter === "shared") return false;
+      const archived = isArchivedCapture(capture);
+      if (filter === "archived") return archived;
+      if (archived || captureHasAcceptedOutput(capture)) return false;
+      if (filter === "shared") return false;
       if (filter === "mine") return !currentUser?.id || capture.createdBy === currentUser.id;
       return true;
     })
@@ -4783,7 +4844,7 @@ function TimelineCapture({ capture, profiles, compact = false, openDetail }) {
   const ownerIds = [capture.createdBy].filter(Boolean);
   const title = captureTimelineTitle(capture);
   return (
-    <article className={cx("timeline-capture", compact && "is-compact")}>
+    <article className={cx("timeline-capture", isArchivedCapture(capture) && "is-archived", compact && "is-compact")}>
       <button
         className="timeline-capture-open"
         type="button"
@@ -5946,7 +6007,7 @@ function DynamicList({ title, rows, profiles, onOpen, className = "" }) {
 
 function RawCaptureShelf({ data, profiles, currentUser, selectedDate, openDetail }) {
   const context = useMemo(() => ({ profiles, currentUser, selectedDate }), [profiles, currentUser, selectedDate]);
-  const rows = useMemo(() => (data.captures || []).slice(0, 8).map((capture) => captureRow(capture, context)), [data.captures, context]);
+  const rows = useMemo(() => (data.captures || []).filter(isActiveTimelineCapture).slice(0, 8).map((capture) => captureRow(capture, context)), [data.captures, context]);
   return (
     <DynamicList
       title="随手记"
@@ -6519,7 +6580,7 @@ function DailySummaryPage({ data, profiles, currentUser, request, setData, selec
           rawFormat: item.photoCount ? "markdown+photo" : "markdown",
         }));
     return captures
-      .filter((capture) => cleanStoryText(capture.text) || capture.assets?.length)
+      .filter(isActiveTimelineCapture)
       .slice(0, 8)
       .map((capture) => captureRow(capture, context));
   }, [summary?.moments, data.captures, context, selectedDate]);
