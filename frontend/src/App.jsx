@@ -2191,12 +2191,32 @@ function timelineGroupsWithNowMarker(groups, showMarker, nowMinutes, nowLabel) {
   if (!showMarker || !groups.length || !Number.isFinite(nowMinutes)) return renderItems;
   const marker = { type: "now", key: "now-divider", label: nowLabel };
   const markerIndex = groups.findIndex((group) => !timelineSlotBeforeNow(group.slot, nowMinutes));
-  if (markerIndex < 0) return [...renderItems, marker];
+  if (markerIndex < 0) return [...renderItems, { ...marker, autoFocus: false }];
   return [
     ...renderItems.slice(0, markerIndex),
-    marker,
+    { ...marker, autoFocus: true },
     ...renderItems.slice(markerIndex),
   ];
+}
+
+function scrollTimelineNowIntoView(list, marker, behavior = "smooth") {
+  if (!list || !marker) return false;
+  const listStyle = window.getComputedStyle(list);
+  const listCanScroll = list.scrollHeight > list.clientHeight + 4 && listStyle.overflowY !== "visible";
+  if (listCanScroll) {
+    const listRect = list.getBoundingClientRect();
+    const markerRect = marker.getBoundingClientRect();
+    const targetTop = list.scrollTop + markerRect.top - listRect.top - list.clientHeight * 0.3;
+    const maxTop = Math.max(0, list.scrollHeight - list.clientHeight);
+    list.scrollTo({ top: Math.max(0, Math.min(maxTop, targetTop)), behavior });
+    return true;
+  }
+  const viewportHeight = window.innerHeight || document.documentElement.clientHeight || 720;
+  const markerTop = marker.getBoundingClientRect().top + window.scrollY;
+  const topOffset = Math.min(190, Math.max(96, viewportHeight * 0.3));
+  const maxTop = Math.max(0, document.documentElement.scrollHeight - viewportHeight);
+  window.scrollTo({ top: Math.max(0, Math.min(maxTop, markerTop - topOffset)), behavior });
+  return true;
 }
 
 function sortCards(cards) {
@@ -4623,6 +4643,8 @@ function LifeCardTimeline({ cards, captures = [], profiles, currentUser, now, se
   const liveAxisPercent = `${dayProgressPercent(selectedDate, now)}%`;
   const [axisHandleY, setAxisHandleY] = useState(liveAxisPercent);
   const listRef = useRef(null);
+  const nowDividerRef = useRef(null);
+  const autoNowScrollKeyRef = useRef("");
   const cardRefs = useRef(new Map());
   const scrubFrame = useRef(0);
   const scrubClearTimer = useRef(0);
@@ -4772,6 +4794,20 @@ function LifeCardTimeline({ cards, captures = [], profiles, currentUser, now, se
     updateOrderPreview(null);
     orderDragRef.current = { active: false, cardId: "", date: "", pointerId: null, moved: false };
   }, [filter, selectedDate, timelineScope, updateOrderPreview]);
+  useEffect(() => {
+    if (!showCurrentTime) {
+      autoNowScrollKeyRef.current = "";
+      return undefined;
+    }
+    const key = `${timelineScope}:${selectedDate}:${filter}`;
+    if (autoNowScrollKeyRef.current === key) return undefined;
+    if (!nowDividerRef.current || !listRef.current) return undefined;
+    autoNowScrollKeyRef.current = key;
+    const frame = window.requestAnimationFrame(() => {
+      scrollTimelineNowIntoView(listRef.current, nowDividerRef.current);
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [filter, selectedDate, showCurrentTime, timelineScope, visibleEntries.length]);
   const axisPercentFromPointer = (event) => {
     const rect = event.currentTarget.getBoundingClientRect();
     if (!rect.height) return dayProgressPercent(selectedDate, now);
@@ -4968,6 +5004,7 @@ function LifeCardTimeline({ cards, captures = [], profiles, currentUser, now, se
     event.preventDefault();
     event.stopPropagation();
   };
+  const scrollToNowDivider = () => scrollTimelineNowIntoView(listRef.current, nowDividerRef.current);
   const selectDate = (date, endDate = "") => {
     setAxisFocusId("");
     setScrubTargetId("");
@@ -4976,7 +5013,8 @@ function LifeCardTimeline({ cards, captures = [], profiles, currentUser, now, se
     setFutureDateRange(timelineScope === "future" ? nextRange : null);
     if (date === todayKey) {
       setAxisHandleY(`${dayProgressPercent(date, now)}%`);
-      listRef.current?.scrollTo({ top: 0, behavior: "smooth" });
+      autoNowScrollKeyRef.current = "";
+      window.requestAnimationFrame(scrollToNowDivider);
     }
     chooseDate?.(date);
   };
@@ -5204,7 +5242,12 @@ function LifeCardTimeline({ cards, captures = [], profiles, currentUser, now, se
                 {timelineGroupsWithNowMarker(visibleGroups, showCurrentTime && date === todayKey, nowMinutes, nowLabel).map((item) => {
                   if (item.type === "now") {
                     return (
-                      <div className="timeline-now-divider" key={item.key} aria-label={`当前时间 ${item.label}，以上是已过时间，以下是接下来`}>
+                      <div
+                        ref={item.autoFocus ? nowDividerRef : null}
+                        className="timeline-now-divider"
+                        key={item.key}
+                        aria-label={`当前时间 ${item.label}，以上是已过时间，以下是接下来`}
+                      >
                         <span className="timeline-now-divider-label">
                           <Icon name="clock" />
                           <b>现在</b>
