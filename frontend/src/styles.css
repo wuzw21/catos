@@ -8397,6 +8397,84 @@ button.home-focus-note:hover {
   font-weight: 850;
 }
 
+.weekly-rule-editor {
+  display: grid;
+  gap: 7px;
+  min-width: 0;
+  padding: 9px;
+  border: 1px solid rgba(36, 185, 154, 0.14);
+  border-radius: 15px;
+  background: rgba(36, 185, 154, 0.07);
+}
+
+.weekly-rule-days {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  gap: 5px;
+}
+
+.weekly-rule-days button {
+  display: grid;
+  min-width: 0;
+  min-height: 32px;
+  place-items: center;
+  padding: 0;
+  border: 1px solid rgba(46, 38, 48, 0.08);
+  border-radius: 11px;
+  background: rgba(255, 255, 255, 0.62);
+  color: rgba(46, 38, 48, 0.58);
+  cursor: pointer;
+  font-size: 0.76rem;
+  font-weight: 950;
+}
+
+.weekly-rule-days button.is-active {
+  border-color: rgba(36, 185, 154, 0.3);
+  background: rgba(36, 185, 154, 0.16);
+  color: #167d68;
+}
+
+.weekly-rule-time {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) 116px;
+  gap: 7px;
+  align-items: center;
+  min-width: 0;
+  min-height: 38px;
+  padding: 0 8px;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.58);
+}
+
+.weekly-rule-time svg {
+  width: 15px;
+  height: 15px;
+  color: #167d68;
+}
+
+.weekly-rule-time span {
+  overflow: hidden;
+  color: var(--ink);
+  font-size: 0.8rem;
+  font-weight: 950;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.weekly-rule-time input {
+  width: 100%;
+  min-width: 0;
+  min-height: 30px;
+  padding: 0 7px;
+  border: 1px solid rgba(46, 38, 48, 0.08);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.72);
+  color: var(--ink);
+  font: inherit;
+  font-size: 0.82rem;
+  font-weight: 900;
+}
+
 .editor-select-content {
   z-index: 80;
   min-width: var(--radix-select-trigger-width);
@@ -11507,6 +11585,14 @@ button.detail-step:hover {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
+  .weekly-rule-days {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+
+  .weekly-rule-time {
+    grid-template-columns: auto minmax(0, 1fr) 104px;
+  }
+
   .step-editor-row {
     grid-template-columns: auto minmax(0, 1fr) auto;
     gap: 6px;
@@ -12631,6 +12717,14 @@ button.detail-step:hover {
 
   .repeat-choice {
     grid-template-columns: 1fr;
+  }
+
+  .weekly-rule-days {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+
+  .weekly-rule-time {
+    grid-template-columns: auto minmax(0, 1fr) 96px;
   }
 
   .timeline-day {

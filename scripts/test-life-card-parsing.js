@@ -40,6 +40,27 @@ try {
   assert.equal(linked.relatedItems[0].title, "买护手霜");
   assert(!titles(linked.steps).includes("买护手霜"));
 
+  const weekend = store.analyzeCapture("you", {
+    date: "2026-05-13",
+    text: "周末出去玩",
+    analysisMode: "template",
+  });
+  assert.equal(weekend.decision, "schedule");
+  assert.equal(weekend.date, "2026-05-16");
+  assert.equal(weekend.dueAt, "2026-05-17T23:59");
+  assert.equal(weekend.title, "出去玩");
+
+  const weekly = store.analyzeCapture("you", {
+    date: "2026-05-13",
+    text: "每周一20:00做周复盘",
+    analysisMode: "template",
+  });
+  assert.equal(weekly.decision, "schedule");
+  assert.equal(weekly.date, "2026-05-18");
+  assert.equal(weekly.plannedAt, "2026-05-18T20:00");
+  assert.equal(weekly.repeatRule, "weekly@mon@20:00");
+  assert.equal(weekly.title, "做周复盘");
+
   const refactor = store.analyzeCapture("you", {
     date: "2026-05-10",
     text: "今天改一个要动全身，分三步：定位影响，改核心，回归检查",
@@ -198,6 +219,41 @@ try {
   });
   const created = store.acceptCaptureRoute("you", linkedConfirmation).result;
   assert.equal(created.cards.length, 2);
+
+  const weeklyCapture = store.addCapture("you", {
+    date: "2026-05-13",
+    text: "每周一20:00做周复盘",
+    mode: "analysis",
+    visibility: "shared",
+  }).result;
+  const weeklyConfirmation = store.analyzeCapture("you", {
+    captureId: weeklyCapture.id,
+    date: "2026-05-13",
+    analysisMode: "template",
+  });
+  const weeklyCreated = store.acceptCaptureRoute("you", weeklyConfirmation).result;
+  assert.equal(weeklyCreated.cards.length, 1);
+  const weeklySource = weeklyCreated.cards[0];
+  const weeklyFirstState = store.getState("you", { date: "2026-05-18" });
+  const weeklyFirstCard = weeklyFirstState.scheduleItemCards.find((card) => card.sourceId === weeklySource.sourceId && card.date === "2026-05-18");
+  assert(weeklyFirstCard);
+  assert.equal(weeklyFirstCard.recurrence.frequency, "weekly");
+  assert.equal(weeklyFirstCard.plannedAt, "2026-05-18T20:00");
+  const weeklySecondState = store.getState("you", { date: "2026-05-25" });
+  const weeklySecondCard = weeklySecondState.scheduleItemCards.find((card) => card.sourceId === weeklySource.sourceId && card.date === "2026-05-25");
+  assert(weeklySecondCard);
+  const toggleWeekly = weeklyFirstCard.sourceType === "schedule"
+    ? (payload) => store.toggleScheduleItem("you", payload)
+    : weeklyFirstCard.sourceType === "deadline"
+      ? (payload) => store.toggleDeadlineItem("you", payload)
+      : (payload) => store.toggleTodoItem("you", payload);
+  toggleWeekly({ id: weeklyFirstCard.sourceId, targetUserId: "you", date: "2026-05-18", status: "done" });
+  const weeklyDoneState = store.getState("you", { date: "2026-05-18" });
+  const weeklyDoneCard = weeklyDoneState.scheduleItemCards.find((card) => card.sourceId === weeklySource.sourceId && card.date === "2026-05-18");
+  assert.equal(weeklyDoneCard.statusByUser.you, "done");
+  const weeklyFutureState = store.getState("you", { date: "2026-05-25" });
+  const weeklyFutureCard = weeklyFutureState.scheduleItemCards.find((card) => card.sourceId === weeklySource.sourceId && card.date === "2026-05-25");
+  assert.equal(weeklyFutureCard.statusByUser.you, "todo");
 
   const state = store.getState("you", { date: "2026-05-11" });
   const purchaseCard = state.scheduleItemCards.find((card) => card.title === "买护手霜");

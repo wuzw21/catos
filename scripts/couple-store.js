@@ -38,6 +38,16 @@ const validImageMimeTypes = new Set(["image/png", "image/jpeg", "image/webp", "i
 const maxImageBytes = 5 * 1024 * 1024;
 const weekdayLabels = ["周日", "周一", "周二", "周三", "周四", "周五", "周六"];
 const quickWeekdayIndex = { 一: 1, 二: 2, 三: 3, 四: 4, 五: 5, 六: 6, 日: 0, 天: 0 };
+const repeatWeekdayIds = ["sun", "mon", "tue", "wed", "thu", "fri", "sat"];
+const repeatWeekdayLabelById = {
+  sun: "周日",
+  mon: "周一",
+  tue: "周二",
+  wed: "周三",
+  thu: "周四",
+  fri: "周五",
+  sat: "周六",
+};
 const scheduleItemTypeLabels = {
   thing: "事情",
   work: "工作",
@@ -74,7 +84,7 @@ const captureAgentPrompt = [
   ...captureRouteDestinations.map((item) => `- ${item.key}: ${item.label}。${item.description}`),
   "Schedule Item 的 itemType 只能是 thing/work/date/purchase/reminder/checkin/habit。",
   "Long-term Memory 的 kind 只能是 preference/wish/purchase/promise/care/anniversary/memory/gratitude/repair/identity/goal/list。",
-  "必须解析相对日期：今天、明天、今晚、今天下午、周日、下周一、具体月日。",
+  "必须解析相对日期：今天、明天、今晚、今天下午、周末、周日、下周一、具体月日；周末是周六和周日两天。",
   "如果一句话包含多个动作，要输出 relatedItems，并用 relatedGroupId 表示一改全动的关系。",
   "如果输入同时包含偏好/心愿和具体行动，优先输出 schedule，并把偏好/心愿压进 detail/reason，后端会从 raw 和分析轨迹沉淀记忆。",
   "如果输入是在定义纪念日、周年、生日、在一起、相识、领证、结婚、第一次等重要日期，而不是安排庆祝动作，返回 memory，memoryKind=anniversary。",
@@ -82,6 +92,7 @@ const captureAgentPrompt = [
   "纪念日记忆会用于倒计时、今年第几天、提前提醒和准备建议；如果用户明确说要提醒、准备、买礼物、订餐厅、整理照片、写信或庆祝，才返回 schedule，并把 memoryKinds 包含 anniversary，多个准备动作拆进 relatedItems。",
   "如果输入是在新增日常打卡或习惯，例如运动打卡、喝水打卡、每天早睡，返回 schedule 且 itemType=checkin/habit；后端会把它加入当天固定“打卡”生活卡的子项，不要再生成一张独立普通生活卡。",
   "如果输入是在要求每天记录起床、醒来或早起时间，返回 schedule 且 itemType=checkin/habit；标题用“起床时间”，这是按人填写时间的打卡子项。",
+  "如果输入是在安排每周固定任务，例如“每周一 20:00 复盘”“每星期三晚上开会”，返回 schedule；date 取 selectedDate 之后最近一次对应周几，plannedAt 用该 date 和固定时间，repeatRule 用 weekly@mon@20:00 这种格式（sun/mon/tue/wed/thu/fri/sat）。",
   "如果用户明确说“小秘密”“私密”“仅我可见”“不准/不要被对方看到”，raw capture 和 schedule 都必须视为 private；返回 schedule 时设置 visibility=private，ownerId=当前用户，participants 只包含当前用户，隐私词不要写进标题或步骤。",
   "如果输入包含图片，图片也是 raw capture 的一部分；分析图片只能生成轻确认，不能覆盖 raw。",
   "如果图片是截图、手写清单、便签或 todolist，先识别文字与勾选状态，再把未完成的明确行动拆成 schedule/relatedItems；已勾选内容可写入 detail 或 dailyStory，不要当成待办。",
@@ -274,6 +285,18 @@ function addDays(dateText, offset) {
   const date = parseDate(normalizeDate(dateText)) || new Date();
   date.setDate(date.getDate() + offset);
   return formatDate(date);
+}
+
+function weekendRangeForDate(dateText) {
+  const date = parseDate(normalizeDate(dateText)) || new Date();
+  const day = date.getDay();
+  const startOffset = day === 0 ? -1 : day === 6 ? 0 : 6 - day;
+  const start = new Date(date.getFullYear(), date.getMonth(), date.getDate() + startOffset);
+  const end = new Date(start.getFullYear(), start.getMonth(), start.getDate() + 1);
+  return {
+    start: formatDate(start),
+    end: formatDate(end),
+  };
 }
 
 function daysBetween(startDateText, endDateText) {
@@ -660,8 +683,9 @@ function inferScheduleItemType(payload, fallback = "thing") {
   return fallback;
 }
 
-function sourceTypeForItemType(itemType) {
+function sourceTypeForItemType(itemType, repeatRule = "") {
   const normalized = normalizeScheduleItemType(itemType, "thing");
+  if (parseRepeatRule(repeatRule).frequency === "weekly") return "todo";
   if (normalized === "checkin" || normalized === "habit") return "checkin";
   if (normalized === "purchase" || normalized === "thing" || normalized === "work") return "todo";
   return "schedule";
@@ -1099,6 +1123,156 @@ function inferClockTime(text, segment) {
   }
   if (minute < 0 || minute > 59) return "";
   return `${pad(hour)}:${pad(minute)}`;
+}
+
+function timeFromDateTime(value) {
+  return normalizeClockValue(normalizeDateTime(value).match(/T(\d{2}:\d{2})/)?.[1] || "");
+}
+
+function normalizeRepeatWeekday(value) {
+  const raw = sanitizeText(value, 40).toLowerCase();
+  if (repeatWeekdayIds.includes(raw)) return raw;
+  if (/^[0-6]$/.test(raw)) return repeatWeekdayIds[Number(raw)] || "";
+  const match = raw.match(/[周星期礼拜]([一二三四五六日天])/);
+  if (match) return repeatWeekdayIds[quickWeekdayIndex[match[1]]] || "";
+  if (/^(?:一|mon|monday)$/.test(raw)) return "mon";
+  if (/^(?:二|tue|tuesday)$/.test(raw)) return "tue";
+  if (/^(?:三|wed|wednesday)$/.test(raw)) return "wed";
+  if (/^(?:四|thu|thursday)$/.test(raw)) return "thu";
+  if (/^(?:五|fri|friday)$/.test(raw)) return "fri";
+  if (/^(?:六|sat|saturday)$/.test(raw)) return "sat";
+  if (/^(?:日|天|sun|sunday)$/.test(raw)) return "sun";
+  return "";
+}
+
+function parseRepeatRule(rule) {
+  const text = sanitizeText(rule, 120);
+  if (!text) return { frequency: "", weekday: "", time: "" };
+  const normalized = text.toLowerCase();
+  const frequency = normalized.match(/^(daily|workday|weekly|monthly|yearly)(?:@|$)/)?.[1] || "";
+  const parts = normalized.split("@").slice(1).filter(Boolean);
+  let weekday = "";
+  let time = "";
+  parts.forEach((part) => {
+    const clock = normalizeClockValue(part);
+    if (clock) {
+      time = clock;
+    } else {
+      weekday = weekday || normalizeRepeatWeekday(part);
+    }
+  });
+  if (!weekday && frequency === "weekly") weekday = normalizeRepeatWeekday(text);
+  return { frequency, weekday, time };
+}
+
+function repeatRuleLabel(rule) {
+  const parsed = parseRepeatRule(rule);
+  if (parsed.frequency === "weekly") {
+    return [parsed.weekday ? `每${repeatWeekdayLabelById[parsed.weekday] || ""}` : "每周", parsed.time].filter(Boolean).join(" ");
+  }
+  if (parsed.frequency === "daily") return ["每天", parsed.time].filter(Boolean).join(" ");
+  if (parsed.frequency === "workday") return ["工作日", parsed.time].filter(Boolean).join(" ");
+  if (parsed.frequency === "monthly") return "每月";
+  if (parsed.frequency === "yearly") return "每年";
+  return sanitizeText(rule, 120);
+}
+
+function buildWeeklyRepeatRule(weekday, time = "") {
+  const normalizedWeekday = normalizeRepeatWeekday(weekday);
+  const normalizedTime = normalizeClockValue(time);
+  return ["weekly", normalizedWeekday, normalizedTime].filter(Boolean).join("@");
+}
+
+function dateForRepeatWeekdayOnOrAfter(dateText, weekday) {
+  const date = parseDate(normalizeDate(dateText)) || new Date();
+  const target = repeatWeekdayIds.indexOf(normalizeRepeatWeekday(weekday));
+  if (target < 0) return formatDate(date);
+  const offset = (target - date.getDay() + 7) % 7;
+  date.setDate(date.getDate() + offset);
+  return formatDate(date);
+}
+
+function isWeeklyRepeatItem(item = {}) {
+  const parsed = parseRepeatRule(item.repeatRule);
+  return parsed.frequency === "weekly" && Boolean(parsed.weekday || parseDate(item.date));
+}
+
+function repeatTimeForItem(item = {}) {
+  const parsed = parseRepeatRule(item.repeatRule);
+  return parsed.time || timeFromDateTime(item.plannedAt) || "";
+}
+
+function weeklyRepeatWeekdayForItem(item = {}) {
+  const parsed = parseRepeatRule(item.repeatRule);
+  if (parsed.weekday) return parsed.weekday;
+  const date = parseDate(item.date);
+  return date ? repeatWeekdayIds[date.getDay()] : "";
+}
+
+function weeklyOccurrenceDates(item = {}, startDateText, endDateText) {
+  if (!isWeeklyRepeatItem(item)) return [];
+  const weekday = weeklyRepeatWeekdayForItem(item);
+  const startDate = normalizeDate(startDateText, "");
+  const endDate = normalizeDate(endDateText, "");
+  const itemDate = normalizeDate(item.date, startDate);
+  if (!weekday || !startDate || !endDate) return [];
+  const windowStart = itemDate > startDate ? itemDate : startDate;
+  let current = dateForRepeatWeekdayOnOrAfter(windowStart, weekday);
+  const dates = [];
+  for (let guard = 0; current && current <= endDate && guard < 120; guard += 1) {
+    dates.push(current);
+    current = addDays(current, 7);
+  }
+  return dates;
+}
+
+function recurringItemOccursOn(item = {}, dateText) {
+  const date = normalizeDate(dateText, "");
+  if (!date || !isWeeklyRepeatItem(item)) return false;
+  if (normalizeDate(item.date, date) > date) return false;
+  const weekday = weeklyRepeatWeekdayForItem(item);
+  const parsed = parseDate(date);
+  return Boolean(parsed && repeatWeekdayIds[parsed.getDay()] === weekday);
+}
+
+function redateDateTime(dateTime, dateText) {
+  const normalized = normalizeDateTime(dateTime);
+  const date = normalizeDate(dateText, "");
+  const time = timeFromDateTime(normalized);
+  return date && time ? `${date}T${time}` : "";
+}
+
+function statusByUserForDate(item = {}, participants = [], dateText = "") {
+  if (isWeeklyRepeatItem(item) && recurringItemOccursOn(item, dateText)) {
+    const dayStatus = item.statusByDate?.[dateText] || {};
+    return Object.fromEntries(
+      participants.map((id) => [id, validStatuses.has(dayStatus[id]) ? dayStatus[id] : "todo"])
+    );
+  }
+  return Object.fromEntries(
+    participants.map((id) => [id, validStatuses.has(item.statusByUser?.[id]) ? item.statusByUser[id] : "todo"])
+  );
+}
+
+function statusMetaByUserForDate(item = {}, dateText = "", key = "updatedBy") {
+  const dayMeta = item.statusMetaByDate?.[dateText] || {};
+  return Object.fromEntries(
+    Object.entries(dayMeta)
+      .map(([id, meta]) => [sanitizeText(id, 80), sanitizeText(meta?.[key], key === "updatedAt" ? 40 : 80)])
+      .filter(([id, value]) => id && value)
+  );
+}
+
+function setStatusForDate(item, dateText, targetUserId, nextStatus, userId, timestamp = nowIso()) {
+  item.statusByDate = item.statusByDate && typeof item.statusByDate === "object" ? item.statusByDate : {};
+  item.statusMetaByDate = item.statusMetaByDate && typeof item.statusMetaByDate === "object" ? item.statusMetaByDate : {};
+  item.statusByDate[dateText] = item.statusByDate[dateText] && typeof item.statusByDate[dateText] === "object" ? item.statusByDate[dateText] : {};
+  item.statusMetaByDate[dateText] = item.statusMetaByDate[dateText] && typeof item.statusMetaByDate[dateText] === "object" ? item.statusMetaByDate[dateText] : {};
+  item.statusByDate[dateText][targetUserId] = nextStatus;
+  item.statusMetaByDate[dateText][targetUserId] = {
+    updatedBy: userId,
+    updatedAt: timestamp,
+  };
 }
 
 function inferPlannedAt(text, date, segment, durationMin) {
@@ -2479,6 +2653,8 @@ function createScheduleItem(store, payload, userId) {
     statusByUser: Object.fromEntries(normalizedParticipants.map((id) => [id, "todo"])),
     statusUpdatedBy: {},
     statusUpdatedAt: {},
+    statusByDate: {},
+    statusMetaByDate: {},
     createdBy: userId,
     updatedBy: userId,
     createdAt: timestamp,
@@ -2526,6 +2702,8 @@ function createTodoItem(store, payload, userId) {
     statusByUser: Object.fromEntries(participants.map((id) => [id, "todo"])),
     statusUpdatedBy: {},
     statusUpdatedAt: {},
+    statusByDate: {},
+    statusMetaByDate: {},
     createdBy: userId,
     updatedBy: userId,
     createdAt: timestamp,
@@ -2750,6 +2928,8 @@ function createDeadlineItem(store, payload, userId) {
     statusByUser: Object.fromEntries(participants.map((id) => [id, "todo"])),
     statusUpdatedBy: {},
     statusUpdatedAt: {},
+    statusByDate: {},
+    statusMetaByDate: {},
     createdBy: userId,
     updatedBy: userId,
     createdAt: timestamp,
@@ -2869,6 +3049,8 @@ function ensureStoreShape(store) {
       memoryKinds: normalizeLifeCardMemoryKinds(item.memoryKinds || item.memoryKind, item),
       manualOrder: normalizeManualOrder(item.manualOrder, 0),
       timeEntries: normalizeLifeCardTimeEntries(item.timeEntries),
+      statusByDate: item.statusByDate && typeof item.statusByDate === "object" ? item.statusByDate : {},
+      statusMetaByDate: item.statusMetaByDate && typeof item.statusMetaByDate === "object" ? item.statusMetaByDate : {},
     }));
   });
   shaped.operations = Array.isArray(shaped.operations) ? shaped.operations : [];
@@ -3406,6 +3588,8 @@ function publicScheduleItem(item, profileIds) {
     statusByUser,
     statusUpdatedBy: sanitizeTextMap(item.statusUpdatedBy),
     statusUpdatedAt: sanitizeTextMap(item.statusUpdatedAt, 40),
+    statusByDate: item.statusByDate && typeof item.statusByDate === "object" ? item.statusByDate : {},
+    statusMetaByDate: item.statusMetaByDate && typeof item.statusMetaByDate === "object" ? item.statusMetaByDate : {},
     createdBy: item.createdBy || "",
     updatedBy: item.updatedBy || "",
     createdAt: item.createdAt || "",
@@ -3452,6 +3636,8 @@ function publicTodoItem(item, profileIds) {
     statusByUser,
     statusUpdatedBy: sanitizeTextMap(item.statusUpdatedBy),
     statusUpdatedAt: sanitizeTextMap(item.statusUpdatedAt, 40),
+    statusByDate: item.statusByDate && typeof item.statusByDate === "object" ? item.statusByDate : {},
+    statusMetaByDate: item.statusMetaByDate && typeof item.statusMetaByDate === "object" ? item.statusMetaByDate : {},
     createdBy: item.createdBy || "",
     updatedBy: item.updatedBy || "",
     createdAt: item.createdAt || "",
@@ -3547,6 +3733,8 @@ function publicDeadlineItem(item, profileIds) {
     statusByUser,
     statusUpdatedBy: sanitizeTextMap(item.statusUpdatedBy),
     statusUpdatedAt: sanitizeTextMap(item.statusUpdatedAt, 40),
+    statusByDate: item.statusByDate && typeof item.statusByDate === "object" ? item.statusByDate : {},
+    statusMetaByDate: item.statusMetaByDate && typeof item.statusMetaByDate === "object" ? item.statusMetaByDate : {},
     createdBy: item.createdBy || "",
     updatedBy: item.updatedBy || "",
     createdAt: item.createdAt || "",
@@ -3582,6 +3770,7 @@ function resolveCaptureDate(text, fallbackDate) {
   if (/后天/.test(raw)) return addDays(fallback, 2);
   if (/明天|明晚|明早/.test(raw)) return addDays(fallback, 1);
   if (/今天|今日|今晚|今早|今天下午|今天上午|今天晚上/.test(raw)) return fallback;
+  if (/周末/.test(raw)) return weekendRangeForDate(fallback).start;
 
   const explicitDate = extractExplicitDate(raw);
   if (explicitDate) return explicitDate;
@@ -3616,6 +3805,12 @@ function resolveCaptureDate(text, fallbackDate) {
   return fallback;
 }
 
+function resolveCaptureDueAt(text, date) {
+  const raw = String(text || "");
+  if (!/周末/.test(raw)) return "";
+  return `${weekendRangeForDate(date).end}T23:59`;
+}
+
 function resolveCaptureSegment(text, fallbackSegment = "allDay") {
   const raw = String(text || "");
   if (/上午|早上|早晨|今早/.test(raw)) return "morning";
@@ -3632,7 +3827,9 @@ function cleanCaptureTitle(text) {
     .replace(fullDateReplacePattern, "")
     .replace(/\d{4}-\d{2}-\d{2}/g, "")
     .replace(/\d{1,2}\s*(?:月|[./-])\s*\d{1,2}\s*日?/g, "")
-    .replace(/今天|今日|今晚|今早|明天|明晚|明早|后天/g, "")
+    .replace(/(?:[01]?\d|2[0-3])\s*(?:[:：点])\s*\d{0,2}/g, "")
+    .replace(/今天|今日|今晚|今早|明天|明晚|明早|后天|周末/g, "")
+    .replace(/每\s*(?:周|星期|礼拜)\s*[一二三四五六日天]?/g, "")
     .replace(/下周[一二三四五六日天]|周[一二三四五六日天]/g, "")
     .replace(/全天|整天|这天|上午|早上|早晨|今早|中午|午间|下午|晚上|今晚|夜里/g, "")
     .replace(/^(她说|他说|小猫说|大猫说|记得|别忘了?|提醒我|帮我|顺便|然后|还有|要)\s*/g, "")
@@ -3641,12 +3838,33 @@ function cleanCaptureTitle(text) {
     .trim();
 }
 
+function inferWeeklyRepeatFromText(text, date, segment) {
+  const raw = String(text || "");
+  if (!/每\s*(?:周|星期|礼拜)|每个?周|每个?星期|固定.{0,12}周[一二三四五六日天]/.test(raw)) return null;
+  const weekdayMatch =
+    raw.match(/每\s*(?:周|星期|礼拜)\s*([一二三四五六日天])/) ||
+    raw.match(/固定.{0,12}周([一二三四五六日天])/) ||
+    raw.match(/周([一二三四五六日天]).{0,12}(?:固定|每周|每星期|每礼拜)/);
+  const fallbackDate = parseDate(date);
+  const weekday = weekdayMatch
+    ? repeatWeekdayIds[quickWeekdayIndex[weekdayMatch[1]]]
+    : fallbackDate ? repeatWeekdayIds[fallbackDate.getDay()] : "";
+  if (!weekday) return null;
+  const time = inferClockTime(raw, segment) || timeFromDateTime(inferPlannedAt(raw, date, segment, 0)) || "";
+  return {
+    weekday,
+    time,
+    date: dateForRepeatWeekdayOnOrAfter(date, weekday),
+    repeatRule: buildWeeklyRepeatRule(weekday, time),
+  };
+}
+
 function isCompletedCaptureStatement(text) {
   const raw = String(text || "").trim();
   if (!raw) return false;
 
   const donePattern = /(?:写完了|做完了|完成了|弄完了|搞定了|交了|交完了|提交了|处理完了|整理完了|买好了|订好了|已经[^。！？\n]{0,24}(?:写完|做完|完成|弄完|搞定|提交|处理完|整理完))/;
-  const futurePattern = /(?:还没|没做完|未完成|待完成|要做|要写|要买|要订|需要|准备|计划|安排|提醒|记得|别忘|明天|后天|下周|周[一二三四五六日天])/;
+  const futurePattern = /(?:还没|没做完|未完成|待完成|要做|要写|要买|要订|需要|准备|计划|安排|提醒|记得|别忘|明天|后天|周末|下周|周[一二三四五六日天])/;
 
   return donePattern.test(raw) && !futurePattern.test(raw.replace(/(?:写完了|做完了|完成了|弄完了|搞定了|交了|交完了|提交了|处理完了|整理完了|买好了|订好了)/g, ""));
 }
@@ -3761,7 +3979,7 @@ function inferCaptureDecision(text) {
   if (/偏好|边界|喜欢|不喜欢|讨厌|雷区|好闻|安静|太吵|重要的是|长期|目标|以后要|未来想|记住|答应|承诺|说好|帮你|我来|下次带你|谢谢|感谢|吵架|争执|生气|委屈|想吃|想买|想去|好想/.test(raw)) {
     return "memory";
   }
-  if (/今天|明天|周[一二三四五六日天]|上午|中午|下午|晚上|今晚|\d{4}-\d{2}-\d{2}|\d{1,2}\s*(?:月|[./-])\s*\d{1,2}|提醒|买|约|打卡|习惯|答辩|考试|面试|ddl|截止/i.test(raw) || actionSchedulePattern.test(raw)) {
+  if (/今天|明天|周末|周[一二三四五六日天]|上午|中午|下午|晚上|今晚|\d{4}-\d{2}-\d{2}|\d{1,2}\s*(?:月|[./-])\s*\d{1,2}|提醒|买|约|打卡|习惯|答辩|考试|面试|ddl|截止/i.test(raw) || actionSchedulePattern.test(raw)) {
     return "schedule";
   }
   return "capture";
@@ -3771,7 +3989,7 @@ function isTemplateScheduleMatch(text) {
   const raw = String(text || "");
   if (!raw.trim() || isCompletedCaptureStatement(raw)) return false;
   if (isAnniversaryMemoryCapture(raw)) return false;
-  return /todo|待办|安排|生活卡|今天|明天|后天|周[一二三四五六日天]|下周|上午|中午|下午|晚上|今晚|\d{4}-\d{2}-\d{2}|\d{1,2}\s*(?:月|[./-])\s*\d{1,2}|提醒|记得|别忘|买|约|打卡|习惯|答辩|考试|面试|ddl|deadline|截止|开会|会议|作业|任务|提交|整理|处理|预约|带/i.test(raw) || actionSchedulePattern.test(raw);
+  return /todo|待办|安排|生活卡|今天|明天|后天|周末|周[一二三四五六日天]|下周|上午|中午|下午|晚上|今晚|\d{4}-\d{2}-\d{2}|\d{1,2}\s*(?:月|[./-])\s*\d{1,2}|提醒|记得|别忘|买|约|打卡|习惯|答辩|考试|面试|ddl|deadline|截止|开会|会议|作业|任务|提交|整理|处理|预约|带/i.test(raw) || actionSchedulePattern.test(raw);
 }
 
 function analyzeRelatedScheduleItems(text, primaryTitle, base) {
@@ -3782,27 +4000,33 @@ function analyzeRelatedScheduleItems(text, primaryTitle, base) {
       const itemType = inferScheduleItemType({ title, detail: part }, "thing");
       const date = resolveCaptureDate(part, base.date);
       const segment = resolveCaptureSegment(part, base.segment);
+      const weeklyRepeat = inferWeeklyRepeatFromText(part, date, segment);
+      const effectiveDate = weeklyRepeat?.date || date;
+      const dueAt = resolveCaptureDueAt(part, effectiveDate);
       const planning = buildLifeCardPlanning({
         title,
         detail: part,
         itemType,
-        date,
+        date: effectiveDate,
         segment,
         ownerId: base.ownerId,
         participants: [base.ownerId].filter(Boolean),
         priority: /重要|必须|ddl|deadline|截止|答辩|考试|面试/i.test(part) ? "high" : "normal",
+        repeatRule: weeklyRepeat?.repeatRule || (itemType === "habit" ? "daily" : ""),
+        dueAt,
       });
       return {
         title,
         detail: sanitizeText(part, 360),
         itemType,
-        date,
+        date: effectiveDate,
         segment,
         ownerId: base.ownerId,
         participants: [base.ownerId].filter(Boolean),
         visibility: base.visibility || "shared",
-        repeatRule: itemType === "habit" ? "daily" : "",
+        repeatRule: weeklyRepeat?.repeatRule || (itemType === "habit" ? "daily" : ""),
         priority: /重要|必须|ddl|deadline|截止|答辩|考试|面试/i.test(part) ? "high" : "normal",
+        dueAt,
         ...planning,
       };
     })
@@ -3838,8 +4062,12 @@ function analyzeCapture(userId, payload = {}) {
     ? (clauses.find((part) => isTemplateScheduleMatch(part)) || clauses[0] || routeText)
     : "";
   const itemType = inferScheduleItemType({ title: scheduleClause, detail: scheduleClause }, "thing");
-  const date = templateMatched ? resolveCaptureDate(scheduleClause || routeText, selectedDate) : selectedDate;
+  const initialDate = templateMatched ? resolveCaptureDate(scheduleClause || routeText, selectedDate) : selectedDate;
   const segment = templateMatched ? resolveCaptureSegment(scheduleClause || routeText, "allDay") : "allDay";
+  const weeklyRepeat = templateMatched ? inferWeeklyRepeatFromText(scheduleClause || routeText, initialDate, segment) : null;
+  const date = weeklyRepeat?.date || initialDate;
+  const repeatRule = weeklyRepeat?.repeatRule || (itemType === "habit" ? "daily" : "");
+  const dueAt = templateMatched ? resolveCaptureDueAt(scheduleClause || routeText, date) : "";
   const title = templateMatched
     ? (cleanCaptureTitle(scheduleClause) || cleanCaptureTitle(routeText) || shortText(routeText, 80))
     : (cleanCaptureTitle(routeText) || shortText(routeText, 80));
@@ -3856,6 +4084,8 @@ function analyzeCapture(userId, payload = {}) {
         participants: [ownerId].filter(Boolean),
         visibility,
         priority,
+        repeatRule,
+        dueAt,
       })
     : buildLifeCardPlanning({
         title,
@@ -3867,6 +4097,8 @@ function analyzeCapture(userId, payload = {}) {
         participants: [ownerId].filter(Boolean),
         visibility,
         priority,
+        repeatRule,
+        dueAt,
       });
   const base = {
     captureId: capture?.id || sanitizeText(payload.captureId, 80),
@@ -3881,7 +4113,8 @@ function analyzeCapture(userId, payload = {}) {
     visibility,
     title,
     detail,
-    repeatRule: itemType === "habit" ? "daily" : "",
+    repeatRule,
+    dueAt,
     priority,
     tags: normalizeLifeCardTags(payload.tags, { title, detail, itemType, priority }),
     memoryKinds: normalizeLifeCardMemoryKinds(payload.memoryKinds || payload.memoryKind, { title, detail, itemType, priority }),
@@ -4032,7 +4265,7 @@ function buildCaptureAgentStructuredPrompt(facts) {
     "- 新增日常打卡/习惯时，仍返回 decision=schedule 和 itemType=checkin/habit，但语义是加入当天固定“打卡”生活卡的打卡项；不要把它描述成独立普通任务。",
     "- ownerId 默认当前用户；只有明确共同参与才用 shared。participants 必须从 profileIds 或 shared 对应成员中选择。",
     "- 用户明确说“小秘密”“私密”“仅我可见”“不准/不要被对方看到”时，visibility=private，ownerId=当前用户，participants=[当前用户]，隐私词不要写进标题或步骤。",
-    "- 相对日期必须按 selectedDate 解析，例如今天下午、周日、下周一。",
+    "- 相对日期必须按 selectedDate 解析，例如今天下午、周末、周日、下周一；周末是周六和周日两天，整周末事件用 date=周六、dueAt=周日 23:59。",
     "- 如果 rawCapture.assets 非空，你会收到同顺序的图片附件；必须结合图片内容和 rawCapture.text 分析。",
     "- 图片里如果是 todo list、备忘录、聊天截图、白板或手写清单：识别每一条文字；未勾选/待办项生成 schedule 或 relatedItems；已勾选/完成项不要生成待办，可放进 detail/reason。",
     "- 如果一句话包含多个动作，用 relatedItems 拆出子生活卡；标题必须短，不要重复日期词。",
@@ -4151,6 +4384,7 @@ function normalizeAgentRelatedItem(store, userId, source, fallback) {
   const title = sanitizeText(raw.title || cleanCaptureTitle(text), 180);
   const detail = sanitizeText(raw.detail || "", 800);
   const priority = validPriorities.has(raw.priority) ? raw.priority : fallback.priority;
+  const dueAt = raw.dueAt || resolveCaptureDueAt(text || fallback.text, date);
   const rawSteps = normalizeLifeCardSteps(raw.steps, participants, title);
   const steps = rawSteps.length
     ? rawSteps
@@ -4166,7 +4400,7 @@ function normalizeAgentRelatedItem(store, userId, source, fallback) {
     visibility,
     priority,
     plannedAt: raw.plannedAt,
-    dueAt: raw.dueAt,
+    dueAt,
     durationMin: raw.durationMin,
     steps,
   });
@@ -4233,7 +4467,7 @@ function normalizeCaptureAgentConfirmation(store, userId, payload, capture, text
     visibility,
     priority,
     plannedAt: agentOutput?.plannedAt,
-    dueAt: agentOutput?.dueAt,
+    dueAt: agentOutput?.dueAt || resolveCaptureDueAt(baseText, date),
     durationMin: agentOutput?.durationMin,
     steps,
   });
@@ -5360,17 +5594,18 @@ function publicScheduleItemCard(store, publicItem, sourceType, userId, options =
   const isDailyCheckin = tags.includes(dailyCheckinCardTag) ||
     (itemType === "checkin" && publicItem.repeatRule === "daily@03:00");
   const completionSteps = isDailyCheckin ? [] : steps;
-  const publicStatusByUser = isDailyCheckin
+  const publicStatusByUser = options.statusByUser || (isDailyCheckin
     ? dailyCheckinStatusByUserFromSteps(publicItem, steps)
-    : publicItem.statusByUser || {};
+    : publicItem.statusByUser || {});
   const doneUsers = participants.filter((id) => publicStatusByUser?.[id] === "done");
   const stepsDone = completionSteps.length ? completionSteps.filter((step) => step.status === "done").length : 0;
   const stepsAllDone = Boolean(completionSteps.length && stepsDone === completionSteps.length);
   const currentUserHasTodoStep = completionSteps.some((step) => (!step.ownerId || step.ownerId === userId) && step.status !== "done");
   const date = normalizeDate(options.date || publicItem.date);
   const memoryKinds = normalizeLifeCardMemoryKinds(publicItem.memoryKinds || publicItem.memoryKind, { ...publicItem, itemType });
+  const recurrence = options.recurrence || null;
   const card = {
-    id: `${sourceType}-${publicItem.id}`,
+    id: recurrence ? `${sourceType}-${publicItem.id}-${date}` : `${sourceType}-${publicItem.id}`,
     sourceType,
     sourceId: publicItem.id,
     itemType,
@@ -5383,8 +5618,8 @@ function publicScheduleItemCard(store, publicItem, sourceType, userId, options =
     ownerId: publicItem.ownerId || "shared",
     participants,
     statusByUser: publicStatusByUser,
-    statusUpdatedBy: publicItem.statusUpdatedBy || {},
-    statusUpdatedAt: publicItem.statusUpdatedAt || {},
+    statusUpdatedBy: options.statusUpdatedBy || publicItem.statusUpdatedBy || {},
+    statusUpdatedAt: options.statusUpdatedAt || publicItem.statusUpdatedAt || {},
     completion: {
       done: completionSteps.length ? stepsDone : doneUsers.length,
       total: completionSteps.length || participants.length,
@@ -5405,8 +5640,10 @@ function publicScheduleItemCard(store, publicItem, sourceType, userId, options =
     tags,
     memoryKinds,
     repeatRule: publicItem.repeatRule || "",
-    plannedAt: publicItem.plannedAt || "",
-    dueAt: publicItem.dueAt || "",
+    repeatLabel: repeatRuleLabel(publicItem.repeatRule),
+    recurrence,
+    plannedAt: options.plannedAt ?? publicItem.plannedAt ?? "",
+    dueAt: options.dueAt ?? publicItem.dueAt ?? "",
     durationMin: normalizeDurationMin(publicItem.durationMin, 0),
     steps,
     timeBlocks: normalizeLifeCardTimeBlocks(publicItem.timeBlocks, steps),
@@ -5463,21 +5700,50 @@ function buildScheduleItemCards(store, userId, selectedDate, relationshipInsight
   const includeVisibleItem = (item) => includeDatedItem(item) || includeUnfinishedItem(item);
   const isLegacyCheckinPlaceholder = (item) =>
     /^(?:互相确认今天的状态|一起确认今天的安排|一起确认明天的安排)$/.test(sanitizeText(item?.title, 160));
+  const recurrenceOptions = (item, date) => {
+    const participants = itemParticipants(item);
+    const time = repeatTimeForItem(item);
+    return {
+      date,
+      selectedDate: today,
+      timeLabel: time || repeatRuleLabel(item.repeatRule),
+      plannedAt: time ? `${date}T${time}` : redateDateTime(item.plannedAt, date),
+      dueAt: item.dueAt && String(item.dueAt).slice(0, 10) === normalizeDate(item.date) ? redateDateTime(item.dueAt, date) : "",
+      statusByUser: statusByUserForDate(item, participants, date),
+      statusUpdatedBy: statusMetaByUserForDate(item, date, "updatedBy"),
+      statusUpdatedAt: statusMetaByUserForDate(item, date, "updatedAt"),
+      recurrence: {
+        frequency: "weekly",
+        date,
+        weekday: weeklyRepeatWeekdayForItem(item),
+        time,
+        label: repeatRuleLabel(item.repeatRule),
+      },
+    };
+  };
+  const scheduleCardsForItem = (item, sourceType, publicItem, itemType) => {
+    if (isWeeklyRepeatItem(item)) {
+      return weeklyOccurrenceDates(item, dateWindowStart, dateWindowEnd).map((date) =>
+        publicScheduleItemCard(store, publicItem, sourceType, userId, {
+          itemType,
+          ...recurrenceOptions(item, date),
+        })
+      );
+    }
+    return [publicScheduleItemCard(store, publicItem, sourceType, userId, {
+      itemType,
+      selectedDate: today,
+    })];
+  };
 
   const scheduleCards = store.scheduleItems
     .filter((item) => lifeCardVisibleToUser(item, userId))
-    .filter(includeVisibleItem)
-    .map((item) => publicScheduleItemCard(store, publicScheduleItem(item, profileIds), "schedule", userId, {
-      itemType: "date",
-      selectedDate: today,
-    }));
+    .filter((item) => isWeeklyRepeatItem(item) ? !item.archivedAt : includeVisibleItem(item))
+    .flatMap((item) => scheduleCardsForItem(item, "schedule", publicScheduleItem(item, profileIds), "date"));
   const todoCards = store.todoItems
     .filter((item) => lifeCardVisibleToUser(item, userId))
-    .filter((item) => normalizeTodoBucket(item.bucket) === "future" || includeVisibleItem(item))
-    .map((item) => publicScheduleItemCard(store, publicTodoItem(item, profileIds), "todo", userId, {
-      itemType: "thing",
-      selectedDate: today,
-    }));
+    .filter((item) => isWeeklyRepeatItem(item) ? !item.archivedAt : normalizeTodoBucket(item.bucket) === "future" || includeVisibleItem(item))
+    .flatMap((item) => scheduleCardsForItem(item, "todo", publicTodoItem(item, profileIds), "thing"));
   const checkinCards = getCheckinItemsForSummary(store, today)
     .filter((item) => !isLegacyCheckinPlaceholder(item))
     .map((item) => publicScheduleItemCard(store, publicCheckinItem(item, profileIds, today), "checkin", userId, {
@@ -5488,11 +5754,8 @@ function buildScheduleItemCards(store, userId, selectedDate, relationshipInsight
     }));
   const deadlineCards = store.deadlineItems
     .filter((item) => lifeCardVisibleToUser(item, userId))
-    .filter(includeVisibleItem)
-    .map((item) => publicScheduleItemCard(store, publicDeadlineItem(item, profileIds), "deadline", userId, {
-      itemType: "reminder",
-      selectedDate: today,
-    }));
+    .filter((item) => isWeeklyRepeatItem(item) ? !item.archivedAt : includeVisibleItem(item))
+    .flatMap((item) => scheduleCardsForItem(item, "deadline", publicDeadlineItem(item, profileIds), "reminder"));
   const insightCards = (relationshipInsights || buildRelationshipInsights(store, userId, selectedDate))
     .filter((insight) => insight.actionable !== false)
     .filter((insight) => ["promise", "wish", "care", "anniversary", "memory", "gratitude", "repair"].includes(insight.kind))
@@ -5779,6 +6042,7 @@ function buildHomeFocus(store, userId, selectedDate, options = {}) {
 
 function shouldAppendToDailyCheckinCard(itemType, input = {}) {
   const normalized = normalizeScheduleItemType(itemType, "thing");
+  if (parseRepeatRule(input.repeatRule).frequency === "weekly") return false;
   if (normalized === "checkin") return true;
   if (normalized !== "habit") return false;
   const text = `${input.title || ""} ${input.detail || ""} ${input.repeatRule || ""}`.trim();
@@ -5866,7 +6130,8 @@ function createLifeCardsFromConfirmation(userId, payload = {}) {
       const visibility = normalizeLifeCardVisibility(input, payload);
       const rawItemType = normalizeScheduleItemType(input.itemType, "thing");
       const itemType = visibility === "private" && (rawItemType === "checkin" || rawItemType === "habit") ? "thing" : rawItemType;
-      const sourceType = sourceTypeForItemType(itemType);
+      const repeatRule = sanitizeText(input.repeatRule || (itemType === "habit" ? "daily" : ""), 120);
+      const sourceType = sourceTypeForItemType(itemType, repeatRule);
       const ownerId = sourceType === "checkin" ? "shared" : normalizeOwnerId(store, input.ownerId || payload.ownerId || userId, userId);
       const visibleOwnerId = visibility === "private" ? userId : ownerId;
       const tagInput = input.tags || (parentItemId ? [] : payload.tags);
@@ -5885,7 +6150,7 @@ function createLifeCardsFromConfirmation(userId, payload = {}) {
         linkedMemoryIds: normalizeIdList(input.linkedMemoryIds || payload.linkedMemoryIds, 12),
         tags: normalizeLifeCardTags(tagInput, input),
         memoryKinds: normalizeLifeCardMemoryKinds(memoryKindInput, input),
-        repeatRule: sanitizeText(input.repeatRule || (itemType === "habit" ? "daily" : ""), 120),
+        repeatRule,
         visibility,
         ownerId: visibleOwnerId,
         participants: visibility === "private" ? [userId] : normalizeParticipants(store, ownerId, input.participants, userId),
@@ -6078,18 +6343,18 @@ function acceptCaptureRoute(userId, payload = {}) {
 
 function getCompletionForDate(store, date, userId, viewerUserId = "") {
   const scheduleItems = store.scheduleItems.filter(
-    (item) => (!viewerUserId || lifeCardVisibleToUser(item, viewerUserId)) && !isArchived(item) && item.date === date && item.participants?.includes(userId)
+    (item) => (!viewerUserId || lifeCardVisibleToUser(item, viewerUserId)) && !isArchived(item) && (item.date === date || recurringItemOccursOn(item, date)) && item.participants?.includes(userId)
   );
   const todoItems = store.todoItems.filter(
-    (item) => (!viewerUserId || lifeCardVisibleToUser(item, viewerUserId)) && !isArchived(item) && item.date === date && item.bucket !== "future" && item.participants?.includes(userId)
+    (item) => (!viewerUserId || lifeCardVisibleToUser(item, viewerUserId)) && !isArchived(item) && (item.date === date || recurringItemOccursOn(item, date)) && item.bucket !== "future" && item.participants?.includes(userId)
   );
   const checkinItems = store.checkinItems.filter((item) => {
     const createdDate = String(item.createdAt || "").slice(0, 10);
     const isActive = !parseDate(createdDate) || createdDate <= date;
     return isActive;
   });
-  const scheduleDone = scheduleItems.filter((item) => item.statusByUser?.[userId] === "done").length;
-  const todoDone = todoItems.filter((item) => item.statusByUser?.[userId] === "done").length;
+  const scheduleDone = scheduleItems.filter((item) => statusByUserForDate(item, item.participants || [], date)?.[userId] === "done").length;
+  const todoDone = todoItems.filter((item) => statusByUserForDate(item, item.participants || [], date)?.[userId] === "done").length;
   const checkinDone = checkinItems.filter((item) => item.statusByDate?.[date]?.[userId] === "done").length;
   const dailyPulse = store.diaryDays[date]?.userDays?.[userId] || {};
   const dailyPulseDone = [
@@ -6169,8 +6434,8 @@ function getMonthSummary(store, selectedDate, userId = "") {
     return {
       ...day,
       userStats,
-      eventCount: store.scheduleItems.filter((item) => !isArchived(item) && item.date === day.id).length,
-      todoCount: store.todoItems.filter((item) => !isArchived(item) && item.date === day.id).length,
+      eventCount: store.scheduleItems.filter((item) => !isArchived(item) && (item.date === day.id || recurringItemOccursOn(item, day.id))).length,
+      todoCount: store.todoItems.filter((item) => !isArchived(item) && (item.date === day.id || recurringItemOccursOn(item, day.id))).length,
       captureCount: store.captures.filter((item) => item.date === day.id && captureCountsAsVisibleMoment(item, userId || item.createdBy, store)).length,
       summaryGenerated: Boolean(dailySummary),
       summaryTitle: dailySummary ? normalizeSummaryTitle(dailySummary) : "",
@@ -7120,6 +7385,26 @@ function toggleScheduleItem(userId, payload) {
       item.participants.push(targetUserId);
     }
 
+    const date = normalizeDate(payload.date || item.date);
+    if (isWeeklyRepeatItem(item) && recurringItemOccursOn(item, date)) {
+      const currentStatus = statusByUserForDate(item, item.participants, date)?.[targetUserId] || "todo";
+      const nextStatus = validStatuses.has(payload.status)
+        ? payload.status
+        : currentStatus === "done" ? "todo" : "done";
+      const timestamp = nowIso();
+      setStatusForDate(item, date, targetUserId, nextStatus, userId, timestamp);
+      item.updatedBy = userId;
+      item.updatedAt = timestamp;
+      recordOperation(store, userId, "toggle-status", "schedule", item.id, {
+        date,
+        title: item.title,
+        targetUserId,
+        status: nextStatus,
+        sourceType: "schedule",
+      });
+      return publicScheduleItem(item, profileIds);
+    }
+
     applyStepAwareStatusToggle(item, targetUserId, userId, payload);
     const timestamp = nowIso();
     markStatusOperation(item, targetUserId, userId, timestamp);
@@ -7256,6 +7541,26 @@ function toggleTodoItem(userId, payload) {
     assertStatusTargetAllowed(item, userId, targetUserId, payload);
     if (!item.participants.includes(targetUserId)) {
       item.participants.push(targetUserId);
+    }
+
+    const date = normalizeDate(payload.date || item.date);
+    if (isWeeklyRepeatItem(item) && recurringItemOccursOn(item, date)) {
+      const currentStatus = statusByUserForDate(item, item.participants, date)?.[targetUserId] || "todo";
+      const nextStatus = validStatuses.has(payload.status)
+        ? payload.status
+        : currentStatus === "done" ? "todo" : "done";
+      const timestamp = nowIso();
+      setStatusForDate(item, date, targetUserId, nextStatus, userId, timestamp);
+      item.updatedBy = userId;
+      item.updatedAt = timestamp;
+      recordOperation(store, userId, "toggle-status", "todo", item.id, {
+        date,
+        title: item.title,
+        targetUserId,
+        status: nextStatus,
+        sourceType: "todo",
+      });
+      return publicTodoItem(item, profileIds);
     }
 
     applyStepAwareStatusToggle(item, targetUserId, userId, payload);
@@ -7476,6 +7781,26 @@ function toggleDeadlineItem(userId, payload) {
     assertStatusTargetAllowed(item, userId, targetUserId, payload);
     if (!item.participants.includes(targetUserId)) {
       item.participants.push(targetUserId);
+    }
+
+    const date = normalizeDate(payload.date || item.date);
+    if (isWeeklyRepeatItem(item) && recurringItemOccursOn(item, date)) {
+      const currentStatus = statusByUserForDate(item, item.participants, date)?.[targetUserId] || "todo";
+      const nextStatus = validStatuses.has(payload.status)
+        ? payload.status
+        : currentStatus === "done" ? "todo" : "done";
+      const timestamp = nowIso();
+      setStatusForDate(item, date, targetUserId, nextStatus, userId, timestamp);
+      item.updatedBy = userId;
+      item.updatedAt = timestamp;
+      recordOperation(store, userId, "toggle-status", "deadline", item.id, {
+        date,
+        title: item.title,
+        targetUserId,
+        status: nextStatus,
+        sourceType: "deadline",
+      });
+      return publicDeadlineItem(item, profileIds);
     }
 
     const currentStatus = validStatuses.has(item.statusByUser?.[targetUserId])

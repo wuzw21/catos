@@ -70,10 +70,21 @@ const repeatEditorOptions = [
   { id: "", label: "一次", hint: "只做这次" },
   { id: "daily", label: "每天", hint: "每天出现" },
   { id: "workday", label: "工作日", hint: "周一到周五" },
-  { id: "weekly", label: "每周", hint: "每周一次" },
+  { id: "weekly", label: "每周", hint: "固定周几" },
   { id: "monthly", label: "每月", hint: "每月一次" },
   { id: "yearly", label: "每年", hint: "纪念日" },
 ];
+const repeatWeekdayOptions = [
+  { id: "mon", index: 1, label: "周一" },
+  { id: "tue", index: 2, label: "周二" },
+  { id: "wed", index: 3, label: "周三" },
+  { id: "thu", index: 4, label: "周四" },
+  { id: "fri", index: 5, label: "周五" },
+  { id: "sat", index: 6, label: "周六" },
+  { id: "sun", index: 0, label: "周日" },
+];
+const repeatWeekdayById = Object.fromEntries(repeatWeekdayOptions.map((item) => [item.id, item]));
+const repeatWeekdayIdByIndex = Object.fromEntries(repeatWeekdayOptions.map((item) => [item.index, item.id]));
 const avatarOptions = ["pink-cat", "violet-cat", "mint-cat", "yellow-cat", "custom"];
 const editorStepSchema = z.object({
   id: z.string().optional().default(""),
@@ -431,11 +442,24 @@ function addDays(value, offset) {
 }
 
 function nextWeekendDate(value) {
+  return nextWeekendRange(value).start;
+}
+
+function nextWeekendRange(value) {
   const date = parseDate(value) || new Date();
   const day = date.getDay();
-  const offset = day === 0 || day === 6 ? 0 : 6 - day;
-  date.setDate(date.getDate() + offset);
-  return formatDate(date);
+  const startOffset = day === 0 ? -1 : day === 6 ? 0 : 6 - day;
+  const start = new Date(date.getFullYear(), date.getMonth(), date.getDate() + startOffset);
+  const end = new Date(start.getFullYear(), start.getMonth(), start.getDate() + 1);
+  return {
+    start: formatDate(start),
+    end: formatDate(end),
+  };
+}
+
+function shortDateRange(start, end) {
+  if (!end || start === end) return shortDate(start);
+  return `${shortDate(start)}-${shortDate(end)}`;
 }
 
 function localDateTimeValue(date, time = "09:00") {
@@ -688,16 +712,111 @@ function statusText(card) {
   return `${done}/${total}`;
 }
 
+function normalizeClockTime(value) {
+  const match = String(value || "").trim().match(/^(\d{1,2}):(\d{2})$/);
+  if (!match) return "";
+  const hour = Number(match[1]);
+  const minute = Number(match[2]);
+  if (hour < 0 || hour > 23 || minute < 0 || minute > 59) return "";
+  return `${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}`;
+}
+
+function timeFromDateTime(value) {
+  return normalizeClockTime(String(value || "").match(/T(\d{1,2}:\d{2})/)?.[1] || "");
+}
+
+function dateFromDateTime(value) {
+  return String(value || "").match(/^(\d{4}-\d{2}-\d{2})T/)?.[1] || "";
+}
+
+function repeatWeekdayIdFromDate(value) {
+  const date = parseDate(value);
+  if (!date) return "";
+  return repeatWeekdayIdByIndex[date.getDay()] || "";
+}
+
+function normalizeRepeatWeekday(value) {
+  const raw = String(value || "").trim().toLowerCase();
+  if (repeatWeekdayById[raw]) return raw;
+  if (/^[0-6]$/.test(raw)) return repeatWeekdayIdByIndex[Number(raw)] || "";
+  const match = raw.match(/[周星期礼拜]([一二三四五六日天])/);
+  if (match) {
+    return ({ 一: "mon", 二: "tue", 三: "wed", 四: "thu", 五: "fri", 六: "sat", 日: "sun", 天: "sun" })[match[1]] || "";
+  }
+  return "";
+}
+
+function parseRepeatRule(rule) {
+  const text = String(rule || "").trim();
+  if (!text) return { frequency: "", weekday: "", time: "", text: "" };
+  const normalized = text.toLowerCase();
+  const frequency =
+    normalized.match(/^(daily|workday|weekly|monthly|yearly)(?:@|$)/)?.[1] ||
+    (/^每天|^每日/.test(text) ? "daily" :
+      /^工作日/.test(text) ? "workday" :
+      /^每周/.test(text) ? "weekly" :
+      /^每月/.test(text) ? "monthly" :
+      /^每年/.test(text) ? "yearly" : "");
+  if (!frequency) return { frequency: "", weekday: "", time: "", text };
+  const parts = normalized.split("@").slice(1).filter(Boolean);
+  let weekday = "";
+  let time = "";
+  parts.forEach((part) => {
+    const clock = normalizeClockTime(part);
+    if (clock) {
+      time = clock;
+      return;
+    }
+    weekday = weekday || normalizeRepeatWeekday(part);
+  });
+  if (!weekday && frequency === "weekly") weekday = normalizeRepeatWeekday(text);
+  return { frequency, weekday, time, text };
+}
+
+function buildRepeatRule(frequency, { weekday = "", time = "", date = "" } = {}) {
+  const normalizedTime = normalizeClockTime(time);
+  if (!frequency) return "";
+  if (frequency === "weekly") {
+    const normalizedWeekday = normalizeRepeatWeekday(weekday) || repeatWeekdayIdFromDate(date);
+    return ["weekly", normalizedWeekday, normalizedTime].filter(Boolean).join("@");
+  }
+  return normalizedTime && ["daily", "workday"].includes(frequency)
+    ? `${frequency}@${normalizedTime}`
+    : frequency;
+}
+
+function nextDateForRepeatWeekday(dateValue, weekday) {
+  const date = parseDate(dateValue) || parseDate(today()) || new Date();
+  const target = repeatWeekdayById[normalizeRepeatWeekday(weekday)]?.index;
+  if (target === undefined) return formatDate(date);
+  const offset = (target - date.getDay() + 7) % 7;
+  date.setDate(date.getDate() + offset);
+  return formatDate(date);
+}
+
+function segmentForClockTime(time) {
+  const clock = normalizeClockTime(time);
+  if (!clock) return "allDay";
+  const hour = Number(clock.slice(0, 2));
+  if (hour < 11) return "morning";
+  if (hour < 14) return "noon";
+  if (hour < 18) return "afternoon";
+  return "evening";
+}
+
 function repeatRuleLabel(rule) {
   const text = String(rule || "").trim();
   if (!text) return "";
-  const normalized = text.toLowerCase();
-  const time = normalized.match(/@(\d{1,2}:\d{2})/)?.[1] || "";
-  if (/^daily(?:@|$)/.test(normalized) || /^每天/.test(text)) return ["每天", time].filter(Boolean).join(" ");
-  if (/^weekly(?:@|$)/.test(normalized) || /^每周/.test(text)) return ["每周", time].filter(Boolean).join(" ");
-  if (/^monthly(?:@|$)/.test(normalized) || /^每月/.test(text)) return ["每月", time].filter(Boolean).join(" ");
-  if (/^yearly(?:@|$)/.test(normalized) || /^每年/.test(text)) return ["每年", time].filter(Boolean).join(" ");
-  if (/^workday/.test(normalized)) return ["工作日", time].filter(Boolean).join(" ");
+  const parsed = parseRepeatRule(text);
+  const time = parsed.time;
+  if (parsed.frequency === "daily") return ["每天", time].filter(Boolean).join(" ");
+  if (parsed.frequency === "weekly") {
+    const weekday = repeatWeekdayById[parsed.weekday]?.label || "";
+    return [weekday ? `每${weekday}` : "每周", time].filter(Boolean).join(" ");
+  }
+  if (parsed.frequency === "monthly") return ["每月", time].filter(Boolean).join(" ");
+  if (parsed.frequency === "yearly") return ["每年", time].filter(Boolean).join(" ");
+  if (parsed.frequency === "workday") return ["工作日", time].filter(Boolean).join(" ");
   return text;
 }
 
@@ -2067,6 +2186,7 @@ function sortCards(cards) {
 function lifeCardIdentityKey(card) {
   if (!card) return "";
   if (isDailyCheckinCard(card)) return `daily-checkin:${card.date || today()}`;
+  if (card.recurrence?.date && card.sourceType && card.sourceId) return `${card.sourceType}:${card.sourceId}:${card.recurrence.date}`;
   if (card.sourceType && card.sourceId) return `${card.sourceType}:${card.sourceId}`;
   if (card.id) return `id:${card.id}`;
   return [
@@ -2745,7 +2865,12 @@ export function App() {
   }
 
   function findStateCard(state, card) {
-    return (state?.scheduleItemCards || []).find((item) =>
+    const cards = state?.scheduleItemCards || [];
+    return cards.find((item) => item.id === card.id) || cards.find((item) =>
+      item.sourceType === card.sourceType &&
+      item.sourceId === card.sourceId &&
+      (!card.date || item.date === card.date)
+    ) || cards.find((item) =>
       item.sourceType === card.sourceType &&
       item.sourceId === card.sourceId
     );
@@ -4460,6 +4585,7 @@ function LifeCardTimeline({ cards, captures = [], profiles, currentUser, now, se
   const [axisFocusId, setAxisFocusId] = useState("");
   const [compactDates, setCompactDates] = useState(() => new Set());
   const [mobileToolOpen, setMobileToolOpen] = useState(false);
+  const [futureDateRange, setFutureDateRange] = useState(null);
   const liveAxisPercent = `${dayProgressPercent(selectedDate, now)}%`;
   const [axisHandleY, setAxisHandleY] = useState(liveAxisPercent);
   const listRef = useRef(null);
@@ -4470,6 +4596,8 @@ function LifeCardTimeline({ cards, captures = [], profiles, currentUser, now, se
   const orderDragRef = useRef({ active: false, cardId: "", date: "", pointerId: null, moved: false });
   const orderPreviewRef = useRef(null);
   const todayKey = today();
+  const weekendRange = nextWeekendRange(todayKey);
+  const futureRangeEnd = timelineScope === "future" && futureDateRange?.start === selectedDate ? futureDateRange.end || "" : "";
   const lifeCards = useMemo(() => uniqueLifeCards(cards)
     .filter((card) => !isDefaultPromptCard(card))
     .filter((card) => !isCheckinSurfaceCard(card))
@@ -4479,8 +4607,11 @@ function LifeCardTimeline({ cards, captures = [], profiles, currentUser, now, se
       if (timelineScope === "today") {
         return cardDate === selectedDate;
       }
+      if (futureRangeEnd) {
+        return cardDate >= selectedDate && cardDate <= futureRangeEnd;
+      }
       return cardDate >= selectedDate;
-    }), [cards, selectedDate, todayKey, timelineScope]);
+    }), [cards, selectedDate, futureRangeEnd, todayKey, timelineScope]);
   const profileIds = useMemo(() => new Set(profiles.map((profile) => profile.id)), [profiles]);
   const isSharedCard = (card) => card.ownerId === "shared" || (card.participants || []).length > 1;
   const isCurrentUserCard = (card) => card.ownerId === currentUser?.id || card.participants?.includes(currentUser?.id);
@@ -4511,6 +4642,7 @@ function LifeCardTimeline({ cards, captures = [], profiles, currentUser, now, se
     .filter((capture) => {
       const captureDate = String(capture.date || capture.createdAt || todayKey).slice(0, 10);
       if (timelineScope === "today") return captureDate === selectedDate;
+      if (futureRangeEnd) return captureDate >= selectedDate && captureDate <= futureRangeEnd;
       return captureDate >= selectedDate;
     })
     .filter((capture) => {
@@ -4521,7 +4653,7 @@ function LifeCardTimeline({ cards, captures = [], profiles, currentUser, now, se
       if (filter === "mine") return !currentUser?.id || capture.createdBy === currentUser.id;
       return true;
     })
-    .map(captureTimelineEntry), [captures, convertedCaptureIds, currentUser?.id, filter, selectedDate, timelineScope, todayKey]);
+    .map(captureTimelineEntry), [captures, convertedCaptureIds, currentUser?.id, filter, futureRangeEnd, selectedDate, timelineScope, todayKey]);
   const visibleEntries = useMemo(() => sortTimelineEntries([
     ...visibleCards.map(lifeCardTimelineEntry),
     ...timelineCaptures,
@@ -4583,9 +4715,14 @@ function LifeCardTimeline({ cards, captures = [], profiles, currentUser, now, se
   const futureJumps = [
     { label: "明天", date: addDays(todayKey, 1) },
     { label: "三天后", date: addDays(todayKey, 3) },
-    { label: "周末", date: nextWeekendDate(todayKey) },
+    { label: "周末", date: weekendRange.start, endDate: weekendRange.end },
     { label: "下周", date: addDays(todayKey, 7) },
   ];
+  useEffect(() => {
+    if (timelineScope !== "future") {
+      if (futureDateRange) setFutureDateRange(null);
+    }
+  }, [futureDateRange, timelineScope]);
   useEffect(() => () => {
     if (scrubFrame.current) window.cancelAnimationFrame(scrubFrame.current);
     if (scrubClearTimer.current) window.clearTimeout(scrubClearTimer.current);
@@ -4796,10 +4933,12 @@ function LifeCardTimeline({ cards, captures = [], profiles, currentUser, now, se
     event.preventDefault();
     event.stopPropagation();
   };
-  const selectDate = (date) => {
+  const selectDate = (date, endDate = "") => {
     setAxisFocusId("");
     setScrubTargetId("");
     setIsCardScrubbing(false);
+    const nextRange = endDate && endDate > date ? { start: date, end: endDate } : null;
+    setFutureDateRange(timelineScope === "future" ? nextRange : null);
     if (date === todayKey) {
       setAxisHandleY(`${dayProgressPercent(date, now)}%`);
       listRef.current?.scrollTo({ top: 0, behavior: "smooth" });
@@ -4951,13 +5090,13 @@ function LifeCardTimeline({ cards, captures = [], profiles, currentUser, now, se
         <div className="future-jump-row" aria-label="未来日期">
           {futureJumps.map((jump) => (
             <button
-              key={`${jump.label}-${jump.date}`}
-              className={cx(selectedDate === jump.date && "is-active")}
+              key={`${jump.label}-${jump.date}-${jump.endDate || ""}`}
+              className={cx(selectedDate === jump.date && (jump.endDate ? futureDateRange?.end === jump.endDate : !futureDateRange) && "is-active")}
               type="button"
-              onClick={() => selectDate(jump.date)}
+              onClick={() => selectDate(jump.date, jump.endDate)}
             >
               <span>{jump.label}</span>
-              <em>{shortDate(jump.date)}</em>
+              <em>{jump.endDate ? shortDateRange(jump.date, jump.endDate) : shortDate(jump.date)}</em>
             </button>
           ))}
         </div>
@@ -5203,7 +5342,8 @@ function LifeCard({ card, profiles, currentUser, compact = false, toggleCard, ar
       }))
     : [];
   const allSteps = (isLegacyCheckin ? checkinSteps : (Array.isArray(card.steps) ? card.steps : [])).filter((step) => step.title);
-  const pendingStep = !isLegacyCheckin ? allSteps.find((step) => !stepDoneForUser(step, card, completionTarget || currentUser?.id)) : null;
+  const completionTargetForSteps = completionTarget || currentUser?.id;
+  const pendingStep = !isLegacyCheckin ? nextActionableStep(card, completionTargetForSteps) : null;
   const isGroupCard = participants.length > 1 || card.ownerId === "shared";
   const personProgress = !isLegacyCheckin && !isDailyCheckin ? lifeCardPersonProgress(card, profiles, currentUser) : [];
   const progressTotal = isGroupCard && personProgress.length
@@ -5214,7 +5354,7 @@ function LifeCard({ card, profiles, currentUser, compact = false, toggleCard, ar
     : Number(card.stepProgress?.done);
   const stepTotal = Number.isFinite(progressTotal) && progressTotal > 0 ? progressTotal : allSteps.length;
   const stepDone = Number.isFinite(progressDone) && progressDone >= 0 ? progressDone : allSteps.filter((step) => step.status === "done").length;
-  const compactStepTitle = isLegacyCheckin ? "" : pendingStep?.title || (stepTotal ? "都完成了" : "");
+  const compactStepTitle = isLegacyCheckin ? "" : pendingStep?.title || "";
   const statusByUser = card.statusByUser || {};
   const checkinPeople = isLegacyCheckin || isDailyCheckin
     ? participants.map((id) => {
@@ -5238,12 +5378,13 @@ function LifeCard({ card, profiles, currentUser, compact = false, toggleCard, ar
       ? checkinPeople.filter((person) => !person.done).map((person) => person.id)
       : allSteps.length
         ? allSteps
-            .filter((step) => !stepDoneForUser(step, card, completionTarget || currentUser?.id))
+            .filter((step) => {
+              const owners = stepOwnerIds(step, participants);
+              return owners.some((id) => !stepDoneForUser(step, card, id));
+            })
             .flatMap((step) => {
               const owners = stepOwnerIds(step, participants);
-              return owners.filter((id) => !stepDoneForUser(step, card, id)).length
-                ? owners.filter((id) => !stepDoneForUser(step, card, id))
-                : [completionTarget || currentUser?.id].filter(Boolean);
+              return owners.filter((id) => !stepDoneForUser(step, card, id));
             })
         : participants.filter((id) => !isCardDoneForUser(card, id))
   )];
@@ -5551,20 +5692,17 @@ function LifeCard({ card, profiles, currentUser, compact = false, toggleCard, ar
             ))}
           </div>
         ) : null}
-        {!compact && !isLegacyCheckin && !isDailyCheckin && stepTotal ? (
+        {!compact && !isLegacyCheckin && !isDailyCheckin && pendingStep ? (
           <button
-            className={cx("next-step-row", !pendingStep && "is-done")}
+            className="next-step-row"
             type="button"
-            aria-label={pendingStep ? `完成下一步 ${pendingStep.title}` : "步骤已完成"}
-            title={pendingStep ? `下一步：${pendingStep.title}` : "步骤已完成"}
-            onClick={(event) => {
-              if (pendingStep) toggleStepAction(event, pendingStep);
-              else stopAction(event);
-            }}
-            disabled={readOnly || !pendingStep}
+            aria-label={`完成下一步 ${pendingStep.title}`}
+            title={`下一步：${pendingStep.title}`}
+            onClick={(event) => toggleStepAction(event, pendingStep)}
+            disabled={readOnly}
           >
-            <Icon name={pendingStep ? "circle" : "check"} />
-            <span>{pendingStep ? "下一步" : "步骤"}</span>
+            <Icon name="circle" />
+            <span>下一步</span>
             <em>{compactStepTitle}</em>
             <b>{`${stepDone}/${stepTotal}`}</b>
           </button>
@@ -6076,6 +6214,10 @@ function CardEditor({ card, profiles, currentUser, onClose, onSave, onDelete, co
   const ownerLabel = isSecret ? "小秘密" : ownerChoices.find((choice) => choice.id === form.ownerId)?.label || "共同";
   const participantText = namesForIds(participants, profiles);
   const priorityLabel = priorityOptions.find((choice) => choice.id === form.priority)?.label || "普通";
+  const repeatRuleInfo = parseRepeatRule(form.repeatRule);
+  const repeatFrequency = repeatRuleInfo.frequency;
+  const weeklyRuleTime = repeatRuleInfo.time || timeFromDateTime(form.plannedAt) || "09:00";
+  const weeklyRuleWeekday = repeatRuleInfo.weekday || repeatWeekdayIdFromDate(form.date) || "mon";
   const repeatLabel = repeatRuleLabel(form.repeatRule) || "一次";
   const stepCount = formSteps.filter((step) => String(step.title || "").trim()).length || formSteps.length;
   const editorTabs = [
@@ -6088,13 +6230,17 @@ function CardEditor({ card, profiles, currentUser, onClose, onSave, onDelete, co
     { id: "three", icon: "rows", label: "三步走" },
     profiles.length > 1 ? { id: "split", icon: "users", label: "分给两个人" } : null,
   ].filter(Boolean);
-  const setEditorDate = useCallback((date) => {
+  const setEditorDate = useCallback((date, endDate = "") => {
     if (!date || isDailyCheckin) return;
     const plannedAt = getValues("plannedAt");
     const dueAt = getValues("dueAt");
     setValue("date", date, { shouldDirty: true, shouldValidate: true });
     if (plannedAt) setValue("plannedAt", redateDateTime(plannedAt, date), { shouldDirty: true, shouldValidate: true });
-    if (dueAt) setValue("dueAt", redateDateTime(dueAt, date), { shouldDirty: true, shouldValidate: true });
+    if (endDate && endDate > date) {
+      setValue("dueAt", localDateTimeValue(endDate, timeFromDateTime(dueAt) || "23:59"), { shouldDirty: true, shouldValidate: true });
+    } else if (dueAt) {
+      setValue("dueAt", redateDateTime(dueAt, date), { shouldDirty: true, shouldValidate: true });
+    }
   }, [getValues, isDailyCheckin, setValue]);
   const setEditorTime = useCallback((time, segment) => {
     if (isDailyCheckin) return;
@@ -6123,16 +6269,45 @@ function CardEditor({ card, profiles, currentUser, onClose, onSave, onDelete, co
       syncStepOwnersForParticipants(nextParticipants);
     }
   }, [currentUser?.id, getValues, isDailyCheckin, profiles, secretOwnerId, setValue]);
+  const editorWeekendRange = nextWeekendRange(form.date || today());
   const editorDateShortcuts = [
     { label: "本日", value: today() },
     { label: "明天", value: addDays(today(), 1) },
-    { label: "周末", value: nextWeekendDate(form.date || today()) },
+    { label: "周末", value: editorWeekendRange.start, endValue: editorWeekendRange.end },
   ];
   const editorTimeShortcuts = [
     { label: "早上", time: "09:00", segment: "morning" },
     { label: "下午", time: "15:00", segment: "afternoon" },
     { label: "晚上", time: "20:00", segment: "evening" },
   ];
+  const setRepeatFrequency = (frequency) => {
+    if (isDailyCheckin) return;
+    if (!frequency) {
+      setValue("repeatRule", "", { shouldDirty: true, shouldValidate: true });
+      return;
+    }
+    if (frequency === "weekly") {
+      const date = getValues("date") || today();
+      const weekday = repeatWeekdayIdFromDate(date) || weeklyRuleWeekday;
+      const time = timeFromDateTime(getValues("plannedAt")) || weeklyRuleTime;
+      setValue("repeatRule", buildRepeatRule("weekly", { weekday, time, date }), { shouldDirty: true, shouldValidate: true });
+      setValue("plannedAt", localDateTimeValue(date, time), { shouldDirty: true, shouldValidate: true });
+      setValue("segment", segmentForClockTime(time), { shouldDirty: true, shouldValidate: true });
+      return;
+    }
+    const time = timeFromDateTime(getValues("plannedAt"));
+    setValue("repeatRule", buildRepeatRule(frequency, { time }), { shouldDirty: true, shouldValidate: true });
+  };
+  const setWeeklyRule = ({ weekday = weeklyRuleWeekday, time = weeklyRuleTime } = {}) => {
+    if (isDailyCheckin) return;
+    const nextWeekday = normalizeRepeatWeekday(weekday) || weeklyRuleWeekday;
+    const nextTime = normalizeClockTime(time) || weeklyRuleTime;
+    const date = nextDateForRepeatWeekday(getValues("date") || today(), nextWeekday);
+    setValue("date", date, { shouldDirty: true, shouldValidate: true });
+    setValue("plannedAt", localDateTimeValue(date, nextTime), { shouldDirty: true, shouldValidate: true });
+    setValue("segment", segmentForClockTime(nextTime), { shouldDirty: true, shouldValidate: true });
+    setValue("repeatRule", buildRepeatRule("weekly", { weekday: nextWeekday, time: nextTime, date }), { shouldDirty: true, shouldValidate: true });
+  };
   const requestClose = useCallback(async () => {
     if (isDirty && !isSubmitting) {
       const accepted = confirmLeave
@@ -6226,12 +6401,13 @@ function CardEditor({ card, profiles, currentUser, onClose, onSave, onDelete, co
                       <div className="date-shortcut-row" aria-label="日期快捷">
                         {editorDateShortcuts.map((shortcut) => (
                           <button
-                            key={`${shortcut.label}-${shortcut.value}`}
+                            key={`${shortcut.label}-${shortcut.value}-${shortcut.endValue || ""}`}
                             type="button"
-                            className={cx(form.date === shortcut.value && "is-active")}
-                            onClick={() => setEditorDate(shortcut.value)}
+                            className={cx(form.date === shortcut.value && (!shortcut.endValue || dateFromDateTime(form.dueAt) === shortcut.endValue) && "is-active")}
+                            onClick={() => setEditorDate(shortcut.value, shortcut.endValue)}
                           >
-                            {shortcut.label}
+                            <span>{shortcut.label}</span>
+                            {shortcut.endValue ? <em>{shortDateRange(shortcut.value, shortcut.endValue)}</em> : null}
                           </button>
                         ))}
                       </div>
@@ -6348,15 +6524,42 @@ function CardEditor({ card, profiles, currentUser, onClose, onSave, onDelete, co
                         <button
                           key={option.id || "once"}
                           type="button"
-                          className={cx(form.repeatRule === option.id && "is-active")}
-                          onClick={() => setValue("repeatRule", option.id, { shouldDirty: true, shouldValidate: true })}
-                          aria-pressed={form.repeatRule === option.id ? "true" : "false"}
+                          className={cx(repeatFrequency === option.id && "is-active")}
+                          onClick={() => setRepeatFrequency(option.id)}
+                          aria-pressed={repeatFrequency === option.id ? "true" : "false"}
                         >
                           <span>{option.label}</span>
                           <em>{option.hint}</em>
                         </button>
                       ))}
                     </div>
+                    {repeatFrequency === "weekly" ? (
+                      <div className="weekly-rule-editor" aria-label="每周固定时间">
+                        <div className="weekly-rule-days">
+                          {repeatWeekdayOptions.map((option) => (
+                            <button
+                              key={option.id}
+                              type="button"
+                              className={cx(weeklyRuleWeekday === option.id && "is-active")}
+                              onClick={() => setWeeklyRule({ weekday: option.id })}
+                              aria-pressed={weeklyRuleWeekday === option.id ? "true" : "false"}
+                            >
+                              {option.label.replace("周", "")}
+                            </button>
+                          ))}
+                        </div>
+                        <label className="weekly-rule-time">
+                          <Icon name="clock" />
+                          <span>{repeatWeekdayById[weeklyRuleWeekday]?.label || "每周"}</span>
+                          <input
+                            type="time"
+                            value={weeklyRuleTime}
+                            onChange={(event) => setWeeklyRule({ time: event.target.value })}
+                            aria-label="每周固定时间"
+                          />
+                        </label>
+                      </div>
+                    ) : null}
                   </>
                 )}
               </Tabs.Content>
