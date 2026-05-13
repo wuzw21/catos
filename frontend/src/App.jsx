@@ -5183,7 +5183,7 @@ function LifeCardTimeline({ cards, captures = [], profiles, currentUser, now, se
             <b>现在 {nowLabel}</b>
           </span>
         ) : null}
-        {dates.length ? <span className="timeline-axis-handle" data-time={showCurrentTime ? nowLabel : ""} aria-hidden="true" /> : null}
+        {dates.length && !showCurrentTime ? <span className="timeline-axis-handle" data-time="" aria-hidden="true" /> : null}
         {dates.length ? dates.map((date) => {
           const dayEntries = displayGrouped.get(date) || [];
           const isExpanded = expanded.has(date);
