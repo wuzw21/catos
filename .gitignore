@@ -6,7 +6,7 @@ tmp/
 content-private/
 content-local/
 content-demo-private/
-web/data.js
+web/
 content.example/private/couple-workspace.json
 
 # Private data layer

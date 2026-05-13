@@ -85,6 +85,15 @@ trap 'rm -rf "${WORK_DIR}"' EXIT
   }
 ' | sort > "${FILE_LIST}"
 
+{
+  printf '%s\n' "frontend/public/boot.js"
+  printf '%s\n' "frontend/public/icons/cat-512.png"
+  printf '%s\n' "frontend/public/icons/cat.svg"
+  printf '%s\n' "frontend/public/manifest.webmanifest"
+} | awk 'NF && !seen[$0]++' >> "${FILE_LIST}"
+
+sort -u -o "${FILE_LIST}" "${FILE_LIST}"
+
 if [ ! -s "${FILE_LIST}" ]; then
   echo "No files selected for deployment." >&2
   exit 1

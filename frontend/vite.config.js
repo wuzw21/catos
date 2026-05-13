@@ -5,6 +5,12 @@ export default defineConfig({
   root: "frontend",
   base: "/web/",
   plugins: [react()],
+  resolve: {
+    dedupe: ["react", "react-dom"],
+  },
+  optimizeDeps: {
+    include: ["react", "react-dom/client", "react/jsx-runtime", "react/jsx-dev-runtime"],
+  },
   server: {
     port: 5173,
     proxy: {
@@ -14,7 +20,7 @@ export default defineConfig({
   },
   build: {
     outDir: "../web",
-    emptyOutDir: false,
+    emptyOutDir: true,
     rollupOptions: {
       output: {
         manualChunks(id) {
