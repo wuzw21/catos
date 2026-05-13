@@ -100,13 +100,12 @@ const dailyCheckinExerciseStepTitle = "进行体育锻炼";
 const dailyCheckinHappyStepTitle = "最开心的事";
 const dailyCheckinContributionStepTitle = "最有贡献的事";
 const dailyCheckinPhotoStepTitle = "最珍贵的照片";
+const dailyCheckinBedtimeStepTitle = "睡前打卡";
 const dailyCheckinDefaultSteps = [
   { title: dailyCheckinWakeStepTitle, inputType: "time" },
   { title: dailyCheckinPlanStepTitle },
   { title: dailyCheckinExerciseStepTitle },
-  { title: dailyCheckinHappyStepTitle, inputType: "text" },
-  { title: dailyCheckinContributionStepTitle, inputType: "text" },
-  { title: dailyCheckinPhotoStepTitle, inputType: "photo" },
+  { title: dailyCheckinBedtimeStepTitle, inputType: "bedtime" },
 ];
 function dailyCheckinStepDefinitionTitle(definition) {
   return sanitizeText(typeof definition === "object" && definition ? definition.title : definition, 120);
@@ -814,6 +813,7 @@ function dailyCheckinInputTypeForTitle(title) {
   if (key === normalizedTitleKey(dailyCheckinHappyStepTitle)) return "text";
   if (key === normalizedTitleKey(dailyCheckinContributionStepTitle)) return "text";
   if (key === normalizedTitleKey(dailyCheckinPhotoStepTitle)) return "photo";
+  if (key === normalizedTitleKey(dailyCheckinBedtimeStepTitle)) return "bedtime";
   return "";
 }
 
@@ -822,12 +822,13 @@ function dailyCheckinDiaryFieldForTitle(title) {
   if (key === normalizedTitleKey(dailyCheckinHappyStepTitle)) return "happiestThing";
   if (key === normalizedTitleKey(dailyCheckinContributionStepTitle)) return "smallAchievement";
   if (key === normalizedTitleKey(dailyCheckinPhotoStepTitle)) return "images";
+  if (key === normalizedTitleKey(dailyCheckinBedtimeStepTitle)) return "bedtime";
   return "";
 }
 
 function normalizeStepInputType(value, title = "") {
   const raw = sanitizeText(value, 40);
-  if (["time", "text", "photo"].includes(raw)) return raw;
+  if (["time", "text", "photo", "bedtime"].includes(raw)) return raw;
   return dailyCheckinInputTypeForTitle(title);
 }
 
@@ -1878,7 +1879,7 @@ function dailyCheckinStepStatusForUser(step, item, userId) {
   if (inputType === "time") {
     return normalizeClockValue(step.valueByUser?.[userId]) ? "done" : "todo";
   }
-  if (["text", "photo"].includes(inputType) && sanitizeText(step.valueByUser?.[userId], 220)) {
+  if (["text", "photo", "bedtime"].includes(inputType) && sanitizeText(step.valueByUser?.[userId], 220)) {
     return "done";
   }
   if (validStatuses.has(step.statusByUser?.[userId])) return step.statusByUser[userId];
@@ -1894,6 +1895,12 @@ function dailyCheckinDiaryStepValue(store, date, userId, field) {
   if (field === "images") {
     const count = Array.isArray(userDay.images) ? userDay.images.map(publicDiaryAsset).filter(Boolean).length : 0;
     return count ? `${count}张照片` : "";
+  }
+  if (field === "bedtime") {
+    const hasHappy = Boolean(sanitizeText(userDay.happiestThing, 220));
+    const hasContribution = Boolean(sanitizeText(userDay.smallAchievement, 220));
+    const hasPhoto = Array.isArray(userDay.images) && userDay.images.map(publicDiaryAsset).filter(Boolean).length > 0;
+    return hasHappy && hasContribution && hasPhoto ? "开心 · 贡献 · 照片" : "";
   }
   return "";
 }
@@ -2583,6 +2590,11 @@ function ensureDailyCheckinCard(store, date = businessDate(), userId = "system")
     normalizeLifeCardTags(item.tags, item).includes(dailyCheckinCardTag)
   );
   const existingSteps = normalizeLifeCardSteps(existing?.steps, profileIds, dailyCheckinCardTitle);
+  const mergedStepKeys = new Set([
+    dailyCheckinHappyStepTitle,
+    dailyCheckinContributionStepTitle,
+    dailyCheckinPhotoStepTitle,
+  ].map((title) => normalizedTitleKey(title)));
   const usedKeys = new Set();
   const steps = syncDailyCheckinStepsWithDiary(store, normalizedDate, [
     ...dailyCheckinDefaultSteps.map((definition, index) => {
@@ -2594,7 +2606,7 @@ function ensureDailyCheckinCard(store, date = businessDate(), userId = "system")
     ...existingSteps
       .filter((step) => {
         const key = normalizedTitleKey(step.title);
-        if (!key || usedKeys.has(key)) return false;
+        if (!key || usedKeys.has(key) || mergedStepKeys.has(key)) return false;
         usedKeys.add(key);
         return true;
       })
@@ -3330,7 +3342,7 @@ function publicDailySummary(summary, options = {}) {
     date: summary.date || "",
     title: normalizeSummaryTitle(summary),
     subtitle: cleanGeneratedSummaryText(summary.subtitle, 180),
-    narrative: cleanGeneratedSummaryText(summary.narrative, 900),
+    narrative: cleanGeneratedSummaryText(summary.narrative, 1400),
     qualityScore: Number(summary.qualityScore) || 0,
     qualityLabel: cleanGeneratedSummaryText(summary.qualityLabel, 80),
     qualityNote: cleanGeneratedSummaryText(summary.qualityNote, 240),
@@ -6081,8 +6093,8 @@ function getCompletionForDate(store, date, userId, viewerUserId = "") {
     Boolean(sanitizeText(dailyPulse.happiestThing, 200)),
     Boolean(sanitizeText(dailyPulse.smallAchievement, 200)),
     Array.isArray(dailyPulse.images) && dailyPulse.images.map(publicDiaryAsset).filter(Boolean).length > 0,
-  ].filter(Boolean).length;
-  const dailyPulseTotal = 3;
+  ].every(Boolean) ? 1 : 0;
+  const dailyPulseTotal = 1;
   const done = scheduleDone + todoDone + checkinDone + dailyPulseDone;
   const total = scheduleItems.length + todoItems.length + checkinItems.length + dailyPulseTotal;
 
@@ -6292,7 +6304,6 @@ function meaningfulCaptureText(capture) {
 }
 
 function buildFallbackNarrative(facts) {
-  const sentences = [];
   const pulseParts = (facts.status_by_user || []).flatMap((person) => {
     const name = displayNameById(facts, person.userId);
     return [
@@ -6310,16 +6321,23 @@ function buildFallbackNarrative(facts) {
     .map((item) => item.title)
     .slice(0, 2);
 
+  const paragraphs = [];
   if (pulseParts.length) {
-    sentences.push(pulseParts.slice(0, 3).join("；"));
+    paragraphs.push(`今天值得鼓励的是，${pulseParts.slice(0, 3).join("；")}。`);
   } else if (captureParts.length) {
-    sentences.push(`随手记里留下了：${captureParts.slice(0, 2).join("；")}`);
+    paragraphs.push(`今天值得记录的是，${captureParts.slice(0, 2).join("；")}。`);
   }
-  if (completedTitles.length) sentences.push(`已完成：${completedTitles.join("、")}`);
-  if (missedTitles.length) sentences.push(`明天继续：${missedTitles.join("、")}`);
-  if (facts.locations?.length) sentences.push(`地点：${facts.locations.slice(0, 2).join("、")}`);
+  if (completedTitles.length) {
+    paragraphs.push(`已经完成的地方也要夸一夸：${completedTitles.join("、")}，这些都算今天真实往前的一小步。`);
+  }
+  if (!pulseParts.length && !captureParts.length && facts.locations?.length) {
+    paragraphs.push(`今天值得留下的地点是 ${facts.locations.slice(0, 2).join("、")}，之后翻回来时会知道这一天发生在哪里。`);
+  }
+  if (missedTitles.length) {
+    paragraphs.push(`今天需要加油的地方，是把 ${missedTitles.join("、")} 再轻轻收一下；明天先挑最容易开始的一件就好。`);
+  }
 
-  return sentences.length ? `${sentences.join("。")}。` : "";
+  return paragraphs.length ? paragraphs.join("\n\n") : "";
 }
 
 function storySnippetForPrompt(summary, date) {
@@ -6391,6 +6409,9 @@ function normalizeAgentAnalysisUserIds(analysis, profiles = []) {
       did: normalizeEntry(analysis.daily_review?.did || analysis.dailyReview?.did),
       shortcoming: normalizeEntry(analysis.daily_review?.shortcoming || analysis.dailyReview?.shortcoming),
       tomorrow: normalizeEntry(analysis.daily_review?.tomorrow || analysis.dailyReview?.tomorrow),
+      encouragement: normalizeEntry(analysis.daily_review?.encouragement || analysis.dailyReview?.encouragement),
+      record: normalizeEntry(analysis.daily_review?.record || analysis.dailyReview?.record),
+      effort: normalizeEntry(analysis.daily_review?.effort || analysis.dailyReview?.effort),
     },
   };
 }
@@ -6438,10 +6459,13 @@ function normalizeDailyAnalysis(input = {}, fallback = {}) {
       did: normalizeAnalysisBlock(source.daily_review?.did || source.dailyReview?.did, backup.dailyReview?.did),
       shortcoming: normalizeAnalysisBlock(source.daily_review?.shortcoming || source.dailyReview?.shortcoming, backup.dailyReview?.shortcoming),
       tomorrow: normalizeAnalysisBlock(source.daily_review?.tomorrow || source.dailyReview?.tomorrow, backup.dailyReview?.tomorrow),
+      encouragement: normalizeAnalysisBlock(source.daily_review?.encouragement || source.dailyReview?.encouragement, backup.dailyReview?.encouragement),
+      record: normalizeAnalysisBlock(source.daily_review?.record || source.dailyReview?.record, backup.dailyReview?.record),
+      effort: normalizeAnalysisBlock(source.daily_review?.effort || source.dailyReview?.effort, backup.dailyReview?.effort),
     },
     diary: {
       title: cleanGeneratedSummaryText(diarySource.title || "日记", 100) || "日记",
-      text: cleanGeneratedSummaryText(diarySource.text || diarySource.detail || backup.diary?.text || backup.diary?.detail, 1200),
+      text: cleanGeneratedSummaryText(diarySource.text || diarySource.detail || backup.diary?.text || backup.diary?.detail, 1800),
     },
   };
 }
@@ -6526,6 +6550,21 @@ function buildFallbackAnalysis(facts, narrative, nextStep, title = "") {
     ? carryForward.map((item) => item.title).join("、")
     : "";
   const tomorrowText = carryForward[0]?.detail || nextStep || "";
+  const encouragementUsers = [...new Set(coreContributions.flatMap((item) => item.userIds || []))];
+  const carryForwardUsers = [...new Set(carryForward.flatMap((item) => item.userIds || []))];
+  const recordUsers = [...new Set([
+    ...(keyMoment.userIds || []),
+    ...memoryClues.flatMap((item) => item.userIds || []),
+  ].filter(Boolean))];
+  const encouragementText = didText
+    ? didText
+    : firstCompleted?.title
+      ? `${firstCompleted.title}已经往前推进了一点。`
+      : "";
+  const recordText = keyMoment.text || captureTexts[0] || memoryClues[0]?.detail || "";
+  const effortText = shortcomingText
+    ? `${shortcomingText}还可以继续收一收。`
+    : tomorrowText;
 
   return normalizeDailyAnalysis({}, {
     keyMoment,
@@ -6534,22 +6573,40 @@ function buildFallbackAnalysis(facts, narrative, nextStep, title = "") {
     memoryClues,
     dailyReview: {
       did: {
-        title: didText ? "今天做了什么" : "",
+        title: didText ? "小小推进" : "",
         text: didText,
-        userIds: [...new Set(coreContributions.flatMap((item) => item.userIds || []))],
+        userIds: encouragementUsers,
         evidence: ["今日推进"],
       },
       shortcoming: {
         title: shortcomingText ? "还差一点" : "",
         text: shortcomingText,
-        userIds: [...new Set(carryForward.flatMap((item) => item.userIds || []))],
+        userIds: carryForwardUsers,
         evidence: ["待推进"],
       },
       tomorrow: {
         title: tomorrowText ? "明天怎么做" : "",
         text: tomorrowText,
-        userIds: [...new Set(carryForward.flatMap((item) => item.userIds || []))],
+        userIds: carryForwardUsers,
         evidence: ["明天"],
+      },
+      encouragement: {
+        title: encouragementText ? "已经往前挪" : "",
+        text: encouragementText,
+        userIds: encouragementUsers,
+        evidence: ["今日推进"],
+      },
+      record: {
+        title: recordText ? "这件事要留下" : "",
+        text: recordText,
+        userIds: recordUsers,
+        evidence: keyMoment.evidence || ["当天线索"],
+      },
+      effort: {
+        title: effortText ? "还差一个收口" : "",
+        text: effortText,
+        userIds: carryForwardUsers,
+        evidence: ["待推进"],
       },
     },
     diary: {
@@ -6585,12 +6642,13 @@ function buildAgentPrompt(facts) {
     "- 月相、节气、农历和节日可以作为当天氛围锚点，但不能替代真实发生的生活事实。",
     "- next_step 只写明天最值得顺手带上的一件事；没有事实就留轻一点，不要硬编。",
     "- analysis.key_moment 写最值得记住的一件事；core_contributions 写每个人可归属的贡献；carry_forward 写明天顺手带上的事；memory_clues 写长期记忆线索；diary.text 写一篇可直接展示的小日记。",
-    "- analysis.daily_review.did 写今天实际做了什么；shortcoming 写有什么不足或还差什么；tomorrow 写明天可以怎么做。三项都必须基于输入事实，不要从统计数字臆测任务。",
-    "- daily_review 三项是给页面展示的短总结：每项 title 要短、具体、有信息；text 写 1 句自然解释；title 不要直接写“今天做了什么/有什么不足/明天怎么做”。",
+    "- analysis.daily_review.encouragement 写今天值得鼓励的地方；record 写今天值得记录的地方；effort 写今天需要加油的地方。三项是日记页主展示内容，都必须基于输入事实。",
+    "- analysis.daily_review.did/shortcoming/tomorrow 继续输出，用于兼容旧页面：分别写今天实际做了什么、有什么不足或还差什么、明天可以怎么做。不要从统计数字臆测任务。",
+    "- daily_review 每项 title 要短、具体、有信息；text 写 1 句自然解释；title 不要直接写“今天做了什么/有什么不足/明天怎么做/值得鼓励/值得记录/需要加油”。",
     "- diary.text 是主展示内容，要像一段写给对方看的小日记：自然、亲近、轻一点，有画面感，但不能油腻、不能编造。",
     "- 反模板要求：不要每天都用同一种开头、同一种三段逻辑、同一种“做了什么/不足/明天”腔调。根据当天事实自然选择重点。",
     "- diary.text 必须有一个当天独有锚点：一句原话、一个人、一个地点、一个动作、一个未完成的小尾巴、一个偏好或一个长期记忆线索。",
-    "- diary.text 写成 1 段 2-5 句，不要分点，不要像周报，不要把 daily_review 三项再复述一遍。",
+    "- diary.text 写成 2-3 个自然短段落，共 5-8 句；段落之间用空行分隔。不要分点，不要像周报，不要把 daily_review 三项机械复述一遍。",
     "- diary.text 不要像项目报告，不要用“今天最清楚留下来的，是”“今天的页面很轻”“记录里/记录显示/没有显示”“没有太多具体安排”“这边”“事项”“收尾情况”“事实不足”“信息不足”“记录较少”等腔调。",
     "- diary.text 可以承认没完成，但要换成人话，例如“作业还差一个轻轻收口”“日料先从找一家安静小店开始”，不要写“没有在记录里收尾/没有显示两个人完成”。",
     "- 如果今天素材很少，也写成一张很短的小纸条，只抓真实线索；不要写“信息少/数据不足/没有谁完成了什么”。",
@@ -6815,10 +6873,10 @@ function buildDailySummary(store, date, userId, options = {}) {
   const missed = facts.missed_items.map(publicSummaryThing);
   const photos = facts.photos.map(publicDiaryAsset).filter(Boolean);
   const agentAnalysis = normalizeAgentAnalysisUserIds(agent?.analysis, facts.profiles);
-  const agentDiaryText = cleanGeneratedSummaryText(agentAnalysis?.diary?.text || agentAnalysis?.diary?.detail, 1200);
+  const agentDiaryText = cleanGeneratedSummaryText(agentAnalysis?.diary?.text || agentAnalysis?.diary?.detail, 1800);
   const narrative = mode === "agent"
-    ? (agentDiaryText || cleanGeneratedSummaryText(agent?.narrative, 900))
-    : (cleanGeneratedSummaryText(agent?.narrative, 900) || cleanGeneratedSummaryText(buildFallbackNarrative(facts), 900));
+    ? (agentDiaryText || cleanGeneratedSummaryText(agent?.narrative, 1400))
+    : (cleanGeneratedSummaryText(agent?.narrative, 1400) || cleanGeneratedSummaryText(buildFallbackNarrative(facts), 1400));
   const label = cleanGeneratedSummaryText(agent?.quality_label || qualityLabel(percent), 80);
   const qualityNote = cleanGeneratedSummaryText(agent?.quality_note, 240);
   const nextStepText = cleanGeneratedSummaryText(

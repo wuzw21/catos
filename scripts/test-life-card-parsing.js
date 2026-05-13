@@ -300,23 +300,20 @@ try {
   const checkinState = store.getState("you", { date: "2026-05-12" });
   const checkinCard = checkinState.scheduleItemCards.find((card) => card.tags.includes("daily-checkin-card"));
   assert(checkinCard);
-  assert(checkinCard.steps.length >= 6);
+  assert(checkinCard.steps.length >= 4);
   const wakeStep = checkinCard.steps.find((step) => step.title === "起床时间");
   const planStep = checkinCard.steps.find((step) => step.title === "确定明天安排");
   const exerciseStep = checkinCard.steps.find((step) => step.title === "进行体育锻炼");
-  const happyStep = checkinCard.steps.find((step) => step.title === "最开心的事");
-  const contributionStep = checkinCard.steps.find((step) => step.title === "最有贡献的事");
-  const photoStep = checkinCard.steps.find((step) => step.title === "最珍贵的照片");
+  const bedtimeStep = checkinCard.steps.find((step) => step.title === "睡前打卡");
   assert(wakeStep);
   assert(planStep);
   assert(exerciseStep);
-  assert(happyStep);
-  assert(contributionStep);
-  assert(photoStep);
+  assert(bedtimeStep);
   assert.equal(wakeStep.inputType, "time");
-  assert.equal(happyStep.inputType, "text");
-  assert.equal(contributionStep.inputType, "text");
-  assert.equal(photoStep.inputType, "photo");
+  assert.equal(bedtimeStep.inputType, "bedtime");
+  assert(!checkinCard.steps.some((step) => step.title === "最开心的事"));
+  assert(!checkinCard.steps.some((step) => step.title === "最有贡献的事"));
+  assert(!checkinCard.steps.some((step) => step.title === "最珍贵的照片"));
   assert.deepEqual(wakeStep.statusByUser, { you: "todo", partner: "todo" });
 
   store.toggleLifeCardStep("you", {
@@ -372,13 +369,19 @@ try {
   });
   const diaryCheckinState = store.getState("you", { date: "2026-05-12" });
   const diaryCheckinCard = diaryCheckinState.scheduleItemCards.find((card) => card.sourceId === checkinCard.sourceId);
-  const diaryHappyStep = diaryCheckinCard.steps.find((step) => step.title === "最开心的事");
-  const diaryContributionStep = diaryCheckinCard.steps.find((step) => step.title === "最有贡献的事");
-  const diaryPhotoStep = diaryCheckinCard.steps.find((step) => step.title === "最珍贵的照片");
-  assert.equal(diaryHappyStep.valueByUser.you, "晚上一起散步");
-  assert.equal(diaryContributionStep.valueByUser.you, "把页面整理清楚");
-  assert.equal(diaryPhotoStep.statusByUser.you, "done");
+  const diaryBedtimeStep = diaryCheckinCard.steps.find((step) => step.title === "睡前打卡");
+  assert.equal(diaryBedtimeStep.valueByUser.you, "开心 · 贡献 · 照片");
+  assert.equal(diaryBedtimeStep.statusByUser.you, "done");
   assert.equal(diaryCheckinCard.statusByUser.you, "done");
+
+  const dailySummary = store.refreshDailySummary("you", {
+    date: "2026-05-12",
+    useAgent: false,
+  }).result;
+  assert(dailySummary.analysis.dailyReview.encouragement.text.includes("把页面整理清楚"));
+  assert(dailySummary.analysis.dailyReview.record.text.includes("晚上一起散步"));
+  assert("effort" in dailySummary.analysis.dailyReview);
+  assert(dailySummary.analysis.diary.text.includes("值得"));
 
   store.toggleLifeCardStep("you", {
     sourceType: "todo",

@@ -150,9 +150,60 @@
               },
               "required": ["title", "text", "user_ids", "evidence"],
               "additionalProperties": false
+            },
+            "encouragement": {
+              "type": "object",
+              "properties": {
+                "title": { "type": "string" },
+                "text": { "type": "string" },
+                "user_ids": {
+                  "type": "array",
+                  "items": { "type": "string" }
+                },
+                "evidence": {
+                  "type": "array",
+                  "items": { "type": "string" }
+                }
+              },
+              "required": ["title", "text", "user_ids", "evidence"],
+              "additionalProperties": false
+            },
+            "record": {
+              "type": "object",
+              "properties": {
+                "title": { "type": "string" },
+                "text": { "type": "string" },
+                "user_ids": {
+                  "type": "array",
+                  "items": { "type": "string" }
+                },
+                "evidence": {
+                  "type": "array",
+                  "items": { "type": "string" }
+                }
+              },
+              "required": ["title", "text", "user_ids", "evidence"],
+              "additionalProperties": false
+            },
+            "effort": {
+              "type": "object",
+              "properties": {
+                "title": { "type": "string" },
+                "text": { "type": "string" },
+                "user_ids": {
+                  "type": "array",
+                  "items": { "type": "string" }
+                },
+                "evidence": {
+                  "type": "array",
+                  "items": { "type": "string" }
+                }
+              },
+              "required": ["title", "text", "user_ids", "evidence"],
+              "additionalProperties": false
             }
           },
-          "required": ["did", "shortcoming", "tomorrow"],
+          "required": ["did", "shortcoming", "tomorrow", "encouragement", "record", "effort"],
           "additionalProperties": false
         },
         "diary": {

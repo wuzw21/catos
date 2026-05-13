@@ -916,6 +916,16 @@ function cleanStoryText(value) {
   return text;
 }
 
+function storyParagraphs(value, maxItems = 4) {
+  const text = cleanStoryText(value);
+  if (!text) return [];
+  const paragraphs = text
+    .split(/\n{2,}/)
+    .map((part) => part.replace(/\s*\n\s*/g, " ").trim())
+    .filter(Boolean);
+  return (paragraphs.length ? paragraphs : [text]).slice(0, maxItems);
+}
+
 function shortText(value, max = 52) {
   const text = cleanCardText(value || "").replace(/\s+/g, " ").trim();
   if (text.length <= max) return text;
@@ -1250,6 +1260,7 @@ function compactCheckinItemTitle(value) {
     .trim();
   if (/起床时间/.test(text)) return "起床";
   if (/体育锻炼|运动|锻炼/.test(text)) return "运动";
+  if (/睡前打卡/.test(text)) return "睡前";
   if (/最开心/.test(text)) return "最开心";
   if (/贡献/.test(text)) return "贡献";
   if (/珍贵.*照片|照片/.test(text)) return "照片";
@@ -1269,6 +1280,7 @@ function isTimeCheckinStep(step) {
 function checkinStepInputType(step) {
   const title = cleanCardText(step?.title || "");
   if (isTimeCheckinStep(step)) return "time";
+  if (step?.inputType === "bedtime" || /睡前打卡/.test(title)) return "bedtime";
   if (step?.inputType === "photo" || /珍贵.*照片|照片/.test(title)) return "photo";
   if (step?.inputType === "text" || /最开心|贡献/.test(title)) return "text";
   return cleanCardText(step?.inputType || "");
@@ -1278,7 +1290,7 @@ function dailyCheckinStepStatus(step, card, userId) {
   if (!step || !userId) return "todo";
   const inputType = checkinStepInputType(step);
   if (inputType === "time") return cleanCardText(step.valueByUser?.[userId] || "") ? "done" : "todo";
-  if (["text", "photo"].includes(inputType) && cleanCardText(step.valueByUser?.[userId] || "")) return "done";
+  if (["text", "photo", "bedtime"].includes(inputType) && cleanCardText(step.valueByUser?.[userId] || "")) return "done";
   if (step.statusByUser?.[userId] === "done" || step.statusByUser?.[userId] === "todo") return step.statusByUser[userId];
   return isCardDoneForUser(card, userId) ? "done" : "todo";
 }
@@ -1363,6 +1375,7 @@ function dailyCheckinRowStatusText(row) {
   return (row?.people || [])
     .map((person) => {
       if (row?.inputType === "time") return `${person.label}${person.value ? ` ${person.value}` : "未记录"}`;
+      if (row?.inputType === "bedtime") return `${person.label}${person.done ? "已睡前打卡" : "未睡前打卡"}`;
       if (row?.inputType === "photo") return `${person.label}${person.done ? "已传照片" : "未传照片"}`;
       if (row?.inputType === "text") return `${person.label}${person.done ? "已写" : "未写"}`;
       return `${person.label}${person.done ? "已打卡" : "未打卡"}`;
@@ -1405,7 +1418,7 @@ function checkinLaneProgressText(cards, profiles, currentUser = null) {
 function dailyCheckinSummary(card, fallback = "打卡") {
   const items = dailyCheckinItems(card);
   if (!items.length) return fallback;
-  const visible = items.slice(0, 3);
+  const visible = items.slice(0, 4);
   return `${visible.join(" · ")}${items.length > visible.length ? ` +${items.length - visible.length}` : ""}`;
 }
 
@@ -5372,17 +5385,18 @@ function LifeCard({ card, profiles, currentUser, compact = false, toggleCard, ar
                         </label>
                       );
                     }
-                    if (row.inputType === "text" || row.inputType === "photo") {
+                    if (row.inputType === "text" || row.inputType === "photo" || row.inputType === "bedtime") {
                       const canFillDiary = !disabled && person.id === currentUser?.id && openDailySummary;
                       const waitingLabel = row.inputType === "photo" ? "上传" : "填写";
+                      const doneLabel = row.inputType === "photo" ? "已上传照片" : row.inputType === "bedtime" ? "已睡前打卡" : "已填写";
                       return (
                         <button
                           key={`${row.id}-${person.id}`}
                           className={cx("checkin-person is-inline is-diary", person.done && "is-done")}
                           style={{ "--person-color": person.color }}
                           type="button"
-                          aria-label={person.done ? `${person.label}${row.inputType === "photo" ? "已上传照片" : "已填写"}` : canFillDiary ? `${waitingLabel}${row.fullTitle || row.title}` : `${person.label}未完成${row.fullTitle || row.title}`}
-                          title={person.done ? `${person.label}${row.inputType === "photo" ? "已上传照片" : "已填写"}` : canFillDiary ? `${waitingLabel}${row.fullTitle || row.title}` : `${person.label}未完成`}
+                          aria-label={person.done ? `${person.label}${doneLabel}` : canFillDiary ? `${waitingLabel}${row.fullTitle || row.title}` : `${person.label}未完成${row.fullTitle || row.title}`}
+                          title={person.done ? `${person.label}${doneLabel}` : canFillDiary ? `${waitingLabel}${row.fullTitle || row.title}` : `${person.label}未完成`}
                           onClick={(event) => {
                             event.stopPropagation();
                             if (canFillDiary) openDailySummary();
@@ -6966,9 +6980,9 @@ function DailySummaryPage({ data, profiles, currentUser, request, setData, selec
     userIds: row.ownerIds || [],
     evidence: ["待推进"],
   }));
-  const reviewDid = reviewEntryOrFallback(dailyReview.did, coreContributionItems, "小小推进");
-  const reviewShortcoming = reviewEntryOrFallback(dailyReview.shortcoming, shortcomingFallbackItems, "还差一点");
-  const reviewTomorrow = reviewEntryOrFallback(dailyReview.tomorrow, carryForwardItems, "明天带上");
+  const reviewEncouragement = reviewEntryOrFallback(dailyReview.encouragement || dailyReview.did, coreContributionItems, "值得鼓励");
+  const reviewRecord = reviewEntryOrFallback(dailyReview.record, [keyMoment, ...memoryClueItems].filter(Boolean), "值得记录");
+  const reviewEffort = reviewEntryOrFallback(dailyReview.effort || dailyReview.shortcoming || dailyReview.tomorrow, shortcomingFallbackItems.length ? shortcomingFallbackItems : carryForwardItems, "需要加油");
   const completionTimeline = (summary?.completionTimeline || []).slice(0, 12);
   const visibleCardTotal = Math.max(selectedCards.length, completedRows.length + missedRows.length);
   const sourceStats = [
@@ -7070,7 +7084,8 @@ function DailySummaryPage({ data, profiles, currentUser, request, setData, selec
 
   const generatedLabel = summary?.generatedAt ? compactDateTime(summary.generatedAt) : "";
   const visibleDiary = cleanStoryText(diary.text || narrative);
-  const hasReviewLines = [keyMoment, reviewDid, reviewShortcoming, reviewTomorrow].some(hasAnalysisEntry) || memoryClueItems.length > 0;
+  const visibleDiaryParagraphs = storyParagraphs(visibleDiary);
+  const hasReviewLines = [reviewEncouragement, reviewRecord, reviewEffort].some(hasAnalysisEntry) || memoryClueItems.length > 0;
   const preciousPhotos = Array.isArray(pulse.images) ? pulse.images : [];
   const latestPreciousPhoto = preciousPhotos[preciousPhotos.length - 1] || null;
 
@@ -7098,19 +7113,20 @@ function DailySummaryPage({ data, profiles, currentUser, request, setData, selec
             </div>
             <StoryDayContext dayContext={dayContext} calendarContext={data.calendarContext} />
           </div>
-          {visibleDiary ? (
+          {visibleDiaryParagraphs.length ? (
             <section className="story-journal-diary">
               <h2>{diary.title || title}</h2>
-              <p>{visibleDiary}</p>
+              {visibleDiaryParagraphs.map((paragraph, index) => (
+                <p key={`${selectedDate}-diary-${index}`}>{paragraph}</p>
+              ))}
             </section>
           ) : null}
           <CompletionTimeline rows={completionTimeline} profiles={profiles} selectedDate={selectedDate} />
           {hasReviewLines ? (
             <div className="story-journal-lines">
-              <JournalLine icon="star" label="最开心" entry={keyMoment} profiles={profiles} />
-              <JournalLine icon="check" label="今天做了什么" entry={reviewDid} profiles={profiles} />
-              <JournalLine icon="edit" label="有什么不足" entry={reviewShortcoming} profiles={profiles} />
-              <JournalLine icon="calendar" label="明天可以怎么做" entry={reviewTomorrow} profiles={profiles} />
+              <JournalLine icon="check" label="值得鼓励" entry={reviewEncouragement} profiles={profiles} />
+              <JournalLine icon="bookmark" label="值得记录" entry={reviewRecord} profiles={profiles} />
+              <JournalLine icon="sparkle" label="需要加油" entry={reviewEffort} profiles={profiles} />
               <JournalList icon="bookmark" label="记忆" entries={memoryClueItems} profiles={profiles} />
             </div>
           ) : null}
@@ -7276,6 +7292,7 @@ function JournalLine({ icon, label, entry, profiles }) {
       </span>
       <div>
         <article>
+          {label ? <em className="journal-line-label">{label}</em> : null}
           {title ? <h3>{title}</h3> : null}
           {title && detail && detail !== title ? <p>{detail}</p> : null}
           {!title && detail ? <h3>{detail}</h3> : null}
@@ -7308,6 +7325,7 @@ function JournalList({ icon, label, entries, profiles }) {
           const detail = row.detail && row.detail !== title ? row.detail : "";
           return (
             <article key={`${label}-${title}-${index}`}>
+              {index === 0 && label ? <em className="journal-line-label">{label}</em> : null}
               {title ? <h3>{title}</h3> : null}
               {detail ? <p>{detail}</p> : null}
             </article>

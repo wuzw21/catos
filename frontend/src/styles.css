@@ -6549,6 +6549,16 @@ button.home-focus-note:hover {
   min-width: 0;
 }
 
+.journal-line-label {
+  display: block;
+  margin: 0 0 3px;
+  color: color-mix(in srgb, var(--pink-deep) 76%, var(--muted));
+  font-size: 0.72rem;
+  font-style: normal;
+  font-weight: 950;
+  letter-spacing: 0;
+}
+
 .journal-line article + article {
   margin-top: 8px;
   padding-top: 8px;

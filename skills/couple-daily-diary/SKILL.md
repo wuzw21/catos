@@ -76,8 +76,8 @@ When the schema is expanded for the Daily Summary page, prefer these conceptual 
 - `core_contributions`: who contributed what, backed by actor/status fields.
 - `carry_forward`: one to three things worth bringing to tomorrow.
 - `memory_clues`: long-term memory candidates such as preferences, promises, goals, dates, wishes, repairs, or gratitude.
-- `daily_review`: three short page-facing blocks: what happened today, what was insufficient, and how to do tomorrow.
-- `diary`: a polished diary paragraph that can be read directly as the main page content.
+- `daily_review`: short page-facing blocks. The main three are what deserves encouragement, what deserves recording, and what needs a little more effort. Legacy blocks still cover what happened today, what was insufficient, and how to do tomorrow.
+- `diary`: a polished diary note that can be read directly as the main page content.
 - `evidence`: short references to source facts, not database IDs unless the UI needs them.
 
 ## Rules
@@ -90,7 +90,7 @@ When the schema is expanded for the Daily Summary page, prefer these conceptual 
 - Use human-facing language for actor details. Do not expose raw field names such as `createdBy`, `doneUsers`, `statusUpdatedBy`, `actorId`, or wording like `每日状态对象`.
 - If ownership is known but the action actor is not, write gently that the item belongs to that person but the action actor is not explicit. Do not use database-field language.
 - Treat private captures as unavailable unless the caller explicitly includes them.
-- Keep `narrative` or `diary` to 2-4 short sentences unless the caller asks for a longer diary.
+- Keep `narrative` or `diary` to 2-3 natural short paragraphs when the caller asks for a richer diary.
 - Keep `quality_note` and `next_step` actionable, not motivational.
 - Prefer concrete content over counts. Avoid "记录留下了 8 条现场线索" unless the UI specifically asks for statistics.
 - Treat `completion` and `source_counts` as freshness/coverage hints only. Do not infer unfinished tasks from counts unless `missed_items` or captures name those tasks.
@@ -112,12 +112,14 @@ Style and variation:
 - `diary.text` must not reuse one fixed skeleton across days. Vary the opening, sentence rhythm, focus, and ending according to the day's facts.
 - Every day needs one unique anchor from the facts: a phrase someone wrote, a named task, a place, a photo clue, a small unfinished tail, a promise, a preference, or a concrete action.
 - Do not write the diary as `今天做了什么 + 不足 + 明天怎么做`. Those ideas may inform the structured `daily_review`, but the diary itself should read like one natural warm note.
+- For richer diary pages, make sure the facts support three user-facing angles: `daily_review.encouragement` for 今天值得鼓励的地方, `daily_review.record` for 今天值得记录的地方, and `daily_review.effort` for 今天需要加油的地方.
 - Low-information days should become a tiny honest note, not a "no data" report. Keep only the real clues and leave soft blank space.
 - Use the caller-provided recent Daily Story snippets only as style anti-repetition references. Never import events from other dates into today's diary.
 - `dayContext.weather.source === "daily-random"` means the app is showing a stable cute fallback because real weather is not configured. You may use it as a light mood word, but do not claim it is the factual local weather.
 - Moon phase, solar terms, lunar dates, festivals, and holidays may be used as a small atmosphere anchor. They should never replace concrete life facts or make the diary sound like an almanac.
-- `daily_review.did` answers "今天做了什么"; `daily_review.shortcoming` answers "有什么不足"; `daily_review.tomorrow` answers "明天可以怎么做".
-- Each `daily_review` block should have a short specific title and one natural sentence. Titles should be generated from today's content, not literal labels such as `今天做了什么`, `有什么不足`, or `明天怎么做`.
+- `daily_review.encouragement` answers "今天值得鼓励的地方"; `daily_review.record` answers "今天值得记录的地方"; `daily_review.effort` answers "今天需要加油的地方".
+- `daily_review.did` answers "今天做了什么"; `daily_review.shortcoming` answers "有什么不足"; `daily_review.tomorrow` answers "明天可以怎么做" for compatibility.
+- Each `daily_review` block should have a short specific title and one natural sentence. Titles should be generated from today's content, not literal labels such as `今天做了什么`, `有什么不足`, `明天怎么做`, `值得鼓励`, `值得记录`, or `需要加油`.
 - Avoid report-like openings and phrases: `今天最清楚留下来的，是`, `今天最值得记住的是`, `今天的页面很轻`, `记录显示`, `记录里`, `没有显示`, `没有太多具体安排`, `这边`, `事项`, `收尾情况`, `事实不足`, `信息不足`, `记录较少`.
 - If something is unfinished, phrase it gently in human language: good style examples are `作业还差一个轻轻收口`, `日料先从找一家安静小店开始`; avoid `没有在记录里收尾` or `没有显示两个人完成`.
 - Structured details should also be short prose, not evidence dumps.
