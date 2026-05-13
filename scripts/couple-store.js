@@ -7213,11 +7213,6 @@ function getState(userId, options = {}) {
     .filter((item) => item.visibility === "shared" || item.createdBy === userId)
     .map(publicCapture)
     .sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)));
-  const recentCaptures = store.captures
-    .filter((item) => captureCountsAsVisibleMoment(item, userId, store))
-    .map(publicCapture)
-    .sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)))
-    .slice(0, 8);
   const relationshipInsights = buildRelationshipInsights(store, userId, selectedDate);
   const dayContext = buildDayContext(store, selectedDate, { captures: visibleCaptures });
   const scheduleItemCards = buildScheduleItemCards(store, userId, selectedDate, relationshipInsights);
@@ -7290,7 +7285,6 @@ function getState(userId, options = {}) {
     memoryHints: buildMemoryHints(store, relationshipInsights),
     memoryItems,
     timelineDays: buildTimelineDays(store, userId, selectedDate),
-    recentCaptures,
     personalPages: Object.fromEntries(
       store.profiles.map((profile) => [
         profile.id,

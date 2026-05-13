@@ -3548,13 +3548,6 @@ function Dashboard(props) {
         composingRef={composingRef}
       />
       {error ? <p className="form-error inline">{error}</p> : null}
-      <RawCaptureShelf
-        data={data}
-        profiles={profiles}
-        currentUser={currentUser}
-        selectedDate={selectedDate}
-        openDetail={openDetail}
-      />
       <CheckinLane
         cards={checkinCards}
         profiles={profiles}
@@ -6883,21 +6876,6 @@ function DynamicList({ title, rows, profiles, onOpen, className = "" }) {
         ))}
       </div>
     </section>
-  );
-}
-
-function RawCaptureShelf({ data, profiles, currentUser, selectedDate, openDetail }) {
-  const context = useMemo(() => ({ profiles, currentUser, selectedDate }), [profiles, currentUser, selectedDate]);
-  const rows = useMemo(() => (data.recentCaptures || [])
-    .map((capture) => captureRow(capture, context)), [data.recentCaptures, context]);
-  return (
-    <DynamicList
-      title="最近随手记"
-      rows={rows}
-      profiles={profiles}
-      className="raw-shelf"
-      onOpen={(row) => openDetail(row.type, row.payload)}
-    />
   );
 }
 
