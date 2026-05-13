@@ -6680,6 +6680,80 @@ button.home-focus-note:hover {
   background: rgba(255, 253, 249, 0.62);
 }
 
+.bedtime-checkin-top {
+  display: grid;
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid rgba(46, 38, 48, 0.08);
+  border-radius: 16px;
+  background: rgba(255, 253, 249, 0.72);
+  box-shadow: 0 12px 30px rgba(68, 46, 58, 0.07);
+}
+
+.bedtime-checkin-head {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+  min-width: 0;
+  padding: 9px 10px 0;
+}
+
+.bedtime-checkin-progress {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 5px;
+  min-width: 0;
+}
+
+.bedtime-checkin-progress span {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 24px;
+  padding: 0 7px;
+  border: 1px solid rgba(46, 38, 48, 0.08);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.58);
+  color: var(--muted);
+}
+
+.bedtime-checkin-progress span.is-done {
+  border-color: rgba(36, 185, 154, 0.2);
+  background: rgba(36, 185, 154, 0.1);
+  color: #1b8d77;
+}
+
+.bedtime-checkin-progress svg {
+  width: 12px;
+  height: 12px;
+}
+
+.bedtime-checkin-progress b {
+  overflow: hidden;
+  font-size: 0.68rem;
+  font-weight: 950;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.bedtime-checkin-top .pulse-strip {
+  grid-template-columns: 70px minmax(0, 1fr) minmax(0, 1fr) minmax(138px, 0.78fr) auto;
+  gap: 8px;
+  padding: 8px 10px 10px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.bedtime-checkin-top .icon-button {
+  width: 40px;
+  height: 40px;
+  border-radius: 13px;
+}
+
 .pulse-fold summary {
   display: flex;
   align-items: center;
@@ -8065,6 +8139,76 @@ button.home-focus-note:hover {
 
 .secret-toggle.is-active .secret-toggle-icon {
   background: rgba(255, 255, 255, 0.66);
+}
+
+.participant-field {
+  gap: 7px;
+}
+
+.participant-picker {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 7px;
+}
+
+.participant-picker button {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+  min-width: 0;
+  min-height: 42px;
+  padding: 6px 9px;
+  border: 1px solid rgba(46, 38, 48, 0.08);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.58);
+  color: rgba(46, 38, 48, 0.6);
+  cursor: pointer;
+  text-align: left;
+  transition: border-color 160ms ease, background 160ms ease, box-shadow 160ms ease, transform 160ms ease;
+}
+
+.participant-picker button:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--person-color, var(--pink)) 22%, rgba(46, 38, 48, 0.08));
+  background: color-mix(in srgb, var(--person-color, var(--pink)) 8%, #fff);
+  transform: translateY(-1px);
+}
+
+.participant-picker button.is-active {
+  border-color: color-mix(in srgb, var(--person-color, var(--pink)) 30%, rgba(46, 38, 48, 0.08));
+  background: color-mix(in srgb, var(--person-color, var(--pink)) 12%, rgba(255, 255, 255, 0.86));
+  color: var(--ink);
+  box-shadow: inset 3px 0 0 color-mix(in srgb, var(--person-color, var(--pink)) 52%, transparent);
+}
+
+.participant-picker button:disabled {
+  cursor: not-allowed;
+}
+
+.participant-picker button.is-locked {
+  opacity: 0.82;
+}
+
+.participant-picker strong {
+  min-width: 0;
+  overflow: hidden;
+  font-size: 0.82rem;
+  font-weight: 940;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.participant-picker svg {
+  width: 15px;
+  height: 15px;
+  color: color-mix(in srgb, var(--person-color, var(--pink)) 70%, var(--muted));
+}
+
+.participant-field > em {
+  color: rgba(46, 38, 48, 0.48);
+  font-size: 0.7rem;
+  font-style: normal;
+  font-weight: 820;
 }
 
 .edit-line-field {
@@ -9680,6 +9824,35 @@ button.detail-step:hover {
     padding-bottom: 148px;
   }
 
+  .bedtime-checkin-top {
+    border-radius: 14px;
+    box-shadow: none;
+  }
+
+  .bedtime-checkin-head {
+    grid-template-columns: auto minmax(0, 1fr);
+    gap: 7px;
+    padding: 8px 9px 0;
+  }
+
+  .bedtime-checkin-progress {
+    grid-column: 1 / -1;
+    justify-content: flex-start;
+    gap: 4px;
+  }
+
+  .bedtime-checkin-top .pulse-strip {
+    grid-template-columns: 58px minmax(0, 1fr) minmax(0, 1fr) minmax(112px, 0.72fr) 38px;
+    gap: 6px;
+    padding: 7px 8px 8px;
+  }
+
+  .bedtime-checkin-top .icon-button {
+    width: 38px;
+    height: 38px;
+    border-radius: 12px;
+  }
+
   .home-paper {
     grid-template-columns: minmax(0, 1fr);
     align-items: stretch;
@@ -10508,6 +10681,69 @@ button.detail-step:hover {
   .dashboard {
     gap: 9px;
     padding-bottom: 148px;
+  }
+
+  .bedtime-checkin-head {
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    gap: 6px;
+    padding: 7px 8px 0;
+  }
+
+  .bedtime-checkin-progress {
+    grid-column: auto;
+    flex-wrap: nowrap;
+    gap: 3px;
+  }
+
+  .bedtime-checkin-progress span {
+    justify-content: center;
+    width: 22px;
+    min-height: 22px;
+    padding: 0;
+  }
+
+  .bedtime-checkin-progress b {
+    display: none;
+  }
+
+  .bedtime-checkin-top .pulse-strip {
+    grid-template-columns: 50px minmax(0, 1fr) minmax(0, 1fr) 38px 38px;
+    gap: 5px;
+    align-items: end;
+    padding: 6px 8px 8px;
+  }
+
+  .bedtime-checkin-top .pulse-strip input {
+    min-height: 38px;
+    padding: 7px 8px;
+    font-size: 0.82rem;
+  }
+
+  .bedtime-checkin-top .pulse-field {
+    gap: 3px;
+  }
+
+  .bedtime-checkin-top .pulse-field span {
+    font-size: 0.62rem;
+  }
+
+  .bedtime-checkin-top .pulse-photo-field {
+    grid-template-columns: 1fr;
+    min-height: 38px;
+    padding: 0;
+    place-items: center;
+    border-radius: 12px;
+  }
+
+  .bedtime-checkin-top .pulse-photo-field span {
+    display: none;
+  }
+
+  .bedtime-checkin-top .pulse-photo-field img,
+  .bedtime-checkin-top .pulse-photo-field > svg {
+    width: 38px;
+    height: 38px;
+    border-radius: 11px;
   }
 
   .home-paper {

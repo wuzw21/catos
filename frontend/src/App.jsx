@@ -93,6 +93,7 @@ const cardEditorSchema = z.object({
   date: z.string().min(1, "需要日期"),
   itemType: z.string().refine((value) => itemTypeIds.includes(value), "类型不对"),
   ownerId: z.string().min(1, "需要归属"),
+  participants: z.array(z.string()).optional().default([]),
   priority: z.enum(["high", "normal", "low"]).default("normal"),
   segment: z.string().optional().default("allDay"),
   repeatRule: z.string().optional().default(""),
@@ -1746,6 +1747,7 @@ const detailBuilders = {
       .filter((step) => step.title);
     const hasMemory = Boolean(memoryKindText(card.memoryKinds) || card.memoryLinks?.length);
     const participantLine = namesForIds(participants, profiles);
+    const ownerLine = card.ownerId === "shared" ? "共同" : namesForIds([card.ownerId].filter(Boolean), profiles) || ownerLabel(card.ownerId, currentUser);
     const completionLine = completionSummaryForCard(card, profiles, currentUser);
     const personProgressLine = !isDailyCheckin && participants.length > 1
       ? lifeCardPersonProgressText(card, profiles, currentUser)
@@ -1793,6 +1795,7 @@ const detailBuilders = {
       moreRows: detailRows([
         { label: "类型", value: itemTypeLabels[itemType] },
         privateCard ? { label: "可见", value: "仅我可见" } : null,
+        { label: "归属", value: ownerLine },
         { label: "参与", value: participantLine || ownerLabel(card.ownerId, currentUser) },
         isDailyCheckin ? { label: "刷新", value: repeatValue || timeValue } : null,
         card.plannedAt ? { label: "开始", value: lifeCardDateTimeLabel(card.plannedAt, card.date) } : null,
@@ -2992,6 +2995,14 @@ export function App() {
     if (!endpoint) return;
     const visibility = card.sourceType === "checkin" ? "shared" : payload.visibility || "shared";
     const ownerId = card.sourceType === "checkin" ? "shared" : visibility === "private" ? currentUser?.id || payload.ownerId : payload.ownerId;
+    const participants = editorParticipantIds({
+      ownerId,
+      participants: payload.participants,
+      visibility,
+      profiles,
+      currentUserId: currentUser?.id,
+      isDailyCheckin: card.sourceType === "checkin" || isDailyCheckinCard(card),
+    });
     const body = {
       id: card.sourceId,
       date: payload.date,
@@ -3001,7 +3012,7 @@ export function App() {
       itemType: payload.itemType,
       segment: payload.segment || card.segment || "allDay",
       ownerId,
-      participants: visibility === "private" ? [ownerId].filter(Boolean) : ownerId === "shared" ? profiles.map((profile) => profile.id) : [ownerId],
+      participants,
       visibility,
       sourceCaptureId: card.sourceCaptureId || "",
       repeatRule: payload.repeatRule || "",
@@ -3087,6 +3098,8 @@ export function App() {
               retryAgentJob={retryAgentJob}
               clearAgentJob={() => setAgentJob(null)}
               saveRawCapture={saveRawCapture}
+              request={request}
+              setData={setData}
               busy={busy}
               error={error}
               filter={filter}
@@ -3290,6 +3303,8 @@ function Dashboard(props) {
     retryAgentJob,
     clearAgentJob,
     saveRawCapture,
+    request,
+    setData,
     busy,
     error,
     filter,
@@ -3320,6 +3335,14 @@ function Dashboard(props) {
 
   return (
     <section className="dashboard">
+      <BedtimeCheckinPanel
+        data={data}
+        currentUser={currentUser}
+        selectedDate={selectedDate}
+        request={request}
+        setData={setData}
+        variant="top"
+      />
       <section className="home-paper">
         <div className="home-context-strip">
           <div className="home-date-row">
@@ -3387,6 +3410,137 @@ function Dashboard(props) {
         openDailySummary={openDailySummary}
       />
     </section>
+  );
+}
+
+function BedtimeCheckinPanel({ data, currentUser, selectedDate, request, setData, variant = "fold" }) {
+  const [pulse, setPulse] = useState(() => data.diaryDay?.userDays?.[currentUser?.id] || {});
+  const [uploadingPhoto, setUploadingPhoto] = useState(false);
+  const preciousPhotoInputRef = useRef(null);
+  useEffect(() => {
+    setPulse(data.diaryDay?.userDays?.[currentUser?.id] || {});
+  }, [data.diaryDay, currentUser?.id]);
+
+  async function savePulse(event) {
+    event.preventDefault();
+    const result = await request("/api/couple/status", {
+      method: "POST",
+      body: {
+        date: selectedDate,
+        dailyScore: pulse.dailyScore || 0,
+        happiestThing: pulse.happiestThing || "",
+        smallAchievement: pulse.smallAchievement || "",
+      },
+    });
+    if (result) {
+      setData(result.state);
+      setPulse(result.state?.diaryDay?.userDays?.[currentUser?.id] || {});
+      toast.success("睡前打卡已保存");
+    }
+  }
+
+  async function choosePreciousPhoto(event) {
+    const file = event.target.files?.[0] || null;
+    if (!file) return;
+    if (!file.type.startsWith("image/")) {
+      toast.error("请选择图片");
+      return;
+    }
+    if (file.size > 5 * 1024 * 1024) {
+      toast.error(`${file.name} 超过 5MB`);
+      return;
+    }
+    setUploadingPhoto(true);
+    try {
+      const result = await request("/api/couple/diary/asset", {
+        method: "POST",
+        body: {
+          date: selectedDate,
+          name: file.name,
+          dataUrl: await readFileAsDataUrl(file),
+        },
+      });
+      if (result) {
+        setData(result.state);
+        setPulse(result.state?.diaryDay?.userDays?.[currentUser?.id] || result.diaryDay?.userDays?.[currentUser?.id] || {});
+        toast.success("珍贵照片已收好");
+      }
+    } catch (error) {
+      toast.error(errorMessage(error, "上传失败"));
+    } finally {
+      setUploadingPhoto(false);
+      if (preciousPhotoInputRef.current) preciousPhotoInputRef.current.value = "";
+    }
+  }
+
+  const preciousPhotos = Array.isArray(pulse.images) ? pulse.images : [];
+  const latestPreciousPhoto = preciousPhotos[preciousPhotos.length - 1] || null;
+  const statusBits = [
+    { key: "happy", label: "开心", done: Boolean(cleanCardText(pulse.happiestThing || "")) },
+    { key: "contribution", label: "贡献", done: Boolean(cleanCardText(pulse.smallAchievement || "")) },
+    { key: "photo", label: "照片", done: preciousPhotos.length > 0 },
+  ];
+  const form = (
+    <form className="pulse-strip" onSubmit={savePulse}>
+      <label className="pulse-field is-score">
+        <span>心情</span>
+        <input type="number" min="1" max="10" value={pulse.dailyScore || ""} onChange={(event) => setPulse({ ...pulse, dailyScore: event.target.value })} aria-label="今日打分" placeholder="/10" />
+      </label>
+      <label className="pulse-field">
+        <span>最开心</span>
+        <input value={pulse.happiestThing || ""} onChange={(event) => setPulse({ ...pulse, happiestThing: event.target.value })} aria-label="最开心的事" placeholder="今天最开心的一小段" />
+      </label>
+      <label className="pulse-field">
+        <span>贡献</span>
+        <input value={pulse.smallAchievement || ""} onChange={(event) => setPulse({ ...pulse, smallAchievement: event.target.value })} aria-label="最有贡献的事" placeholder="今天最有贡献的事" />
+      </label>
+      <label className={cx("pulse-photo-field", latestPreciousPhoto && "has-photo", uploadingPhoto && "is-uploading")}>
+        {latestPreciousPhoto?.url ? <img src={latestPreciousPhoto.url} alt={latestPreciousPhoto.name || "最珍贵的照片"} /> : <Icon name="image" />}
+        <span>
+          <strong>{latestPreciousPhoto ? "珍贵照片" : "上传照片"}</strong>
+          <em>{uploadingPhoto ? "上传中" : preciousPhotos.length ? `${preciousPhotos.length} 张` : "每天一张"}</em>
+        </span>
+        <input ref={preciousPhotoInputRef} type="file" accept="image/png,image/jpeg,image/webp,image/gif" onChange={choosePreciousPhoto} disabled={uploadingPhoto} />
+      </label>
+      <IconButton icon="check" label="保存状态" type="submit" primary />
+    </form>
+  );
+
+  if (variant === "top") {
+    return (
+      <section className="bedtime-checkin-top" aria-label="睡前打卡">
+        <div className="bedtime-checkin-head">
+          <CatAvatar profile={currentUser} className="is-mini" />
+          <span className="pulse-summary-copy">
+            <strong>睡前打卡</strong>
+            <em>开心 · 贡献 · 照片</em>
+          </span>
+          <div className="bedtime-checkin-progress" aria-label="睡前打卡完成情况">
+            {statusBits.map((item) => (
+              <span key={item.key} className={cx(item.done && "is-done")}>
+                <Icon name={item.done ? "check" : "circle"} />
+                <b>{item.label}</b>
+              </span>
+            ))}
+          </div>
+        </div>
+        {form}
+      </section>
+    );
+  }
+
+  return (
+    <details className="pulse-fold">
+      <summary>
+        <CatAvatar profile={currentUser} className="is-mini" />
+        <span className="pulse-summary-copy">
+          <strong>睡前打卡</strong>
+          <em>开心 · 贡献 · 照片</em>
+        </span>
+        <Icon name="chevronDown" />
+      </summary>
+      {form}
+    </details>
   );
 }
 
@@ -5664,13 +5818,14 @@ function parseBulkSteps(text) {
     .slice(0, maxEditorSteps);
 }
 
-function buildCardEditorDefaults(card) {
+function buildCardEditorDefaults(card, profiles = [], currentUser = null) {
   return {
     title: card.title || "",
     detail: card.detail || card.slot || "",
     date: card.date || today(),
     itemType: card.itemType || "thing",
     ownerId: card.ownerId || "shared",
+    participants: cardParticipantIds(card, profiles, currentUser),
     priority: card.priority || "normal",
     visibility: card.visibility === "private" ? "private" : "shared",
     segment: card.segment || "allDay",
@@ -5683,9 +5838,20 @@ function buildCardEditorDefaults(card) {
   };
 }
 
+function editorParticipantIds({ ownerId, participants, visibility, profiles, currentUserId, isDailyCheckin = false }) {
+  const profileIds = profiles.map((profile) => profile.id).filter(Boolean);
+  if (isDailyCheckin || ownerId === "shared") return profileIds;
+  if (visibility === "private") return currentUserId && profileIds.includes(currentUserId) ? [currentUserId] : [];
+  const required = ownerId && profileIds.includes(ownerId) ? [ownerId] : [];
+  const source = Array.isArray(participants) ? participants : [];
+  const normalized = [...new Set([...required, ...source].filter((id) => profileIds.includes(id)))];
+  if (normalized.length) return normalized;
+  return currentUserId && profileIds.includes(currentUserId) ? [currentUserId] : profileIds.slice(0, 1);
+}
+
 function CardEditor({ card, profiles, currentUser, onClose, onSave, onDelete, confirmLeave, initialSection = "" }) {
   const isDailyCheckin = card.title === "一起打卡！" || card.repeatRule === "daily@03:00";
-  const defaultValues = useMemo(() => buildCardEditorDefaults(card), [card]);
+  const defaultValues = useMemo(() => buildCardEditorDefaults(card, profiles, currentUser), [card, profiles, currentUser]);
   const {
     control,
     register,
@@ -5758,8 +5924,16 @@ function CardEditor({ card, profiles, currentUser, onClose, onSave, onDelete, co
   const addStepTemplate = (templateId) => {
     const baseIndex = (getValues("steps") || []).length;
     const cardTitle = String(getValues("title") || "").trim();
-    const templateSteps = templateId === "split" && profiles.length
-      ? profiles.map((profile) => ({ title: `${profile.displayName} 负责的部分`, estimateMin: 15, ownerId: profile.id }))
+    const participantProfiles = profiles.filter((profile) => editorParticipantIds({
+      ownerId: getValues("ownerId"),
+      participants: getValues("participants"),
+      visibility: getValues("visibility"),
+      profiles,
+      currentUserId: currentUser?.id,
+      isDailyCheckin,
+    }).includes(profile.id));
+    const templateSteps = templateId === "split" && participantProfiles.length
+      ? participantProfiles.map((profile) => ({ title: `${profile.displayName} 负责的部分`, estimateMin: 15, ownerId: profile.id }))
       : templateId === "three"
         ? [
             { title: "准备一下", estimateMin: 5, ownerId: "" },
@@ -5784,7 +5958,15 @@ function CardEditor({ card, profiles, currentUser, onClose, onSave, onDelete, co
     });
   };
   const splitStepOwners = () => {
-    const availableProfiles = profiles.filter((profile) => profile.id);
+    const participantIds = editorParticipantIds({
+      ownerId: getValues("ownerId"),
+      participants: getValues("participants"),
+      visibility: getValues("visibility"),
+      profiles,
+      currentUserId: currentUser?.id,
+      isDailyCheckin,
+    });
+    const availableProfiles = profiles.filter((profile) => participantIds.includes(profile.id));
     if (availableProfiles.length < 2) return;
     (getValues("steps") || []).forEach((_, index) => {
       setValue(`steps.${index}.ownerId`, availableProfiles[index % availableProfiles.length].id, { shouldDirty: true, shouldValidate: true });
@@ -5870,13 +6052,78 @@ function CardEditor({ card, profiles, currentUser, onClose, onSave, onDelete, co
   useEffect(() => {
     return () => dragCleanupRef.current?.();
   }, []);
+  const participants = editorParticipantIds({
+    ownerId: form.ownerId,
+    participants: form.participants,
+    visibility: form.visibility,
+    profiles,
+    currentUserId: currentUser?.id,
+    isDailyCheckin,
+  });
+  const syncStepOwnersForParticipants = (nextParticipants) => {
+    const allowed = new Set(nextParticipants);
+    (getValues("steps") || []).forEach((step, index) => {
+      if (step.ownerId && !allowed.has(step.ownerId)) {
+        setValue(`steps.${index}.ownerId`, "", { shouldDirty: true, shouldValidate: true });
+      }
+    });
+  };
+  const updateOwner = (ownerId) => {
+    const nextParticipants = editorParticipantIds({
+      ownerId,
+      participants: getValues("participants"),
+      visibility: getValues("visibility"),
+      profiles,
+      currentUserId: currentUser?.id,
+      isDailyCheckin,
+    });
+    setValue("ownerId", ownerId, { shouldDirty: true, shouldValidate: true });
+    setValue("participants", nextParticipants, { shouldDirty: true, shouldValidate: true });
+    syncStepOwnersForParticipants(nextParticipants);
+  };
+  const toggleParticipant = (profileId) => {
+    const ownerId = getValues("ownerId");
+    const visibility = getValues("visibility");
+    if (isDailyCheckin || visibility === "private" || ownerId === "shared" || profileId === ownerId) return;
+    const current = new Set(editorParticipantIds({
+      ownerId,
+      participants: getValues("participants"),
+      visibility,
+      profiles,
+      currentUserId: currentUser?.id,
+      isDailyCheckin,
+    }));
+    if (current.has(profileId)) current.delete(profileId);
+    else current.add(profileId);
+    const nextParticipants = editorParticipantIds({
+      ownerId,
+      participants: [...current],
+      visibility,
+      profiles,
+      currentUserId: currentUser?.id,
+      isDailyCheckin,
+    });
+    setValue("participants", nextParticipants, { shouldDirty: true, shouldValidate: true });
+    syncStepOwnersForParticipants(nextParticipants);
+  };
   const submit = handleSubmit((values) => {
+    const visibility = isDailyCheckin ? "shared" : values.visibility || "shared";
+    const ownerId = isDailyCheckin ? "shared" : visibility === "private" ? secretOwnerId : values.ownerId;
+    const nextParticipants = editorParticipantIds({
+      ownerId,
+      participants: values.participants,
+      visibility,
+      profiles,
+      currentUserId: currentUser?.id,
+      isDailyCheckin,
+    });
     return onSave({
       ...values,
       title: isDailyCheckin ? "一起打卡！" : values.title,
       itemType: isDailyCheckin ? "checkin" : values.itemType,
-      visibility: isDailyCheckin ? "shared" : values.visibility || "shared",
-      ownerId: isDailyCheckin ? "shared" : values.visibility === "private" ? secretOwnerId : values.ownerId,
+      visibility,
+      ownerId,
+      participants: nextParticipants,
       priority: isDailyCheckin ? "normal" : values.priority,
       repeatRule: isDailyCheckin ? "daily@03:00" : values.repeatRule || (values.itemType === "habit" ? "daily" : ""),
       durationMin: Number(values.durationMin) || 0,
@@ -5885,7 +6132,7 @@ function CardEditor({ card, profiles, currentUser, onClose, onSave, onDelete, co
         .map((step, index) => ({
           id: step.id || `step-${index + 1}`,
           title: String(step.title || "").trim(),
-          ownerId: step.ownerId,
+          ownerId: nextParticipants.includes(step.ownerId) ? step.ownerId : "",
           estimateMin: Number(step.estimateMin) || 0,
           status: step.status === "done" ? "done" : "todo",
           inputType: step.inputType || "",
@@ -5898,16 +6145,16 @@ function CardEditor({ card, profiles, currentUser, onClose, onSave, onDelete, co
         .filter((step) => step.title),
     });
   });
-  const participants = isSecret ? [secretOwnerId].filter(Boolean) : form.ownerId === "shared" ? profiles.map((profile) => profile.id) : [form.ownerId];
   const ownerChoices = [
     { id: "shared", label: "共同" },
     ...profiles.map((profile) => ({ id: profile.id, label: profile.displayName })),
   ];
   const stepOwnerChoices = [
     { id: "", label: "共同" },
-    ...profiles.map((profile) => ({ id: profile.id, label: profile.displayName })),
+    ...profiles.filter((profile) => participants.includes(profile.id)).map((profile) => ({ id: profile.id, label: profile.displayName })),
   ];
   const ownerLabel = isSecret ? "小秘密" : ownerChoices.find((choice) => choice.id === form.ownerId)?.label || "共同";
+  const participantText = namesForIds(participants, profiles);
   const priorityLabel = priorityOptions.find((choice) => choice.id === form.priority)?.label || "普通";
   const repeatLabel = repeatRuleLabel(form.repeatRule) || "一次";
   const stepCount = formSteps.filter((step) => String(step.title || "").trim()).length || formSteps.length;
@@ -5940,8 +6187,22 @@ function CardEditor({ card, profiles, currentUser, onClose, onSave, onDelete, co
     setValue("visibility", checked ? "private" : "shared", { shouldDirty: true, shouldValidate: true });
     if (checked && secretOwnerId) {
       setValue("ownerId", secretOwnerId, { shouldDirty: true, shouldValidate: true });
+      setValue("participants", [secretOwnerId], { shouldDirty: true, shouldValidate: true });
+      syncStepOwnersForParticipants([secretOwnerId]);
+    } else {
+      const ownerId = getValues("ownerId");
+      const nextParticipants = editorParticipantIds({
+        ownerId,
+        participants: getValues("participants"),
+        visibility: "shared",
+        profiles,
+        currentUserId: currentUser?.id,
+        isDailyCheckin,
+      });
+      setValue("participants", nextParticipants, { shouldDirty: true, shouldValidate: true });
+      syncStepOwnersForParticipants(nextParticipants);
     }
-  }, [isDailyCheckin, secretOwnerId, setValue]);
+  }, [currentUser?.id, getValues, isDailyCheckin, profiles, secretOwnerId, setValue]);
   const editorDateShortcuts = [
     { label: "本日", value: today() },
     { label: "明天", value: addDays(today(), 1) },
@@ -5979,7 +6240,7 @@ function CardEditor({ card, profiles, currentUser, onClose, onSave, onDelete, co
                 </div>
                 <span>
                   <strong>{card.isDraft ? "新增生活卡" : "编辑生活卡"}</strong>
-                  <em>{ownerLabel} · {form.date || "未定日期"}</em>
+                  <em>{ownerLabel}{participantText ? ` · ${participantText}` : ""} · {form.date || "未定日期"}</em>
                 </span>
                 <b className={cx("edit-dirty-badge", !isDirty && "is-clean")}>{isDirty ? "未保存" : "已保存"}</b>
               </div>
@@ -6070,12 +6331,38 @@ function CardEditor({ card, profiles, currentUser, onClose, onSave, onDelete, co
                     <span>归属</span>
                     <EditorSelect
                       value={form.ownerId}
-                      onValueChange={(value) => setValue("ownerId", value, { shouldDirty: true, shouldValidate: true })}
+                      onValueChange={updateOwner}
                       options={ownerChoices}
                       disabled={card.sourceType === "checkin" || isDailyCheckin || isSecret}
                       ariaLabel="归属"
                     />
                   </label>
+                </div>
+                <div className="edit-line-field participant-field">
+                  <span>参与人</span>
+                  <div className="participant-picker" aria-label="参与人">
+                    {profiles.map((profile) => {
+                      const active = participants.includes(profile.id);
+                      const locked = isDailyCheckin || isSecret || form.ownerId === "shared" || form.ownerId === profile.id;
+                      return (
+                        <button
+                          key={profile.id}
+                          type="button"
+                          className={cx(active && "is-active", locked && "is-locked")}
+                          style={{ "--person-color": profile.color || avatarColor(profile) }}
+                          onClick={() => toggleParticipant(profile.id)}
+                          disabled={locked}
+                          aria-pressed={active ? "true" : "false"}
+                          title={locked && active ? "归属人会自动参与" : active ? "点一下移出参与" : "点一下加入参与"}
+                        >
+                          <CatAvatar profile={profile} className="is-mini" />
+                          <strong>{profile.displayName}</strong>
+                          <Icon name={active ? "check" : "circle"} />
+                        </button>
+                      );
+                    })}
+                  </div>
+                  <em>{form.ownerId === "shared" ? "共同归属会默认两个人都参与" : "归属人会保留，其他人可自由加入或移出"}</em>
                 </div>
                 <label className="edit-line-field">
                   <span>标签</span>
@@ -6894,12 +7181,9 @@ function StoryDayContext({ dayContext, calendarContext, className = "" }) {
 }
 
 function DailySummaryPage({ data, profiles, currentUser, request, setData, selectedDate, chooseDate, openDetail }) {
-  const [pulse, setPulse] = useState(() => data.diaryDay?.userDays?.[currentUser?.id] || {});
   const [refreshing, setRefreshing] = useState(false);
-  const [uploadingPhoto, setUploadingPhoto] = useState(false);
   const [refreshError, setRefreshError] = useState("");
   const [refreshMessage, setRefreshMessage] = useState("");
-  const preciousPhotoInputRef = useRef(null);
   const summary = data.dailySummary;
   const dayContext = summary?.dayContext || data.dayContext || null;
   const title = storyDisplayTitle(summary, selectedDate);
@@ -6991,10 +7275,6 @@ function DailySummaryPage({ data, profiles, currentUser, request, setData, selec
     { key: "memory", icon: "bookmark", label: "记忆", value: Math.max(memoryRows.length, memoryClueItems.length) },
     { key: "photos", icon: "image", label: "照片", value: summary?.photos?.length ?? 0 },
   ];
-  useEffect(() => {
-    setPulse(data.diaryDay?.userDays?.[currentUser?.id] || {});
-  }, [data.diaryDay, currentUser?.id]);
-
   async function waitForSummaryJob(jobId) {
     for (let attempt = 0; attempt < 220; attempt += 1) {
       const result = await request(`/api/jobs/${encodeURIComponent(jobId)}`);
@@ -7030,64 +7310,10 @@ function DailySummaryPage({ data, profiles, currentUser, request, setData, selec
     }
   }
 
-  async function savePulse(event) {
-    event.preventDefault();
-    const result = await request("/api/couple/status", {
-      method: "POST",
-      body: {
-        date: selectedDate,
-        dailyScore: pulse.dailyScore || 0,
-        happiestThing: pulse.happiestThing || "",
-        smallAchievement: pulse.smallAchievement || "",
-      },
-    });
-    if (result) {
-      setData(result.state);
-      setPulse(result.state?.diaryDay?.userDays?.[currentUser?.id] || {});
-      toast.success("睡前打卡已保存");
-    }
-  }
-
-  async function choosePreciousPhoto(event) {
-    const file = event.target.files?.[0] || null;
-    if (!file) return;
-    if (!file.type.startsWith("image/")) {
-      toast.error("请选择图片");
-      return;
-    }
-    if (file.size > 5 * 1024 * 1024) {
-      toast.error(`${file.name} 超过 5MB`);
-      return;
-    }
-    setUploadingPhoto(true);
-    try {
-      const result = await request("/api/couple/diary/asset", {
-        method: "POST",
-        body: {
-          date: selectedDate,
-          name: file.name,
-          dataUrl: await readFileAsDataUrl(file),
-        },
-      });
-      if (result) {
-        setData(result.state);
-        setPulse(result.state?.diaryDay?.userDays?.[currentUser?.id] || result.diaryDay?.userDays?.[currentUser?.id] || {});
-        toast.success("珍贵照片已收好");
-      }
-    } catch (error) {
-      toast.error(errorMessage(error, "上传失败"));
-    } finally {
-      setUploadingPhoto(false);
-      if (preciousPhotoInputRef.current) preciousPhotoInputRef.current.value = "";
-    }
-  }
-
   const generatedLabel = summary?.generatedAt ? compactDateTime(summary.generatedAt) : "";
   const visibleDiary = cleanStoryText(diary.text || narrative);
   const visibleDiaryParagraphs = storyParagraphs(visibleDiary);
   const hasReviewLines = [reviewEncouragement, reviewRecord, reviewEffort].some(hasAnalysisEntry) || memoryClueItems.length > 0;
-  const preciousPhotos = Array.isArray(pulse.images) ? pulse.images : [];
-  const latestPreciousPhoto = preciousPhotos[preciousPhotos.length - 1] || null;
 
   return (
     <section className="story-page">
@@ -7161,39 +7387,13 @@ function DailySummaryPage({ data, profiles, currentUser, request, setData, selec
           <DailySummarySourceStrip stats={sourceStats} locations={summary?.locations || []} note={nextStep || summary?.qualityNote} dayContext={dayContext} calendarContext={data.calendarContext} />
         </details>
       ) : null}
-      <details className="pulse-fold">
-        <summary>
-          <CatAvatar profile={currentUser} className="is-mini" />
-          <span className="pulse-summary-copy">
-            <strong>睡前打卡</strong>
-            <em>开心 · 贡献 · 照片</em>
-          </span>
-          <Icon name="chevronDown" />
-        </summary>
-        <form className="pulse-strip" onSubmit={savePulse}>
-          <label className="pulse-field is-score">
-            <span>心情</span>
-            <input type="number" min="1" max="10" value={pulse.dailyScore || ""} onChange={(event) => setPulse({ ...pulse, dailyScore: event.target.value })} aria-label="今日打分" placeholder="/10" />
-          </label>
-          <label className="pulse-field">
-            <span>最开心</span>
-            <input value={pulse.happiestThing || ""} onChange={(event) => setPulse({ ...pulse, happiestThing: event.target.value })} aria-label="最开心的事" placeholder="今天最开心的一小段" />
-          </label>
-          <label className="pulse-field">
-            <span>贡献</span>
-            <input value={pulse.smallAchievement || ""} onChange={(event) => setPulse({ ...pulse, smallAchievement: event.target.value })} aria-label="最有贡献的事" placeholder="今天最有贡献的事" />
-          </label>
-          <label className={cx("pulse-photo-field", latestPreciousPhoto && "has-photo", uploadingPhoto && "is-uploading")}>
-            {latestPreciousPhoto?.url ? <img src={latestPreciousPhoto.url} alt={latestPreciousPhoto.name || "最珍贵的照片"} /> : <Icon name="image" />}
-            <span>
-              <strong>{latestPreciousPhoto ? "珍贵照片" : "上传照片"}</strong>
-              <em>{uploadingPhoto ? "上传中" : preciousPhotos.length ? `${preciousPhotos.length} 张` : "每天一张"}</em>
-            </span>
-            <input ref={preciousPhotoInputRef} type="file" accept="image/png,image/jpeg,image/webp,image/gif" onChange={choosePreciousPhoto} disabled={uploadingPhoto} />
-          </label>
-          <IconButton icon="check" label="保存状态" type="submit" primary />
-        </form>
-      </details>
+      <BedtimeCheckinPanel
+        data={data}
+        currentUser={currentUser}
+        selectedDate={selectedDate}
+        request={request}
+        setData={setData}
+      />
       <CollapsibleSourceList title="随手记" rows={momentRows} profiles={profiles} onOpen={(row) => openDetail(row.type, row.payload)} />
     </section>
   );

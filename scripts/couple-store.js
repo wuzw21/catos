@@ -1739,7 +1739,10 @@ function normalizeParticipants(store, ownerId, participants, userId) {
     return profileIds;
   }
 
-  const source = Array.isArray(participants) ? participants : [ownerId || userId];
+  const source = [
+    ownerId || userId,
+    ...(Array.isArray(participants) ? participants : []),
+  ];
   const normalized = source.filter((id) => profileIds.includes(id));
   return [...new Set(normalized.length ? normalized : [userId])];
 }
@@ -7062,7 +7065,7 @@ function upsertScheduleItem(userId, payload) {
         ? [userId]
         : nextOwnerId === "shared"
         ? profileIds
-        : (Array.isArray(payload.participants) ? payload.participants : existing.participants)
+        : [nextOwnerId, ...(Array.isArray(payload.participants) ? payload.participants : existing.participants)]
             .filter((id) => profileIds.includes(id));
 
     existing.date = normalizeDate(payload.date, existing.date);

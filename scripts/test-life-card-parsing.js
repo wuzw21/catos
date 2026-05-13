@@ -297,6 +297,34 @@ try {
   }).result;
   assert.deepEqual(clearedStepsTodo.steps, []);
 
+  const participantTodo = store.upsertTodoItem("you", {
+    date: "2026-05-12",
+    title: "参与人测试",
+    ownerId: "you",
+    participants: ["you", "partner"],
+  }).result;
+  assert.equal(participantTodo.ownerId, "you");
+  assert.deepEqual(participantTodo.participants, ["you", "partner"]);
+  const reassignedParticipantTodo = store.upsertTodoItem("you", {
+    id: participantTodo.id,
+    date: "2026-05-12",
+    title: "参与人测试",
+    ownerId: "partner",
+    participants: ["you"],
+  }).result;
+  assert.equal(reassignedParticipantTodo.ownerId, "partner");
+  assert.deepEqual(reassignedParticipantTodo.participants.sort(), ["partner", "you"]);
+
+  const participantSchedule = store.upsertScheduleItem("you", {
+    date: "2026-05-12",
+    title: "一起散步",
+    itemType: "date",
+    ownerId: "you",
+    participants: ["partner"],
+  }).result;
+  assert.equal(participantSchedule.ownerId, "you");
+  assert.deepEqual(participantSchedule.participants.sort(), ["partner", "you"]);
+
   const checkinState = store.getState("you", { date: "2026-05-12" });
   const checkinCard = checkinState.scheduleItemCards.find((card) => card.tags.includes("daily-checkin-card"));
   assert(checkinCard);
