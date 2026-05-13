@@ -2165,6 +2165,40 @@ function groupTimelineEntriesBySlot(entries) {
   return groups;
 }
 
+function currentDayMinutes(value = new Date()) {
+  const date = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(date.getTime())) return null;
+  return date.getHours() * 60 + date.getMinutes();
+}
+
+function timelineSlotBeforeNow(slot, nowMinutes) {
+  if (!slot || !Number.isFinite(nowMinutes)) return false;
+  if (slot.group === "all-day") return true;
+  if (!["timed", "segment", "capture", "deadline"].includes(slot.group)) return false;
+  return Number(slot.minutes) < nowMinutes;
+}
+
+function timelineSlotNowClass(slot, nowMinutes) {
+  if (!slot || !Number.isFinite(nowMinutes)) return "";
+  if (slot.group === "all-day") return "is-spanning-now";
+  if (timelineSlotBeforeNow(slot, nowMinutes)) return "is-before-now";
+  if (["timed", "segment", "capture", "deadline", "unscheduled"].includes(slot.group)) return "is-after-now";
+  return "";
+}
+
+function timelineGroupsWithNowMarker(groups, showMarker, nowMinutes, nowLabel) {
+  const renderItems = groups.map((group) => ({ type: "group", key: group.key, group }));
+  if (!showMarker || !groups.length || !Number.isFinite(nowMinutes)) return renderItems;
+  const marker = { type: "now", key: "now-divider", label: nowLabel };
+  const markerIndex = groups.findIndex((group) => !timelineSlotBeforeNow(group.slot, nowMinutes));
+  if (markerIndex < 0) return [...renderItems, marker];
+  return [
+    ...renderItems.slice(0, markerIndex),
+    marker,
+    ...renderItems.slice(markerIndex),
+  ];
+}
+
 function sortCards(cards) {
   const manualOrder = (card) => Number(card.manualOrder || 0);
   const lifecycleRank = (card) => isArchivedCard(card) ? 2 : isCompletedCard(card) ? 1 : 0;
@@ -4636,6 +4670,7 @@ function LifeCardTimeline({ cards, captures = [], profiles, currentUser, now, se
   const convertedCaptureIds = useMemo(() => sourceCaptureIdSet(cards), [cards]);
   const nowLabel = clockTimeLabel(now);
   const showCurrentTime = selectedDate === todayKey && timelineScope === "today" && nowLabel;
+  const nowMinutes = currentDayMinutes(now);
   const timelineCaptures = useMemo(() => (captures || [])
     .filter((capture) => capture?.rawKind !== "cat-word")
     .filter((capture) => cleanStoryText(capture.text || "") || capture.assets?.length)
@@ -5172,68 +5207,85 @@ function LifeCardTimeline({ cards, captures = [], profiles, currentUser, now, se
                   <strong>{shortDate(date)}</strong>
                   {date === todayKey ? <span>今天</span> : null}
                 </button>
-                {visibleGroups.map((group) => (
-                  <section className={cx("timeline-time-group", `is-${group.slot.group}`)} key={group.key}>
-                    <div className="timeline-time-label" aria-label={group.slot.label}>
-                      <span>{group.slot.label}</span>
-                    </div>
-                    <div className="timeline-time-cards">
-                      {group.cards.map((entry) => {
-                        const card = entry.card;
-                        const capture = entry.capture;
-                        const isScrubTarget = focusedCardId === entry.id;
-                        const isOrderDragging = card && orderDragRef.current.active && orderDragRef.current.cardId === card.id;
-                        const isCompactCard = (isCompactDay || (!isTodayGroup && !isSelectedDay)) && !isScrubTarget;
-                        return (
-                          <div
-                            key={entry.id}
-                            className={cx("timeline-card-slot", isCompactCard && "is-compact", isScrubTarget && "is-scrub-target", isOrderDragging && "is-order-dragging")}
-                            ref={(node) => {
-                              if (node) cardRefs.current.set(entry.id, node);
-                              else cardRefs.current.delete(entry.id);
-                            }}
-                          >
-                            {card && canReorderCard(card) ? (
-                              <button
-                                className="card-order-handle"
-                                type="button"
-                                aria-label={`拖动排序 ${card.title || "生活卡"}`}
-                                title="拖动排序"
-                                onPointerDown={(event) => startOrderDrag(event, card, date)}
-                              >
-                                <Icon name="grip" />
-                              </button>
-                            ) : null}
-                            {capture ? (
-                              <TimelineCapture
-                                capture={capture}
-                                profiles={profiles}
-                                compact={isCompactCard}
-                                archiveCapture={archiveCapture}
-                                openDetail={openDetail}
-                              />
-                            ) : (
-                              <LifeCard
-                                card={card}
-                                profiles={profiles}
-                                currentUser={currentUser}
-                                compact={isCompactCard}
-                                toggleCard={toggleCard}
-                                archiveCard={archiveCard}
-                                toggleStep={toggleStep}
-                                toggleTimer={toggleTimer}
-                                setCardPriority={setCardPriority}
-                                setEditingCard={setEditingCard}
-                                openDetail={openDetail}
-                                openDailySummary={openDailySummary}
-                              />
-                            )}
-                          </div>
-                        );
-                      })}
-                    </div>
-                  </section>
-                ))}
+                {timelineGroupsWithNowMarker(visibleGroups, showCurrentTime && date === todayKey, nowMinutes, nowLabel).map((item) => {
+                  if (item.type === "now") {
+                    return (
+                      <div className="timeline-now-divider" key={item.key} aria-label={`当前时间 ${item.label}，以上是已过时间，以下是接下来`}>
+                        <span className="timeline-now-divider-label">
+                          <Icon name="clock" />
+                          <b>现在</b>
+                          <em>{item.label}</em>
+                        </span>
+                        <span className="timeline-now-divider-line" aria-hidden="true" />
+                        <span className="timeline-now-divider-next">接下来</span>
+                      </div>
+                    );
+                  }
+                  const group = item.group;
+                  const nowClass = showCurrentTime && date === todayKey ? timelineSlotNowClass(group.slot, nowMinutes) : "";
+                  return (
+                    <section className={cx("timeline-time-group", `is-${group.slot.group}`, nowClass)} key={item.key}>
+                      <div className="timeline-time-label" aria-label={group.slot.label}>
+                        <span>{group.slot.label}</span>
+                      </div>
+                      <div className="timeline-time-cards">
+                        {group.cards.map((entry) => {
+                          const card = entry.card;
+                          const capture = entry.capture;
+                          const isScrubTarget = focusedCardId === entry.id;
+                          const isOrderDragging = card && orderDragRef.current.active && orderDragRef.current.cardId === card.id;
+                          const isCompactCard = (isCompactDay || (!isTodayGroup && !isSelectedDay)) && !isScrubTarget;
+                          return (
+                            <div
+                              key={entry.id}
+                              className={cx("timeline-card-slot", nowClass, isCompactCard && "is-compact", isScrubTarget && "is-scrub-target", isOrderDragging && "is-order-dragging")}
+                              ref={(node) => {
+                                if (node) cardRefs.current.set(entry.id, node);
+                                else cardRefs.current.delete(entry.id);
+                              }}
+                            >
+                              {card && canReorderCard(card) ? (
+                                <button
+                                  className="card-order-handle"
+                                  type="button"
+                                  aria-label={`拖动排序 ${card.title || "生活卡"}`}
+                                  title="拖动排序"
+                                  onPointerDown={(event) => startOrderDrag(event, card, date)}
+                                >
+                                  <Icon name="grip" />
+                                </button>
+                              ) : null}
+                              {capture ? (
+                                <TimelineCapture
+                                  capture={capture}
+                                  profiles={profiles}
+                                  compact={isCompactCard}
+                                  archiveCapture={archiveCapture}
+                                  openDetail={openDetail}
+                                />
+                              ) : (
+                                <LifeCard
+                                  card={card}
+                                  profiles={profiles}
+                                  currentUser={currentUser}
+                                  compact={isCompactCard}
+                                  toggleCard={toggleCard}
+                                  archiveCard={archiveCard}
+                                  toggleStep={toggleStep}
+                                  toggleTimer={toggleTimer}
+                                  setCardPriority={setCardPriority}
+                                  setEditingCard={setEditingCard}
+                                  openDetail={openDetail}
+                                  openDailySummary={openDailySummary}
+                                />
+                              )}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </section>
+                  );
+                })}
                 {hiddenCount > 0 ? (
                   <button
                     className="fold-row"
