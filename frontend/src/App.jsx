@@ -5177,12 +5177,6 @@ function LifeCardTimeline({ cards, captures = [], profiles, currentUser, now, se
         onPointerCancel={endDragScroll}
         onClickCapture={stopDragClick}
       >
-        {dates.length && showCurrentTime ? (
-          <span className="timeline-now-chip" aria-label={`当前时间 ${nowLabel}`}>
-            <Icon name="clock" />
-            <b>现在 {nowLabel}</b>
-          </span>
-        ) : null}
         {dates.length && !showCurrentTime ? <span className="timeline-axis-handle" data-time="" aria-hidden="true" /> : null}
         {dates.length ? dates.map((date) => {
           const dayEntries = displayGrouped.get(date) || [];
@@ -5201,12 +5195,12 @@ function LifeCardTimeline({ cards, captures = [], profiles, currentUser, now, se
           return (
             <section key={date} className={cx("timeline-day", date === selectedDate && "is-selected", date === todayKey && "is-today", isCompactDay && "is-compact-day", hasHigh && "has-high", hasScrubTarget && "has-scrub-target")}>
               <button className="timeline-node" type="button" onClick={() => selectDate(date)} aria-label={`选择 ${shortDate(date)}`} />
+              <button className="timeline-day-header" type="button" onClick={() => selectDate(date)} title={date}>
+                <Icon name="calendar" />
+                <strong>{shortDate(date)}</strong>
+                {date === todayKey ? <span>今天</span> : null}
+              </button>
               <div className="day-cards">
-                <button className="timeline-day-header" type="button" onClick={() => selectDate(date)} title={date}>
-                  <Icon name="calendar" />
-                  <strong>{shortDate(date)}</strong>
-                  {date === todayKey ? <span>今天</span> : null}
-                </button>
                 {timelineGroupsWithNowMarker(visibleGroups, showCurrentTime && date === todayKey, nowMinutes, nowLabel).map((item) => {
                   if (item.type === "now") {
                     return (

@@ -3494,7 +3494,7 @@ button.cat-word-mini:hover {
 .day-cards {
   grid-column: 2;
   gap: 12px;
-  padding-top: 2px;
+  padding-top: 38px;
 }
 
 .timeline-day-header {
@@ -3538,6 +3538,22 @@ button.cat-word-mini:hover {
   background: rgba(255, 246, 250, 0.94);
   color: var(--ink);
   transform: translateY(-1px);
+}
+
+.timeline-day > .timeline-day-header {
+  grid-column: 1;
+  grid-row: 1;
+  align-self: start;
+  justify-self: end;
+  max-width: calc(var(--timeline-date-col) - 6px);
+  margin-top: 2px;
+  overflow: hidden;
+}
+
+.timeline-day > .timeline-day-header strong {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .timeline-time-group {
@@ -10151,6 +10167,10 @@ button.detail-step:hover {
     gap: 6px;
   }
 
+  .day-cards {
+    padding-top: 32px;
+  }
+
   .timeline-time-label {
     position: absolute;
     justify-content: flex-end;
@@ -10181,6 +10201,16 @@ button.detail-step:hover {
 
   .timeline-day-header {
     padding: 4px 8px;
+  }
+
+  .timeline-day > .timeline-day-header {
+    max-width: var(--timeline-date-col);
+    padding: 4px 6px;
+  }
+
+  .timeline-day > .timeline-day-header svg,
+  .timeline-day > .timeline-day-header span {
+    display: none;
   }
 
   .timeline-list {
@@ -12263,7 +12293,7 @@ button.detail-step:hover {
 
   .day-cards {
     gap: 6px;
-    padding-top: 0;
+    padding-top: 28px;
   }
 
   .timeline-day-header {
