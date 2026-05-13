@@ -1512,16 +1512,6 @@ function cardToggleLabel(card, { itemType, targetUserId, targetDone, isProxy, ta
   return isProxy ? `帮${targetName}完成` : "完成";
 }
 
-function nextUpPeopleLabel(card, profiles, currentUser = null) {
-  const participants = cardParticipantIds(card, profiles, currentUser);
-  if (!participants.length) return statusText(card) || "";
-  const pending = participants.filter((id) => !isCardDoneForUser(card, id));
-  if (!pending.length) return "都完成了";
-  return pending
-    .map((id) => id === currentUser?.id ? "等我" : `等${participantShortName(id, profiles, currentUser, "对方")}`)
-    .join(" · ");
-}
-
 function lifeCardUpsertEndpoint(card) {
   return {
     schedule: "/api/couple/schedule/upsert",
@@ -2074,6 +2064,30 @@ function sortCards(cards) {
   });
 }
 
+function lifeCardIdentityKey(card) {
+  if (!card) return "";
+  if (isDailyCheckinCard(card)) return `daily-checkin:${card.date || today()}`;
+  if (card.sourceType && card.sourceId) return `${card.sourceType}:${card.sourceId}`;
+  if (card.id) return `id:${card.id}`;
+  return [
+    card.date || "",
+    card.itemType || "",
+    card.ownerId || "",
+    lifeCardDisplayTitle(card, ""),
+    cleanCardText(card.detail || ""),
+  ].join("|");
+}
+
+function uniqueLifeCards(cards) {
+  const seen = new Set();
+  return (cards || []).filter((card) => {
+    const key = lifeCardIdentityKey(card);
+    if (!key || seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
 function dateTimeSortParts(value) {
   const match = String(value || "").match(/^(\d{4}-\d{2}-\d{2})T(\d{2}):(\d{2})/);
   if (!match) return null;
@@ -2144,36 +2158,6 @@ function captureTimelineSlot(capture) {
   const minutes = timestampTimeMinutes(capture?.createdAt);
   if (minutes !== null) return { group: "capture", label: minutesLabel(minutes), bucket: 1, minutes };
   return { group: "capture", label: "随手记", bucket: 3, minutes: 30 };
-}
-
-function groupCardsByTimelineSlot(cards) {
-  const groups = [];
-  cards.forEach((card) => {
-    const slot = cardTimelineSlot(card);
-    const key = `${slot.group}-${slot.label}`;
-    const last = groups[groups.length - 1];
-    if (last?.key === key) {
-      last.cards.push(card);
-      return;
-    }
-    groups.push({ key, slot, cards: [card] });
-  });
-  return groups;
-}
-
-function isPriorityPinnedCard(card) {
-  return !isArchivedCard(card) && !isCompletedCard(card) && (
-    isRoutineLifeCard(card) ||
-    card?.priority === "high" ||
-    card?.rankLane === "overdue" ||
-    lifeCardAgeNotice(card)?.level === "strong"
-  );
-}
-
-function priorityPinLabel(card) {
-  if (isRoutineLifeCard(card)) return isDailyCheckinCard(card) ? "日常" : card?.itemType === "habit" ? "习惯" : "打卡";
-  if (card?.rankLane === "overdue" || lifeCardAgeNotice(card)?.level === "strong") return "已过期";
-  return "重要";
 }
 
 function groupByDate(cards) {
@@ -3098,8 +3082,6 @@ export function App() {
               retryAgentJob={retryAgentJob}
               clearAgentJob={() => setAgentJob(null)}
               saveRawCapture={saveRawCapture}
-              request={request}
-              setData={setData}
               busy={busy}
               error={error}
               filter={filter}
@@ -3303,8 +3285,6 @@ function Dashboard(props) {
     retryAgentJob,
     clearAgentJob,
     saveRawCapture,
-    request,
-    setData,
     busy,
     error,
     filter,
@@ -3335,14 +3315,6 @@ function Dashboard(props) {
 
   return (
     <section className="dashboard">
-      <BedtimeCheckinPanel
-        data={data}
-        currentUser={currentUser}
-        selectedDate={selectedDate}
-        request={request}
-        setData={setData}
-        variant="top"
-      />
       <section className="home-paper">
         <div className="home-context-strip">
           <div className="home-date-row">
@@ -4498,17 +4470,16 @@ function LifeCardTimeline({ cards, captures = [], profiles, currentUser, now, se
   const orderDragRef = useRef({ active: false, cardId: "", date: "", pointerId: null, moved: false });
   const orderPreviewRef = useRef(null);
   const todayKey = today();
-  const lifeCards = useMemo(() => (cards || [])
+  const lifeCards = useMemo(() => uniqueLifeCards(cards)
     .filter((card) => !isDefaultPromptCard(card))
     .filter((card) => !isCheckinSurfaceCard(card))
     .filter((card) => card.sourceType !== "insight")
     .filter((card) => {
       const cardDate = String(card.date || todayKey);
-      const carryForward = !isRoutineLifeCard(card) && !isArchivedCard(card) && !isCompletedCard(card);
       if (timelineScope === "today") {
-        return cardDate === selectedDate || (carryForward && cardDate < selectedDate);
+        return cardDate === selectedDate;
       }
-      return cardDate >= selectedDate || carryForward;
+      return cardDate >= selectedDate;
     }), [cards, selectedDate, todayKey, timelineScope]);
   const profileIds = useMemo(() => new Set(profiles.map((profile) => profile.id)), [profiles]);
   const isSharedCard = (card) => card.ownerId === "shared" || (card.participants || []).length > 1;
@@ -4572,22 +4543,12 @@ function LifeCardTimeline({ cards, captures = [], profiles, currentUser, now, se
     : grouped;
   const focusedCardId = scrubTargetId || axisFocusId;
   const isFocusMode = Boolean(focusedCardId);
-  const pinnedCards = useMemo(() => sortCards(visibleCards
-    .filter((card) => String(card.date || todayKey) === selectedDate)
-    .filter(isPriorityPinnedCard)
-  ).slice(0, 3), [visibleCards, selectedDate, todayKey]);
-  const nextUpCard = useMemo(() => sortCards(visibleCards
-    .filter((card) => String(card.date || todayKey) === selectedDate)
-    .filter((card) => !isArchivedCard(card) && !isCompletedCard(card))
-  )[0] || null, [visibleCards, selectedDate, todayKey]);
-  const nextUpTime = nextUpCard ? (isDailyCheckinCard(nextUpCard) ? dailyCheckinSummary(nextUpCard) : primaryTimeLabel(nextUpCard)) : "";
-  const nextUpPeople = nextUpCard ? nextUpPeopleLabel(nextUpCard, profiles, currentUser) : "";
-  const rolloverAllCards = useMemo(() => sortCards(visibleCards
+  const rolloverAllCards = useMemo(() => timelineScope === "today" ? [] : sortCards(visibleCards
     .filter((card) => String(card.date || todayKey) < selectedDate)
     .filter((card) => !isArchivedCard(card) && !isCompletedCard(card))
     .filter((card) => !isRoutineLifeCard(card))
     .filter(canPatchLifeCard)
-  ), [visibleCards, selectedDate, todayKey]);
+  ), [visibleCards, selectedDate, todayKey, timelineScope]);
   const rolloverCards = rolloverAllCards.slice(0, 4);
   const rolloverHiddenCount = Math.max(0, rolloverAllCards.length - rolloverCards.length);
   const rolloverTargetLabel = selectedDate === todayKey ? "本日" : shortDate(selectedDate);
@@ -5001,24 +4962,6 @@ function LifeCardTimeline({ cards, captures = [], profiles, currentUser, now, se
           ))}
         </div>
       ) : null}
-      {nextUpCard ? (
-        <button
-          className={cx("next-up-strip", nextUpCard.priority === "high" && "is-important")}
-          type="button"
-          onClick={() => openDetail?.("lifeCard", nextUpCard)}
-          title={lifeCardDisplayTitle(nextUpCard, "生活卡")}
-        >
-          <span className="next-up-kicker">
-            <Icon name="sparkle" />
-            <b>接下来</b>
-          </span>
-          <span className="next-up-main">
-            <strong>{lifeCardDisplayTitle(nextUpCard, "生活卡")}</strong>
-            {nextUpTime ? <em>{nextUpTime}</em> : null}
-          </span>
-          {nextUpPeople ? <span className="next-up-people">{nextUpPeople}</span> : null}
-        </button>
-      ) : null}
       {rolloverAllCards.length ? (
         <section className="rollover-strip" aria-label="旧生活卡处理">
           <span className="rollover-head">
@@ -5047,29 +4990,6 @@ function LifeCardTimeline({ cards, captures = [], profiles, currentUser, now, se
             <button type="button" onClick={archiveRolloverCards} disabled={rolloverBusy}>
               归档
             </button>
-          </div>
-        </section>
-      ) : null}
-      {pinnedCards.length ? (
-        <section className="priority-strip" aria-label="置顶生活卡">
-          <div className="priority-strip-head">
-            <Icon name="star" />
-            <span>置顶</span>
-          </div>
-          <div className="priority-strip-items">
-            {pinnedCards.map((card) => (
-              <button
-                key={card.id}
-                className={cx("priority-pin", isRoutineLifeCard(card) && "is-routine", card.rankLane === "overdue" && "is-overdue")}
-                type="button"
-                onClick={() => openDetail?.("lifeCard", card)}
-                title={lifeCardDisplayTitle(card, "生活卡")}
-              >
-                <b>{priorityPinLabel(card)}</b>
-                <strong>{lifeCardDisplayTitle(card, "生活卡")}</strong>
-                <em>{primaryTimeLabel(card)}</em>
-              </button>
-            ))}
           </div>
         </section>
       ) : null}
@@ -7327,6 +7247,14 @@ function DailySummaryPage({ data, profiles, currentUser, request, setData, selec
         </div>
       </div>
       <DateRail selectedDate={selectedDate} chooseDate={chooseDate} />
+      <BedtimeCheckinPanel
+        data={data}
+        currentUser={currentUser}
+        selectedDate={selectedDate}
+        request={request}
+        setData={setData}
+        variant="top"
+      />
       {summary ? (
         <article className="story-journal">
           <div className="story-journal-top">
@@ -7387,13 +7315,6 @@ function DailySummaryPage({ data, profiles, currentUser, request, setData, selec
           <DailySummarySourceStrip stats={sourceStats} locations={summary?.locations || []} note={nextStep || summary?.qualityNote} dayContext={dayContext} calendarContext={data.calendarContext} />
         </details>
       ) : null}
-      <BedtimeCheckinPanel
-        data={data}
-        currentUser={currentUser}
-        selectedDate={selectedDate}
-        request={request}
-        setData={setData}
-      />
       <CollapsibleSourceList title="随手记" rows={momentRows} profiles={profiles} onOpen={(row) => openDetail(row.type, row.payload)} />
     </section>
   );
