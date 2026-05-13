@@ -242,6 +242,34 @@ function useMinuteNow() {
   return now;
 }
 
+function useVisualViewportCssVars() {
+  useEffect(() => {
+    const root = document.documentElement;
+    const updateViewportVars = () => {
+      const viewport = window.visualViewport;
+      const height = viewport?.height || window.innerHeight || root.clientHeight || 0;
+      const offsetTop = viewport?.offsetTop || 0;
+      const keyboardInset = viewport
+        ? Math.max(0, window.innerHeight - viewport.height - viewport.offsetTop)
+        : 0;
+      if (height) root.style.setProperty("--app-viewport-height", `${height}px`);
+      root.style.setProperty("--app-viewport-offset-top", `${offsetTop}px`);
+      root.style.setProperty("--app-keyboard-inset", `${keyboardInset}px`);
+    };
+    updateViewportVars();
+    window.addEventListener("resize", updateViewportVars);
+    window.addEventListener("orientationchange", updateViewportVars);
+    window.visualViewport?.addEventListener("resize", updateViewportVars);
+    window.visualViewport?.addEventListener("scroll", updateViewportVars);
+    return () => {
+      window.removeEventListener("resize", updateViewportVars);
+      window.removeEventListener("orientationchange", updateViewportVars);
+      window.visualViewport?.removeEventListener("resize", updateViewportVars);
+      window.visualViewport?.removeEventListener("scroll", updateViewportVars);
+    };
+  }, []);
+}
+
 const catNoticeLines = {
   morning: [
     "猫猫今天从一小口水开始。",
@@ -2365,6 +2393,7 @@ function errorMessage(err, fallback = "操作失败") {
 }
 
 export function App() {
+  useVisualViewportCssVars();
   const [page, setPage] = useHashRoute();
   const [selectedDate, setSelectedDate] = useState(today());
   const now = useMinuteNow();
@@ -4926,12 +4955,17 @@ function LifeCardTimeline({ cards, captures = [], profiles, currentUser, now, se
   }, [canReorderCard, cardGrouped, reorderCards, reorderCardsAtY, updateOrderPreview]);
   const startDragScroll = (event) => {
     if (event.pointerType === "mouse" && event.button !== 0) return;
-    const axisTarget = Boolean(event.target.closest(".timeline-node"));
+    if (event.pointerType === "touch") {
+      dragState.current = { ...dragState.current, active: false, kind: "", pointerId: null };
+      return;
+    }
+    const canScrubAxis = event.pointerType === "mouse" || event.pointerType === "pen" || !event.pointerType;
+    const axisTarget = canScrubAxis && Boolean(event.target.closest(".timeline-node"));
     if (!axisTarget && event.target.closest("input, textarea, select, a, summary, label, button")) return;
     const rect = event.currentTarget.getBoundingClientRect();
     const x = event.clientX - rect.left;
     const axisX = Number.parseFloat(window.getComputedStyle(event.currentTarget).getPropertyValue("--timeline-axis-x")) || 132;
-    const isAxisDrag = Math.abs(x - axisX) <= 42 || axisTarget;
+    const isAxisDrag = canScrubAxis && (Math.abs(x - axisX) <= 42 || axisTarget);
     const canScroll = event.currentTarget.scrollHeight > event.currentTarget.clientHeight + 2;
     if (scrubClearTimer.current) window.clearTimeout(scrubClearTimer.current);
     dragState.current = {

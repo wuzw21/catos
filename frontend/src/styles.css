@@ -11,6 +11,8 @@
   --blue: #5a7fd8;
   --violet: #8c7cff;
   --shadow: 0 18px 55px rgba(68, 46, 58, 0.1);
+  --app-viewport-height: 100vh;
+  --app-keyboard-inset: 0px;
   color: var(--ink);
   font-family: Inter, "Avenir Next", "PingFang SC", "Noto Sans CJK SC", system-ui, sans-serif;
 }
@@ -46,11 +48,13 @@ html {
   max-width: 100%;
   background: #fff6f1;
   overflow-x: hidden;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
 }
 
 body {
   min-width: 0;
-  min-height: 100vh;
+  min-height: var(--app-viewport-height, 100vh);
   max-width: 100%;
   margin: 0;
   background:
@@ -59,6 +63,12 @@ body {
     linear-gradient(145deg, #fff8f4 0%, #fff2f7 48%, #f4fff9 100%);
   background-size: 24px 24px, 24px 24px, auto;
   overflow-x: hidden;
+  overflow-y: visible;
+  overscroll-behavior-y: auto;
+}
+
+#root {
+  min-height: var(--app-viewport-height, 100vh);
 }
 
 button,
@@ -10217,6 +10227,8 @@ button.detail-step:hover {
     max-height: none;
     overflow: visible;
     padding: 0;
+    overscroll-behavior-y: auto;
+    touch-action: auto;
   }
 
   .timeline-card-slot.is-compact .life-card,
@@ -10718,8 +10730,10 @@ button.detail-step:hover {
 @media (max-width: 560px) {
   html,
   body {
-    min-height: 100%;
-    overscroll-behavior-y: none;
+    min-height: var(--app-viewport-height, 100vh);
+    overflow-y: auto;
+    overscroll-behavior-y: auto;
+    -webkit-overflow-scrolling: touch;
   }
 
   body {
@@ -10730,7 +10744,8 @@ button.detail-step:hover {
     width: 100%;
     max-width: 430px;
     margin: 0 auto;
-    padding: max(6px, env(safe-area-inset-top)) 7px calc(92px + env(safe-area-inset-bottom));
+    padding: max(6px, env(safe-area-inset-top)) 7px calc(108px + max(env(safe-area-inset-bottom), var(--app-keyboard-inset, 0px)));
+    overflow: visible;
   }
 
   .workspace {
@@ -10772,7 +10787,7 @@ button.detail-step:hover {
     position: fixed;
     left: max(8px, env(safe-area-inset-left));
     right: max(8px, env(safe-area-inset-right));
-    bottom: max(8px, env(safe-area-inset-bottom));
+    bottom: max(8px, env(safe-area-inset-bottom), var(--app-keyboard-inset, 0px));
     z-index: 30;
     display: grid;
     grid-template-columns: repeat(5, minmax(0, 1fr));
@@ -10892,7 +10907,7 @@ button.detail-step:hover {
 
   .dashboard {
     gap: 9px;
-    padding-bottom: 148px;
+    padding-bottom: calc(168px + max(0px, var(--app-keyboard-inset, 0px)));
   }
 
   .bedtime-checkin-head {
@@ -11127,7 +11142,7 @@ button.detail-step:hover {
     position: fixed;
     left: max(8px, env(safe-area-inset-left));
     right: max(8px, env(safe-area-inset-right));
-    bottom: calc(68px + env(safe-area-inset-bottom));
+    bottom: calc(68px + max(env(safe-area-inset-bottom), var(--app-keyboard-inset, 0px)));
     z-index: 24;
     gap: 6px;
     max-width: 430px;
@@ -12798,11 +12813,11 @@ button.detail-step:hover {
   }
 
   .mobile-tabbar {
-    bottom: max(10px, env(safe-area-inset-bottom));
+    bottom: max(10px, env(safe-area-inset-bottom), var(--app-keyboard-inset, 0px));
   }
 
   .dashboard .composer-band {
-    bottom: calc(68px + max(10px, env(safe-area-inset-bottom)));
+    bottom: calc(68px + max(10px, env(safe-area-inset-bottom), var(--app-keyboard-inset, 0px)));
   }
 }
 

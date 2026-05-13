@@ -2683,6 +2683,7 @@ function createTodoItem(store, payload, userId) {
     id: makeId("todo"),
     date,
     bucket,
+    segment: normalizeSegment(payload.segment),
     title: sanitizeText(payload.title, 180),
     detail: sanitizeText(payload.detail, 800),
     itemType,
@@ -3616,6 +3617,7 @@ function publicTodoItem(item, profileIds) {
   return {
     id: item.id,
     date: normalizeDate(item.date),
+    segment: normalizeSegment(item.segment),
     title: item.title || "",
     detail: item.detail || "",
     itemType: normalizeScheduleItemType(item.itemType, inferScheduleItemType(item, "thing")),
@@ -7483,6 +7485,7 @@ function upsertTodoItem(userId, payload) {
     const participants = visibility === "private" ? [userId] : normalizeParticipants(store, ownerId, payload.participants || existing.participants, userId);
     existing.date = normalizeDate(payload.date, existing.date);
     existing.bucket = normalizeTodoBucket(payload.bucket || existing.bucket);
+    existing.segment = normalizeSegment(payload.segment || existing.segment);
     existing.title = sanitizeText(payload.title ?? existing.title, 180);
     existing.detail = sanitizeText(payload.detail ?? existing.detail, 800);
     existing.itemType = inferScheduleItemType(payload, normalizeScheduleItemType(existing.itemType, "thing"));
@@ -7505,7 +7508,7 @@ function upsertTodoItem(userId, payload) {
         validStatuses.has(existing.statusByUser?.[id]) ? existing.statusByUser[id] : "todo",
       ])
     );
-    Object.assign(existing, buildLifeCardPlanning({ ...payload, date: existing.date, participants }, existing));
+    Object.assign(existing, buildLifeCardPlanning({ ...payload, date: existing.date, segment: existing.segment, participants }, existing));
     if (normalizeLifeCardTags(existing.tags, existing).includes(dailyCheckinCardTag)) {
       existing.itemType = "checkin";
       existing.ownerId = "shared";
