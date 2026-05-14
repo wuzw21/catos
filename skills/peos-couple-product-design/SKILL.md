@@ -1,6 +1,6 @@
 ---
 name: peos-couple-product-design
-description: Use when designing, implementing, or reviewing PEOS / 猫猫日记本 / 双人生活系统 product behavior or frontend UI, especially homepage timeline, life cards, shared completion, recurring cards, capture routing, daily story, memory, cute interactions, and avoiding generic todo-app complexity.
+description: Use when deciding or reviewing PEOS / 猫猫日记本 / 双人生活系统 product behavior or frontend UI, especially homepage timeline, life cards, shared completion, recurring cards, capture routing, daily story, memory, cute interactions, and avoiding generic todo-app complexity. For repository mechanics, validation, and deploy, pair with peos-couple-project.
 ---
 
 # PEOS Couple Product Design
@@ -8,6 +8,8 @@ description: Use when designing, implementing, or reviewing PEOS / 猫猫日记�
 Use this skill when working on PEOS, also called 猫猫日记本 or 双人生活系统.
 
 PEOS is a private two-person life OS. The frontend should feel like a warm, practical daily surface for two people, not a generic productivity dashboard or a Todoist clone.
+
+This is the product/UI decision skill. For codebase paths, validation commands, server sync, and repo-specific failure shields, use `peos-couple-project`.
 
 ## Product Thesis
 

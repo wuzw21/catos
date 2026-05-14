@@ -1,0 +1,4 @@
+interface:
+  display_name: "PEOS Couple Project"
+  short_description: "Work on 猫猫日记本 code, routing, UI, and deploy"
+  default_prompt: "Use $peos-couple-project to implement a PEOS 猫猫日记本 code change with the right validation."
