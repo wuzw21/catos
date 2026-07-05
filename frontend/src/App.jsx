@@ -31,6 +31,7 @@ import {
   List,
   LogOut,
   Lock,
+  MapPin,
   Moon,
   Pencil,
   Plus,
@@ -154,7 +155,7 @@ const memoryKindLabels = {
 };
 const captureDecisionLabels = {
   schedule: { label: "生活卡", icon: "cards", hint: "会进入时间轴" },
-  capture: { label: "随手记", icon: "camera", hint: "只保留原文" },
+  capture: { label: "事件记录", icon: "camera", hint: "先保留成事件线索" },
   memory: { label: "长期记忆", icon: "bookmark", hint: "会沉淀成偏好、纪念或承诺" },
   dailyStory: { label: "日总结素材", icon: "sparkle", hint: "会留给日记整理" },
 };
@@ -182,7 +183,7 @@ const defaultPromptTitleKeys = new Set([
   dailyCheckinTitle,
 ].map(normalizedPromptKey));
 const lowSignalStoryKeys = new Set(["做别的事"].map(normalizedPromptKey));
-const badStoryTextPattern = /值得记住的是|今天最清楚留下来(?:的)?是|今天最值得记住的是|今天的页面很轻|记录留下了\s*\d+\s*条现场线索|完成了\s*今天有没有开开心心|需要顺手带到明天的是\s*今天有没有开开心心|还没有明确完成项|没有明确贡献记录|没有太多具体安排|没有谁完成了什么|没有具体安排|信息不足|数据不足|记录较少|记录里|记录显示|没有显示|随手记还比较少|先补上|自动日总结|每日状态对象|doneUsers|pendingUsers|createdBy|updatedBy|statusUpdatedBy|actorId|targetUserId|status_by_user|source_counts/;
+const badStoryTextPattern = /值得记住的是|今天最清楚留下来(?:的)?是|今天最值得记住的是|今天的页面很轻|记录留下了\s*\d+\s*条现场线索|完成了\s*今天有没有开开心心|需要顺手带到明天的是\s*今天有没有开开心心|还没有明确完成项|没有明确贡献记录|没有太多具体安排|没有谁完成了什么|没有具体安排|信息不足|数据不足|记录较少|记录里|记录显示|没有显示|线索还比较少|先补上|自动日总结|每日状态对象|doneUsers|pendingUsers|createdBy|updatedBy|statusUpdatedBy|actorId|targetUserId|status_by_user|source_counts/;
 const fallbackDailyTitles = ["轻轻的一页", "小猫留光日", "慢慢亮起来", "把今天收好", "软软小片刻", "今天有小光"];
 const segmentLabels = {
   morning: "早上",
@@ -194,6 +195,10 @@ const segmentLabels = {
 const weekLabels = ["一", "二", "三", "四", "五", "六", "日"];
 const dayRolloverHour = 3;
 const deepNightNoticeText = "夜已深了，猫猫要早点休息哦！";
+const dayTimeMapStartHour = 3;
+const dayTimeMapTotalMinutes = 24 * 60;
+const dayTimeMapMinBlockMinutes = 15;
+const dayTimeMapSnapMinutes = 15;
 
 function today() {
   return businessDate();
@@ -409,15 +414,6 @@ function buildCatNoticeCandidates(data, dateKey) {
     })
     .filter(Boolean)
     .slice(0, 10);
-  const convertedCaptureIds = sourceCaptureIdSet(data?.scheduleItemCards || []);
-  const captures = (data?.captures || [])
-    .filter((capture) => isActiveTimelineCapture(capture, convertedCaptureIds))
-    .map((capture) => {
-      const text = cleanNoticeBit(capture.text);
-      return text ? { id: capture.id, kind: "fragment", text, detail: "随手记" } : null;
-    })
-    .filter(Boolean)
-    .slice(0, 8);
   const storyTitles = (data?.monthSummary?.days || [])
     .filter((day) => day.summaryTitle)
     .sort((a, b) => String(b.id).localeCompare(String(a.id)))
@@ -427,7 +423,7 @@ function buildCatNoticeCandidates(data, dateKey) {
       return text ? { id: `story-${day.id}`, kind: "time", text, detail: shortDate(day.id) } : null;
     })
     .filter(Boolean);
-  return [...futureCards, ...pagePlans, ...wishes, ...captures, ...storyTitles];
+  return [...futureCards, ...pagePlans, ...wishes, ...storyTitles];
 }
 
 function buildCatNotice(date = new Date(), variant = 0, data = null) {
@@ -598,6 +594,7 @@ const icons = {
   image: Image,
   logout: LogOut,
   lock: Lock,
+  mapPin: MapPin,
   moon: Moon,
   more: Ellipsis,
   plus: Plus,
@@ -747,6 +744,62 @@ function normalizeClockTime(value) {
   const minute = Number(match[2]);
   if (hour < 0 || hour > 23 || minute < 0 || minute > 59) return "";
   return `${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}`;
+}
+
+function businessTimelineMinutesFromClockMinutes(minutes) {
+  const value = Number(minutes);
+  if (!Number.isFinite(value)) return 0;
+  return (Math.max(0, Math.min(1439, Math.round(value))) - dayTimeMapStartHour * 60 + 1440) % 1440;
+}
+
+function timeMapMinutesFromDateTime(value, date = today()) {
+  const raw = String(value || "");
+  const match = raw.match(/^(\d{4}-\d{2}-\d{2})T(\d{2}):(\d{2})/);
+  if (!match) return 0;
+  const clockMinutes = Number(match[2]) * 60 + Number(match[3]);
+  const baseDate = date || today();
+  const offsetDays = match[1] > baseDate ? 1 : match[1] < baseDate ? -1 : 0;
+  return offsetDays * 1440 + clockMinutes - dayTimeMapStartHour * 60;
+}
+
+function clampTimeMapMinutes(minutes) {
+  return Math.max(0, Math.min(dayTimeMapTotalMinutes, Number(minutes) || 0));
+}
+
+function snapTimeMapMinutes(minutes) {
+  return Math.round(clampTimeMapMinutes(minutes) / dayTimeMapSnapMinutes) * dayTimeMapSnapMinutes;
+}
+
+function dateTimeFromTimeMapMinutes(date, minutes) {
+  const clamped = clampTimeMapMinutes(minutes);
+  const absoluteMinutes = clamped + dayTimeMapStartHour * 60;
+  const dayOffset = Math.floor(absoluteMinutes / 1440);
+  const minuteOfDay = absoluteMinutes % 1440;
+  const targetDate = dayOffset ? addDays(date, dayOffset) : date;
+  return localDateTimeValue(targetDate, `${String(Math.floor(minuteOfDay / 60)).padStart(2, "0")}:${String(minuteOfDay % 60).padStart(2, "0")}`);
+}
+
+function defaultTimeMapStartMinutes(date = today()) {
+  if (date !== today()) return 6 * 60;
+  const now = new Date();
+  const current = businessTimelineMinutesFromClockMinutes(now.getHours() * 60 + now.getMinutes());
+  return snapTimeMapMinutes(Math.max(0, Math.min(dayTimeMapTotalMinutes - 60, current)));
+}
+
+function timeMapTimeLabel(value, date = today()) {
+  const time = timeFromDateTime(value);
+  if (!time) return "";
+  const blockDate = dateFromDateTime(value);
+  return blockDate && blockDate > date ? `次日 ${time}` : time;
+}
+
+function timeMapRangeLabel(startAt, endAt, date = today()) {
+  return [timeMapTimeLabel(startAt, date), timeMapTimeLabel(endAt, date)].filter(Boolean).join(" - ");
+}
+
+function timeMapDurationLabel(startAt, endAt, date = today()) {
+  const duration = Math.max(0, timeMapMinutesFromDateTime(endAt, date) - timeMapMinutesFromDateTime(startAt, date));
+  return durationLabel(duration);
 }
 
 function timeFromDateTime(value) {
@@ -1349,7 +1402,7 @@ function memorySurfaceDef(key) {
 
 function sourceLabel(source) {
   const labels = {
-    capture: "随手记",
+    capture: "事件记录",
     insight: "后台分析",
     profile: "长期记忆",
     lifeCard: "猫猫的事",
@@ -1732,6 +1785,21 @@ function compactLifeCardRow(card, context, activeId = "") {
   };
 }
 
+function lifeCardRowById(context, cardId) {
+  const cards = Array.isArray(context.cards) ? context.cards : [];
+  return cards.find((card) => card.id === cardId) || null;
+}
+
+function dayTimelineBlockRows(block, context) {
+  return (Array.isArray(block.linkedLifeCardIds) ? block.linkedLifeCardIds : [])
+    .map((id) => {
+      const card = lifeCardRowById(context, id);
+      return card ? compactLifeCardRow(card, context) : null;
+    })
+    .filter(Boolean)
+    .slice(0, 8);
+}
+
 function contextLifeCard(context, sourceType, sourceId) {
   const cards = Array.isArray(context.cards) ? context.cards : [];
   const typedId = `${sourceType}-${sourceId}`;
@@ -1779,8 +1847,22 @@ function lifeCardDetailSections(card, context) {
     .map((item) => memoryLinkRow(item, context))
     .filter((row) => row.title)
     .slice(0, 6);
-  if (!relationRows.length && !memoryRows.length) return [];
+  const timeRows = (Array.isArray(context.dayTimelineBlocks) ? context.dayTimelineBlocks : [])
+    .filter((block) => Array.isArray(block.linkedLifeCardIds) && block.linkedLifeCardIds.includes(card.id))
+    .map((block) => ({
+      id: block.id,
+      title: block.title || (block.type === "sleep" ? "睡觉" : "时间段"),
+      subtitle: [timeMapRangeLabel(block.startAt, block.endAt, block.date), block.location].filter(Boolean).join(" · "),
+      ownerIds: block.participantIds || [],
+      action: { type: "open-detail", detailType: "dayTimelineBlock", payload: block },
+    }))
+    .slice(0, 6);
+  if (!relationRows.length && !memoryRows.length && !timeRows.length) return [];
   return [
+    timeRows.length ? {
+      title: "时间段记录",
+      rows: timeRows,
+    } : null,
     memoryRows.length ? {
       title: "长期记忆",
       rows: memoryRows,
@@ -1793,6 +1875,43 @@ function lifeCardDetailSections(card, context) {
 }
 
 const detailBuilders = {
+  dayTimelineBlock(block, context) {
+    const { profiles } = context;
+    const participantIds = Array.isArray(block.participantIds) && block.participantIds.length
+      ? block.participantIds
+      : profiles.map((profile) => profile.id).slice(0, 2);
+    const linkedRows = dayTimelineBlockRows(block, context);
+    const isSleep = block.type === "sleep";
+    const range = timeMapRangeLabel(block.startAt, block.endAt, block.date || context.selectedDate);
+    const duration = timeMapDurationLabel(block.startAt, block.endAt, block.date || context.selectedDate);
+    const title = cleanCardText(block.title || (isSleep ? "睡觉" : "时间段"));
+    return {
+      type: "dayTimelineBlock",
+      label: isSleep ? "睡觉" : "时间段",
+      title,
+      body: cleanCardText(block.detail || ""),
+      noteHint: !block.detail && !isSleep ? "还没有补充说明" : "",
+      date: detailDateLabel(block.date || context.selectedDate),
+      ownerIds: participantIds,
+      chips: [
+        { label: "时间", value: range },
+        duration ? { label: "持续", value: duration } : null,
+        block.location ? { label: "地点", value: block.location } : null,
+        { label: "人物", value: namesForIds(participantIds, profiles) },
+        block.visibility === "private" ? { label: "可见", value: "小秘密" } : null,
+        block.derived ? { label: "来源", value: "打卡推断" } : null,
+      ].filter(Boolean),
+      rows: [],
+      sections: linkedRows.length ? [{ title: "关联生活卡", rows: linkedRows }] : [],
+      moreRows: [],
+      moreSections: [],
+      actions: block.derived ? [] : [
+        { type: "edit-day-timeline-block", icon: "edit", label: "修改", block },
+        { type: "delete-day-timeline-block", icon: "trash", label: "删除", block },
+      ],
+      moreActions: [],
+    };
+  },
   lifeCard(card, context) {
     const { profiles, currentUser } = context;
     const itemType = card.itemType && itemTypeLabels[card.itemType] ? card.itemType : "thing";
@@ -1998,8 +2117,8 @@ const detailBuilders = {
     const isArchived = isArchivedCapture(capture);
     return {
       type: "capture",
-      label: isCatWord ? "猫猫的话" : "随手记",
-      title: shortText(text || "随手记", 42),
+      label: isCatWord ? "猫猫的话" : "事件记录",
+      title: shortText(text || "事件记录", 42),
       body: text,
       date: detailDateLabel(capture.date),
       ownerIds,
@@ -2047,7 +2166,7 @@ const detailBuilders = {
         item?.location ? { label: "位置", value: item.location } : null,
       ].filter((part) => part && part.value),
       rows: detailRows([
-        item?.sourceCaptureId ? { label: "来源", value: "随手记" } : null,
+        item?.sourceCaptureId ? { label: "来源", value: "事件记录" } : null,
         item?.photoCount ? { label: "照片", value: `${item.photoCount}` } : null,
       ]),
       images: item?.assets || [],
@@ -2157,7 +2276,34 @@ function captureTimelineEntry(capture) {
   };
 }
 
+function dayTimelineBlockTimelineEntry(block) {
+  const date = block?.date || dateFromDateTime(block?.startAt) || today();
+  return {
+    id: `time-block-${block?.id || date}-${block?.startAt || ""}`,
+    entryType: "timeBlock",
+    date,
+    block: { ...block, date },
+  };
+}
+
+function timeBlockTimelineSlot(block) {
+  const date = block?.date || dateFromDateTime(block?.startAt) || today();
+  const offsetMinutes = timeMapMinutesFromDateTime(block?.startAt, date);
+  const sortMinutes = clampTimeMapMinutes(offsetMinutes);
+  const { end } = timeMapBlockBounds(block, date);
+  return {
+    group: "time-block",
+    label: timeMapRangeLabel(block?.startAt, block?.endAt, date) || timeMapTimeLabel(block?.startAt, date) || "时间段",
+    shortLabel: timeMapTimeLabel(block?.startAt, date) || "时间段",
+    subLabel: timeMapDurationLabel(block?.startAt, block?.endAt, date),
+    bucket: 1,
+    minutes: sortMinutes,
+    endMinutes: end,
+  };
+}
+
 function timelineEntrySlot(entry) {
+  if (entry?.entryType === "timeBlock") return timeBlockTimelineSlot(entry.block);
   if (entry?.entryType === "capture") return captureTimelineSlot(entry.capture);
   return cardTimelineSlot(entry?.card || entry);
 }
@@ -2168,13 +2314,12 @@ function sortTimelineEntries(entries) {
     const timeB = timelineEntrySlot(b);
     const dateA = a?.date || a?.card?.date || a?.capture?.date || "";
     const dateB = b?.date || b?.card?.date || b?.capture?.date || "";
-    const typeRankA = a?.entryType === "capture" ? 1 : 0;
-    const typeRankB = b?.entryType === "capture" ? 1 : 0;
+    const typeRank = (entry) => entry?.entryType === "timeBlock" ? 0 : entry?.entryType === "capture" ? 2 : 1;
     return String(dateA).localeCompare(String(dateB)) ||
       timeA.bucket - timeB.bucket ||
       timeA.minutes - timeB.minutes ||
-      typeRankA - typeRankB ||
-      String(a?.card?.createdAt || a?.capture?.createdAt || "").localeCompare(String(b?.card?.createdAt || b?.capture?.createdAt || ""));
+      typeRank(a) - typeRank(b) ||
+      String(a?.block?.createdAt || a?.card?.createdAt || a?.capture?.createdAt || "").localeCompare(String(b?.block?.createdAt || b?.card?.createdAt || b?.capture?.createdAt || ""));
   });
 }
 
@@ -2193,24 +2338,36 @@ function groupTimelineEntriesBySlot(entries) {
   return groups;
 }
 
+function timelineSlotEndMinutes(slot) {
+  if (!slot) return 0;
+  if (Number.isFinite(Number(slot.endMinutes))) return clampTimeMapMinutes(slot.endMinutes);
+  if (slot.group === "all-day") return dayTimeMapTotalMinutes;
+  if (slot.group === "unscheduled") return clampTimeMapMinutes(slot.minutes || 0);
+  const start = clampTimeMapMinutes(slot.minutes || 0);
+  return Math.min(dayTimeMapTotalMinutes, start + 60);
+}
+
 function currentDayMinutes(value = new Date()) {
   const date = value instanceof Date ? value : new Date(value);
   if (Number.isNaN(date.getTime())) return null;
-  return date.getHours() * 60 + date.getMinutes();
+  return businessTimelineMinutesFromClockMinutes(date.getHours() * 60 + date.getMinutes());
 }
 
 function timelineSlotBeforeNow(slot, nowMinutes) {
   if (!slot || !Number.isFinite(nowMinutes)) return false;
   if (slot.group === "all-day") return true;
-  if (!["timed", "segment", "capture", "deadline"].includes(slot.group)) return false;
-  return Number(slot.minutes) < nowMinutes;
+  if (!["timed", "time-block", "segment", "capture", "deadline"].includes(slot.group)) return false;
+  return timelineSlotEndMinutes(slot) <= nowMinutes;
 }
 
 function timelineSlotNowClass(slot, nowMinutes) {
   if (!slot || !Number.isFinite(nowMinutes)) return "";
   if (slot.group === "all-day") return "is-spanning-now";
-  if (timelineSlotBeforeNow(slot, nowMinutes)) return "is-before-now";
-  if (["timed", "segment", "capture", "deadline", "unscheduled"].includes(slot.group)) return "is-after-now";
+  const start = Number(slot.minutes);
+  const end = timelineSlotEndMinutes(slot);
+  if (Number.isFinite(start) && start <= nowMinutes && nowMinutes < end) return "is-spanning-now";
+  if (end <= nowMinutes) return "is-before-now";
+  if (["timed", "time-block", "segment", "capture", "deadline", "unscheduled"].includes(slot.group)) return "is-after-now";
   return "";
 }
 
@@ -2299,6 +2456,18 @@ function dateTimeSortParts(value) {
   };
 }
 
+function dateTimeTimelineParts(value, date = today()) {
+  const parts = dateTimeSortParts(value);
+  if (!parts) return null;
+  const minutes = timeMapMinutesFromDateTime(value, date);
+  if (minutes < 0 || minutes >= dayTimeMapTotalMinutes) return null;
+  return {
+    ...parts,
+    timelineMinutes: minutes,
+    label: timeMapTimeLabel(value, date) || minutesLabel(parts.minutes),
+  };
+}
+
 function timeLabelMinutes(value) {
   const match = String(value || "").match(/^(\d{1,2}):(\d{2})/);
   if (!match) return null;
@@ -2335,15 +2504,15 @@ function hasExplicitAllDay(card) {
 
 function cardTimelineSlot(card) {
   const date = String(card?.date || today());
-  const planned = dateTimeSortParts(card?.plannedAt);
-  if (planned?.date === date) return { group: "timed", label: minutesLabel(planned.minutes), bucket: 1, minutes: planned.minutes };
+  const planned = dateTimeTimelineParts(card?.plannedAt, date);
+  if (planned) return { group: "timed", label: planned.label, bucket: 1, minutes: planned.timelineMinutes };
   const labelMinutes = timeLabelMinutes(card?.timeLabel);
-  if (labelMinutes !== null) return { group: "timed", label: minutesLabel(labelMinutes), bucket: 1, minutes: labelMinutes };
-  const due = dateTimeSortParts(card?.dueAt);
-  if (due?.date === date) return { group: "deadline", label: `截止 ${minutesLabel(due.minutes)}`, bucket: 2, minutes: due.minutes };
+  if (labelMinutes !== null) return { group: "timed", label: minutesLabel(labelMinutes), bucket: 1, minutes: businessTimelineMinutesFromClockMinutes(labelMinutes) };
+  const due = dateTimeTimelineParts(card?.dueAt, date);
+  if (due) return { group: "deadline", label: `截止 ${due.label}`, bucket: 2, minutes: due.timelineMinutes };
   if (hasExplicitAllDay(card)) return { group: "all-day", label: "全天", bucket: 0, minutes: 0 };
   const segmentMinutes = { morning: 9 * 60, noon: 12 * 60 + 30, afternoon: 15 * 60, evening: 19 * 60 + 30 };
-  if (Object.prototype.hasOwnProperty.call(segmentMinutes, card?.segment)) return { group: "segment", label: segmentLabels[card.segment], bucket: 1, minutes: segmentMinutes[card.segment] };
+  if (Object.prototype.hasOwnProperty.call(segmentMinutes, card?.segment)) return { group: "segment", label: segmentLabels[card.segment], bucket: 1, minutes: businessTimelineMinutesFromClockMinutes(segmentMinutes[card.segment]) };
   return { group: "unscheduled", label: "待安排", bucket: 3, minutes: 0 };
 }
 
@@ -2358,8 +2527,8 @@ function captureTimelineSlot(capture) {
     });
   }
   const minutes = timestampTimeMinutes(capture?.createdAt);
-  if (minutes !== null) return { group: "capture", label: minutesLabel(minutes), bucket: 1, minutes };
-  return { group: "capture", label: "随手记", bucket: 3, minutes: 30 };
+  if (minutes !== null) return { group: "capture", label: minutesLabel(minutes), bucket: 1, minutes: businessTimelineMinutesFromClockMinutes(minutes) };
+  return { group: "capture", label: "事件记录", bucket: 3, minutes: 30 };
 }
 
 function groupByDate(cards) {
@@ -2411,6 +2580,7 @@ export function App() {
   const [expanded, setExpanded] = useState(() => new Set());
   const [editingCard, setEditingCard] = useState(null);
   const [editingInitialSection, setEditingInitialSection] = useState("");
+  const [editingTimeBlock, setEditingTimeBlock] = useState(null);
   const [detailRequest, setDetailRequest] = useState(null);
   const [confirmRequest, setConfirmRequest] = useState(null);
   const composingRef = useRef(false);
@@ -2496,7 +2666,8 @@ export function App() {
     currentUser,
     selectedDate,
     cards: data?.scheduleItemCards || [],
-  }), [profiles, currentUser, selectedDate, data?.scheduleItemCards]);
+    dayTimelineBlocks: data?.dayTimelineBlocks || [],
+  }), [profiles, currentUser, selectedDate, data?.scheduleItemCards, data?.dayTimelineBlocks]);
   const activeDetail = useMemo(() => {
     if (!detailRequest) return null;
     return buildDetail(detailRequest.type, detailRequest.payload, detailContext);
@@ -2595,6 +2766,18 @@ export function App() {
     if (!nextCapture) return;
     setDetailRequest((current) => current?.type === "capture" && current.payload?.id === capture.id
       ? { type: "capture", payload: nextCapture }
+      : current);
+  }
+
+  function refreshDetailTimeBlockFromState(state, block) {
+    if (!state || !block?.id) return;
+    const nextBlock = state.dayTimelineBlocks?.find((item) => item.id === block.id);
+    if (!nextBlock) {
+      setDetailRequest((current) => current?.type === "dayTimelineBlock" && current.payload?.id === block.id ? null : current);
+      return;
+    }
+    setDetailRequest((current) => current?.type === "dayTimelineBlock" && current.payload?.id === block.id
+      ? { type: "dayTimelineBlock", payload: nextBlock }
       : current);
   }
 
@@ -2707,6 +2890,14 @@ export function App() {
       openCardEditor(action.card, action.initialSection || "compose");
       return;
     }
+    if (action.type === "edit-day-timeline-block" && action.block) {
+      setEditingTimeBlock(action.block);
+      return;
+    }
+    if (action.type === "delete-day-timeline-block" && action.block) {
+      await deleteDayTimelineBlock(action.block);
+      return;
+    }
     if (action.type === "open-detail" && action.detailType && action.payload) {
       setDetailRequest({ type: action.detailType, payload: action.payload });
       return;
@@ -2724,7 +2915,7 @@ export function App() {
   }
 
   async function saveRawCapture(mode, assets = [], options = {}) {
-    const text = composerText.trim() || (assets.length ? "图片随手记" : "");
+    const text = composerText.trim() || (assets.length ? "图片事件" : "");
     if (!text) return false;
     setBusy(true);
     try {
@@ -2768,7 +2959,7 @@ export function App() {
         }
       } else {
         setConfirmation(null);
-        toast.success(catWordMode ? "已送出猫猫的话" : "已保存随手记");
+        toast.success(catWordMode ? "已送出猫猫的话" : "已记录事件");
       }
       setComposerText("");
       return true;
@@ -3105,11 +3296,11 @@ export function App() {
         } else {
           setDetailRequest(null);
         }
-        if (!options.silent) toast.success(wasArchived ? "已恢复随手记" : "已归档随手记");
+        if (!options.silent) toast.success(wasArchived ? "已恢复事件记录" : "已归档事件记录");
         return true;
       }
     } catch (err) {
-      if (!options.silent) toast.error(errorMessage(err, "归档随手记失败"));
+      if (!options.silent) toast.error(errorMessage(err, "归档事件记录失败"));
     }
     return false;
   }
@@ -3248,6 +3439,42 @@ export function App() {
     }
   }
 
+  async function saveDayTimelineBlock(block) {
+    const result = await request("/api/couple/day-timeline/upsert", {
+      method: "POST",
+      body: block,
+    });
+    if (result) {
+      setData(result.state);
+      setEditingTimeBlock(null);
+      refreshDetailTimeBlockFromState(result.state, result.block || block);
+      toast.success(block.id ? "时间段已更新" : "时间段已加入");
+    }
+  }
+
+  async function deleteDayTimelineBlock(block) {
+    if (!block?.id || block.derived) return;
+    const accepted = await askConfirmation({
+      title: "删除这个时间段？",
+      body: block.title || "这段记录会从时间轴里移除。",
+      confirmLabel: "删除",
+      cancelLabel: "保留",
+      tone: "danger",
+      icon: "trash",
+    });
+    if (!accepted) return;
+    const result = await request("/api/couple/day-timeline/delete", {
+      method: "POST",
+      body: { id: block.id, date: block.date || selectedDate },
+    });
+    if (result) {
+      setData(result.state);
+      setEditingTimeBlock(null);
+      refreshDetailTimeBlockFromState(result.state, block);
+      toast.success("时间段已删除");
+    }
+  }
+
   if (!data) {
     return (
       <>
@@ -3309,6 +3536,9 @@ export function App() {
               setEditingCard={setEditingCard}
               openDetail={openDetail}
               reorderCards={reorderCards}
+              dayTimelineBlocks={data.dayTimelineBlocks || []}
+              saveDayTimelineBlock={saveDayTimelineBlock}
+              deleteDayTimelineBlock={deleteDayTimelineBlock}
               composingRef={composingRef}
               openDailySummary={() => navigate("daily-summary")}
             />
@@ -3357,6 +3587,18 @@ export function App() {
             })}
           />
         )}
+        {editingTimeBlock ? (
+          <DayTimeBlockEditor
+            block={editingTimeBlock}
+            profiles={profiles}
+            currentUser={currentUser}
+            cards={data.scheduleItemCards || []}
+            selectedDate={selectedDate}
+            onClose={() => setEditingTimeBlock(null)}
+            onSave={saveDayTimelineBlock}
+            onDelete={deleteDayTimelineBlock}
+          />
+        ) : null}
         {activeDetail ? (
           <DetailDrawer
             detail={activeDetail}
@@ -3512,6 +3754,9 @@ function Dashboard(props) {
     setEditingCard,
     openDetail,
     reorderCards,
+    dayTimelineBlocks,
+    saveDayTimelineBlock,
+    deleteDayTimelineBlock,
     composingRef,
     openDailySummary,
   } = props;
@@ -3588,6 +3833,9 @@ function Dashboard(props) {
         reorderCards={reorderCards}
         chooseDate={chooseDate}
         openDailySummary={openDailySummary}
+        dayTimelineBlocks={dayTimelineBlocks || data.dayTimelineBlocks || []}
+        saveDayTimelineBlock={saveDayTimelineBlock}
+        deleteDayTimelineBlock={deleteDayTimelineBlock}
       />
     </section>
   );
@@ -3997,7 +4245,7 @@ function Composer({ text, setText, saveRawCapture, profiles, currentUser, busy, 
     : "";
   const routeOptions = [
     { id: "schedule", icon: "cards", label: "生活卡" },
-    { id: "capture", icon: "camera", label: "随手记" },
+    { id: "capture", icon: "camera", label: "事件记录" },
   ];
   const ownerOptions = [
     { id: "shared", label: "共同" },
@@ -4146,8 +4394,8 @@ function Composer({ text, setText, saveRawCapture, profiles, currentUser, busy, 
             }, 120);
           }}
           rows={1}
-          aria-label="随手记"
-          placeholder="随手记"
+          aria-label="记录事件"
+          placeholder="记录事件"
         />
         <div className="composer-actions">
           <label className={cx("icon-upload", (busy || selectedAssets.length >= 3) && "is-disabled")} title="加入图片">
@@ -4359,7 +4607,7 @@ function monthCellSignal(day, storyTitle) {
   const tags = [
     ...calendarTags,
     hasStory ? { key: "story", icon: "sparkle", tone: "story", label: "日总结" } : null,
-    captureCount ? { key: "capture", icon: "camera", tone: "capture", label: "随手记", value: captureCount } : null,
+    captureCount ? { key: "capture", icon: "camera", tone: "capture", label: "事件", value: captureCount } : null,
     cardCount ? { key: "cards", icon: "cards", tone: "cards", label: "猫猫的事", value: cardCount } : null,
     diaryCount ? { key: "pulse", icon: "star", tone: "pulse", label: "每日状态", value: diaryCount } : null,
   ].filter(Boolean);
@@ -4375,7 +4623,7 @@ function monthCellSignal(day, storyTitle) {
     day.id,
     primary.label,
     cardCount ? `${cardCount} 个猫猫的事` : "",
-    captureCount ? `${captureCount} 条随手记` : "",
+    captureCount ? `${captureCount} 条事件线索` : "",
     hasStory ? "有日总结" : "",
   ].filter(Boolean);
   return {
@@ -4422,6 +4670,303 @@ function monthAgendaTimeLabel(card) {
 
 function monthAgendaOwnerIds(card, profiles, currentUser) {
   return cardParticipantIds(card, profiles, currentUser).slice(0, 2);
+}
+
+function timeMapBlockBounds(block, selectedDate) {
+  const start = clampTimeMapMinutes(timeMapMinutesFromDateTime(block.startAt, selectedDate));
+  const rawEnd = clampTimeMapMinutes(timeMapMinutesFromDateTime(block.endAt, selectedDate));
+  const end = Math.min(dayTimeMapTotalMinutes, Math.max(rawEnd, start + dayTimeMapMinBlockMinutes));
+  return { start, end };
+}
+
+function timeMapBlockTitle(block) {
+  return cleanCardText(block?.title || (block?.type === "sleep" ? "睡觉" : "时间段"));
+}
+
+function timeMapDedupeText(value) {
+  return cleanCardText(value || "").replace(/\s+/g, " ").trim().toLowerCase();
+}
+
+function timeMapBlockDedupeKey(block, selectedDate) {
+  const { start, end } = timeMapBlockBounds(block, selectedDate);
+  return [
+    start,
+    end,
+    timeMapDedupeText(timeMapBlockTitle(block)),
+    timeMapDedupeText(block?.location || ""),
+  ].join("|");
+}
+
+function timeMapBlockRank(block) {
+  if (block?.kind === "lifeCard") return 2;
+  if (block?.derived) return 1;
+  return 0;
+}
+
+function compareTimeMapBlocks(a, b, selectedDate) {
+  const boundsA = timeMapBlockBounds(a, selectedDate);
+  const boundsB = timeMapBlockBounds(b, selectedDate);
+  return boundsA.start - boundsB.start ||
+    boundsA.end - boundsB.end ||
+    timeMapBlockRank(a) - timeMapBlockRank(b) ||
+    timeMapBlockTitle(a).localeCompare(timeMapBlockTitle(b)) ||
+    String(a?.id || "").localeCompare(String(b?.id || ""));
+}
+
+function mergeTimeMapDuplicateBlock(existing, incoming, profiles, currentUser) {
+  const incomingWins = timeMapBlockRank(incoming) < timeMapBlockRank(existing);
+  const primary = incomingWins ? incoming : existing;
+  const secondary = incomingWins ? existing : incoming;
+  const participantIds = [...new Set([
+    ...blockParticipantIds(primary, profiles, currentUser),
+    ...blockParticipantIds(secondary, profiles, currentUser),
+  ])];
+  const linkedLifeCardIds = [...new Set([
+    ...(Array.isArray(primary.linkedLifeCardIds) ? primary.linkedLifeCardIds : []),
+    ...(Array.isArray(secondary.linkedLifeCardIds) ? secondary.linkedLifeCardIds : []),
+    secondary.kind === "lifeCard" && secondary.card?.id ? secondary.card.id : "",
+  ].filter(Boolean))];
+  return {
+    ...primary,
+    participantIds,
+    linkedLifeCardIds,
+    duplicateCount: Number(existing.duplicateCount || 1) + Number(incoming.duplicateCount || 1),
+  };
+}
+
+function dedupeTimeMapBlocks(blocks, selectedDate, profiles, currentUser) {
+  const byKey = new Map();
+  [...blocks].sort((a, b) => compareTimeMapBlocks(a, b, selectedDate)).forEach((block) => {
+    const key = timeMapBlockDedupeKey(block, selectedDate);
+    const existing = byKey.get(key);
+    byKey.set(key, existing ? mergeTimeMapDuplicateBlock(existing, block, profiles, currentUser) : block);
+  });
+  return [...byKey.values()].sort((a, b) => compareTimeMapBlocks(a, b, selectedDate));
+}
+
+function dedupeDayTimelineBlocks(blocks, profiles, currentUser) {
+  const byDate = new Map();
+  (blocks || []).forEach((block) => {
+    const date = block?.date || dateFromDateTime(block?.startAt) || today();
+    const items = byDate.get(date) || [];
+    items.push({ ...block, kind: block?.kind || "manual", date });
+    byDate.set(date, items);
+  });
+  return [...byDate.entries()]
+    .flatMap(([date, items]) => dedupeTimeMapBlocks(items, date, profiles, currentUser))
+    .sort((a, b) => String(a.date || "").localeCompare(String(b.date || "")) || compareTimeMapBlocks(a, b, a.date || b.date || today()));
+}
+
+function blockParticipantIds(block, profiles, currentUser) {
+  const profileIds = new Set((profiles || []).map((profile) => profile.id));
+  const ids = (Array.isArray(block?.participantIds) ? block.participantIds : []).filter((id) => profileIds.has(id));
+  if (ids.length) return ids;
+  return [currentUser?.id, profiles[0]?.id].filter((id) => id && profileIds.has(id)).slice(0, 1);
+}
+
+function timeMapLinkedCardTitles(block, cards = []) {
+  const byId = new Map((cards || []).map((card) => [card.id, lifeCardDisplayTitle(card, "生活卡")]));
+  return (block.linkedLifeCardIds || []).map((id) => byId.get(id)).filter(Boolean);
+}
+
+function DayTimeBlockEditor({ block, profiles = [], currentUser, cards = [], selectedDate, onClose, onSave, onDelete }) {
+  const editable = !block?.derived;
+  const defaultStart = defaultTimeMapStartMinutes(block.date || selectedDate);
+  const [form, setForm] = useState(() => ({
+    id: block.id || "",
+    date: block.date || selectedDate,
+    type: block.type || "event",
+    title: block.title || "",
+    detail: block.detail || "",
+    location: block.location || "",
+    participantIds: blockParticipantIds(block, profiles, currentUser),
+    linkedLifeCardIds: Array.isArray(block.linkedLifeCardIds) ? block.linkedLifeCardIds : [],
+    startAt: dateTimeLocalValue(block.startAt) || dateTimeFromTimeMapMinutes(block.date || selectedDate, defaultStart),
+    endAt: dateTimeLocalValue(block.endAt) || dateTimeFromTimeMapMinutes(block.date || selectedDate, Math.min(dayTimeMapTotalMinutes, defaultStart + 60)),
+    visibility: block.visibility === "private" ? "private" : "shared",
+  }));
+  const selectableCards = useMemo(() => sortCards(cards)
+    .filter((card) => !isDefaultPromptCard(card))
+    .filter((card) => !isArchivedCard(card))
+    .filter((card) => Math.abs(daysBetween(card.date || selectedDate, selectedDate)) <= 1)
+    .slice(0, 24), [cards, selectedDate]);
+  const update = (patch) => setForm((current) => ({ ...current, ...patch }));
+  const toggleParticipant = (id) => {
+    if (!editable) return;
+    const current = new Set(form.participantIds || []);
+    if (current.has(id)) current.delete(id);
+    else current.add(id);
+    const next = [...current].filter(Boolean);
+    update({ participantIds: next.length ? next : [currentUser?.id || profiles[0]?.id].filter(Boolean) });
+  };
+  const toggleLinkedCard = (id) => {
+    const current = new Set(form.linkedLifeCardIds || []);
+    if (current.has(id)) current.delete(id);
+    else current.add(id);
+    update({ linkedLifeCardIds: [...current] });
+  };
+  const submit = (event) => {
+    event.preventDefault();
+    if (!editable) return;
+    const title = cleanCardText(form.title) || (form.type === "sleep" ? "睡觉" : "时间段");
+    onSave?.({
+      ...form,
+      title,
+      date: form.date || selectedDate,
+      participantIds: form.visibility === "private"
+        ? [currentUser?.id || form.participantIds[0]].filter(Boolean)
+        : form.participantIds,
+    });
+  };
+  return (
+    <Dialog.Root open onOpenChange={(nextOpen) => {
+      if (!nextOpen) onClose?.();
+    }}>
+      <Dialog.Portal>
+        <Dialog.Overlay className="sheet-backdrop" />
+        <Dialog.Content className="time-block-editor" aria-describedby={undefined}>
+          <Dialog.Title className="sr-only">编辑时间段</Dialog.Title>
+          <span className="sheet-handle" aria-hidden="true" />
+          <form onSubmit={submit}>
+            <div className="sheet-head">
+              <div className="edit-studio-id">
+                <div className="edit-preview">
+                  <Icon name={form.type === "sleep" ? "moon" : "clock"} />
+                </div>
+                <span>
+                  <strong>{block.id ? "编辑时间段" : "标注时间段"}</strong>
+                  <em>{timeMapRangeLabel(form.startAt, form.endAt, form.date)}</em>
+                </span>
+              </div>
+              <div className="sheet-icon-actions">
+                <IconButton icon="x" label="关闭" onClick={onClose} />
+              </div>
+            </div>
+            <label className="edit-title-field">
+              <textarea rows={2} value={form.title} onChange={(event) => update({ title: event.target.value })} placeholder={form.type === "sleep" ? "睡觉" : "给这段时间取个名字"} disabled={!editable} />
+            </label>
+            <div className="edit-field-grid is-time">
+              <label className="edit-line-field">
+                <span>开始</span>
+                <input type="datetime-local" value={form.startAt} onChange={(event) => update({ startAt: event.target.value })} disabled={!editable} />
+              </label>
+              <label className="edit-line-field">
+                <span>结束</span>
+                <input type="datetime-local" value={form.endAt} onChange={(event) => update({ endAt: event.target.value })} disabled={!editable} />
+              </label>
+            </div>
+            <label className="edit-line-field">
+              <span>地点</span>
+              <input value={form.location} onChange={(event) => update({ location: event.target.value })} placeholder="在哪里" disabled={!editable} />
+            </label>
+            <label className="edit-line-field edit-note-field">
+              <span>备注</span>
+              <textarea rows={3} value={form.detail} onChange={(event) => update({ detail: event.target.value })} placeholder="补一点细节" disabled={!editable} />
+            </label>
+            <div className="edit-line-field participant-field">
+              <span>人物</span>
+              <div className="participant-picker" aria-label="人物">
+                {profiles.map((profile) => {
+                  const active = form.participantIds.includes(profile.id);
+                  return (
+                    <button
+                      key={profile.id}
+                      type="button"
+                      className={cx(active && "is-active")}
+                      style={{ "--person-color": profile.color || avatarColor(profile) }}
+                      onClick={() => toggleParticipant(profile.id)}
+                      disabled={!editable || form.visibility === "private"}
+                    >
+                      <CatAvatar profile={profile} className="is-mini" />
+                      <strong>{profile.displayName}</strong>
+                      <Icon name={active ? "check" : "circle"} />
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+            <details className="editor-more">
+              <summary className="editor-more-summary">
+                <span>更多设置</span>
+                <em>
+                  {[
+                    form.type === "sleep" ? "睡觉" : "时间段",
+                    form.visibility === "private" ? "小秘密" : "",
+                    form.linkedLifeCardIds.length ? `${form.linkedLifeCardIds.length} 张关联卡` : "",
+                  ].filter(Boolean).join(" · ") || "可选"}
+                </em>
+                <Icon name="chevronDown" />
+              </summary>
+              <div className="editor-more-body">
+                <div className="time-block-type-row" aria-label="类型">
+                  {[
+                    ["event", "时间段", "clock"],
+                    ["sleep", "睡觉", "moon"],
+                  ].map(([id, label, icon]) => (
+                    <button key={id} type="button" className={cx(form.type === id && "is-active")} onClick={() => update({ type: id, title: form.title || (id === "sleep" ? "睡觉" : "") })} disabled={!editable}>
+                      <Icon name={icon} />
+                      <span>{label}</span>
+                    </button>
+                  ))}
+                </div>
+                <label className="edit-line-field edit-note-field">
+                  <span>备注</span>
+                  <textarea rows={3} value={form.detail} onChange={(event) => update({ detail: event.target.value })} placeholder="补一点细节" disabled={!editable} />
+                </label>
+                <button
+                  className={cx("secret-toggle", form.visibility === "private" && "is-active")}
+                  type="button"
+                  onClick={() => update({
+                    visibility: form.visibility === "private" ? "shared" : "private",
+                    participantIds: form.visibility === "private" ? form.participantIds : [currentUser?.id].filter(Boolean),
+                  })}
+                  disabled={!editable}
+                >
+                  <span className="secret-toggle-icon">
+                    <Icon name="lock" />
+                    <Icon name="sparkle" />
+                  </span>
+                  <span>
+                    <strong>小秘密</strong>
+                    <em>{form.visibility === "private" ? "只有我能看" : "点一下藏起来"}</em>
+                  </span>
+                </button>
+                <section className="time-block-link-picker" aria-label="关联生活卡">
+                  <span>
+                    <b>关联生活卡</b>
+                    <em>{form.linkedLifeCardIds.length ? `${form.linkedLifeCardIds.length} 张` : "可不选"}</em>
+                  </span>
+                  <div>
+                    {selectableCards.map((card) => {
+                      const active = form.linkedLifeCardIds.includes(card.id);
+                      return (
+                        <button key={card.id} type="button" className={cx(active && "is-active")} onClick={() => toggleLinkedCard(card.id)} disabled={!editable}>
+                          <Icon name={active ? "check" : "circle"} />
+                          <span>
+                            <b>{lifeCardDisplayTitle(card, "生活卡")}</b>
+                            <em>{[shortDate(card.date), primaryTimeLabel(card)].filter(Boolean).join(" · ")}</em>
+                          </span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </section>
+                {block.id && editable ? (
+                  <button className="editor-danger-link" type="button" onClick={() => onDelete?.(block)}>
+                    <Icon name="trash" />
+                    <span>删除这个时间段</span>
+                  </button>
+                ) : null}
+              </div>
+            </details>
+            <div className="sheet-actions">
+              <ThemeButton type="submit" variant="solid" radius="full" disabled={!editable}>保存</ThemeButton>
+            </div>
+          </form>
+        </Dialog.Content>
+      </Dialog.Portal>
+    </Dialog.Root>
+  );
 }
 
 function MonthCellAgenda({ rows, hiddenCount }) {
@@ -4611,7 +5156,7 @@ function MonthPage({ data, selectedDate, chooseDate, setPage }) {
   const selectedSummaryText = cleanStoryText(selectedSummary?.narrative || selectedSummary?.nextStep || "");
   const monthSignals = [
     { key: "cards", icon: "cards", label: "猫猫的事", value: Number(selectedDay?.eventCount || 0) + Number(selectedDay?.todoCount || 0) || selectedCards.length },
-    { key: "captures", icon: "camera", label: "随手记", value: Number(selectedDay?.captureCount || 0) || data.captures?.length || 0 },
+    { key: "captures", icon: "camera", label: "事件", value: Number(selectedDay?.captureCount || 0) || data.captures?.length || 0 },
   ];
   useEffect(() => setCalendarOpen(false), [selectedDate]);
 
@@ -4660,7 +5205,7 @@ function MonthPage({ data, selectedDate, chooseDate, setPage }) {
   );
 }
 
-function LifeCardTimeline({ cards, captures = [], profiles, currentUser, now, selectedDate, filter, setFilter, timelineScope = "today", setTimelineScope, expanded, setExpanded, toggleCard, archiveCard, toggleStep, toggleTimer, moveCardsDate, archiveCapture, archiveCards, setCardPriority, setEditingCard, openDetail, chooseDate, reorderCards, openDailySummary }) {
+function LifeCardTimeline({ cards, captures = [], profiles, currentUser, now, selectedDate, filter, setFilter, timelineScope = "today", setTimelineScope, expanded, setExpanded, toggleCard, archiveCard, toggleStep, toggleTimer, moveCardsDate, archiveCapture, archiveCards, setCardPriority, setEditingCard, openDetail, chooseDate, reorderCards, openDailySummary, dayTimelineBlocks = [], saveDayTimelineBlock, deleteDayTimelineBlock }) {
   const [isScrollDragging, setIsScrollDragging] = useState(false);
   const [isCardScrubbing, setIsCardScrubbing] = useState(false);
   const [rolloverBusy, setRolloverBusy] = useState(false);
@@ -4669,6 +5214,7 @@ function LifeCardTimeline({ cards, captures = [], profiles, currentUser, now, se
   const [compactDates, setCompactDates] = useState(() => new Set());
   const [mobileToolOpen, setMobileToolOpen] = useState(false);
   const [futureDateRange, setFutureDateRange] = useState(null);
+  const [editingTimelineBlock, setEditingTimelineBlock] = useState(null);
   const liveAxisPercent = `${dayProgressPercent(selectedDate, now)}%`;
   const [axisHandleY, setAxisHandleY] = useState(liveAxisPercent);
   const listRef = useRef(null);
@@ -4722,28 +5268,27 @@ function LifeCardTimeline({ cards, captures = [], profiles, currentUser, now, se
   const nowLabel = clockTimeLabel(now);
   const showCurrentTime = selectedDate === todayKey && timelineScope === "today" && nowLabel;
   const nowMinutes = currentDayMinutes(now);
-  const timelineCaptures = useMemo(() => (captures || [])
-    .filter((capture) => capture?.rawKind !== "cat-word")
-    .filter((capture) => cleanStoryText(capture.text || "") || capture.assets?.length)
-    .filter((capture) => {
-      const captureDate = String(capture.date || capture.createdAt || todayKey).slice(0, 10);
-      if (timelineScope === "today") return captureDate === selectedDate;
-      if (futureRangeEnd) return captureDate >= selectedDate && captureDate <= futureRangeEnd;
-      return captureDate >= selectedDate;
-    })
-    .filter((capture) => {
-      const archived = isArchivedCapture(capture);
-      if (filter === "archived") return archived;
-      if (!isActiveTimelineCapture(capture, convertedCaptureIds)) return false;
-      if (filter === "shared") return false;
-      if (filter === "mine") return !currentUser?.id || capture.createdBy === currentUser.id;
-      return true;
-    })
-    .map(captureTimelineEntry), [captures, convertedCaptureIds, currentUser?.id, filter, futureRangeEnd, selectedDate, timelineScope, todayKey]);
+  const timelineTimeBlocks = useMemo(() => {
+    const visibleBlocks = (dayTimelineBlocks || [])
+      .filter((block) => {
+        const blockDate = String(block?.date || dateFromDateTime(block?.startAt) || todayKey).slice(0, 10);
+        if (timelineScope === "today") return blockDate === selectedDate;
+        if (futureRangeEnd) return blockDate >= selectedDate && blockDate <= futureRangeEnd;
+        return blockDate >= selectedDate;
+      })
+      .filter((block) => {
+        if (filter === "archived") return false;
+        const participantIds = blockParticipantIds(block, profiles, currentUser);
+        if (filter === "mine") return !currentUser?.id || participantIds.includes(currentUser.id);
+        if (filter === "shared") return participantIds.length > 1;
+        return true;
+      });
+    return dedupeDayTimelineBlocks(visibleBlocks, profiles, currentUser).map(dayTimelineBlockTimelineEntry);
+  }, [currentUser, dayTimelineBlocks, filter, futureRangeEnd, profiles, selectedDate, timelineScope, todayKey]);
   const visibleEntries = useMemo(() => sortTimelineEntries([
+    ...timelineTimeBlocks,
     ...visibleCards.map(lifeCardTimelineEntry),
-    ...timelineCaptures,
-  ]), [visibleCards, timelineCaptures]);
+  ]), [timelineTimeBlocks, visibleCards]);
   const cardGrouped = groupByDate(visibleCards);
   const grouped = groupByDate(visibleEntries);
   const dates = [...grouped.keys()].sort((a, b) => a.localeCompare(b));
@@ -4755,8 +5300,8 @@ function LifeCardTimeline({ cards, captures = [], profiles, currentUser, now, se
   const displayGrouped = orderPreview
     ? new Map([...grouped].map(([date, dayEntries]) => {
         if (date !== orderPreview.date) return [date, dayEntries];
-        const captureEntries = dayEntries.filter((entry) => entry.entryType === "capture");
-        return [date, sortTimelineEntries([...orderPreview.cards.map(lifeCardTimelineEntry), ...captureEntries])];
+        const fixedEntries = dayEntries.filter((entry) => entry.entryType === "timeBlock");
+        return [date, sortTimelineEntries([...orderPreview.cards.map(lifeCardTimelineEntry), ...fixedEntries])];
       }))
     : grouped;
   const focusedCardId = scrubTargetId || axisFocusId;
@@ -5097,6 +5642,29 @@ function LifeCardTimeline({ cards, captures = [], profiles, currentUser, now, se
       setRolloverBusy(false);
     }
   };
+  const openNewTimelineBlockEditor = () => {
+    const start = defaultTimeMapStartMinutes(selectedDate);
+    setEditingTimelineBlock({
+      date: selectedDate,
+      type: "event",
+      title: "",
+      detail: "",
+      location: "",
+      participantIds: [currentUser?.id || profiles[0]?.id].filter(Boolean),
+      linkedLifeCardIds: [],
+      startAt: dateTimeFromTimeMapMinutes(selectedDate, start),
+      endAt: dateTimeFromTimeMapMinutes(selectedDate, Math.min(dayTimeMapTotalMinutes, start + 60)),
+      visibility: "shared",
+    });
+  };
+  const saveTimelineBlock = async (block) => {
+    await saveDayTimelineBlock?.(block);
+    setEditingTimelineBlock(null);
+  };
+  const deleteTimelineBlock = async (block) => {
+    await deleteDayTimelineBlock?.(block);
+    setEditingTimelineBlock(null);
+  };
   return (
     <section className="life-section">
       <div className="life-toolbar">
@@ -5141,6 +5709,20 @@ function LifeCardTimeline({ cards, captures = [], profiles, currentUser, now, se
           >
             <Icon name={selectedCompact ? "focus" : "rows"} />
             <span>{selectedCompact ? "详细" : "简略"}</span>
+          </ThemeButton>
+          <ThemeButton
+            className="time-map-add-chip"
+            type="button"
+            variant="soft"
+            radius="full"
+            size="1"
+            onClick={openNewTimelineBlockEditor}
+            disabled={!saveDayTimelineBlock}
+            aria-label="标注时间段"
+            title="标注时间段"
+          >
+            <Icon name="plus" />
+            <span>标注</span>
           </ThemeButton>
           <div className="icon-segment peos-button-group" aria-label="筛选">
             {filters.map(([id, icon, label]) => (
@@ -5249,146 +5831,169 @@ function LifeCardTimeline({ cards, captures = [], profiles, currentUser, now, se
         onPointerCancel={endDragScroll}
         onClickCapture={stopDragClick}
       >
-        {dates.length && !showCurrentTime ? <span className="timeline-axis-handle" data-time="" aria-hidden="true" /> : null}
-        {dates.length ? dates.map((date) => {
-          const dayEntries = displayGrouped.get(date) || [];
-          const isExpanded = expanded.has(date);
-          const isSelectedDay = date === selectedDate;
-          const isTodayGroup = date === todayKey;
-          const isCompactDay = compactDates.has(date);
-          const visible = isFocusMode ? dayEntries : (isExpanded || isSelectedDay || isTodayGroup ? dayEntries : dayEntries.slice(0, 3));
-          const visibleGroups = groupTimelineEntriesBySlot(visible);
-          const hiddenCount = isFocusMode ? 0 : dayEntries.length - visible.length;
-          const hasHigh = dayEntries.some((entry) => {
-            const card = entry.card;
-            return card && (card.priority === "high" || Number(card.rankScore || 0) >= 60);
-          });
-          const hasScrubTarget = Boolean(focusedCardId && dayEntries.some((entry) => entry.id === focusedCardId));
-          return (
-            <section key={date} className={cx("timeline-day", date === selectedDate && "is-selected", date === todayKey && "is-today", isCompactDay && "is-compact-day", hasHigh && "has-high", hasScrubTarget && "has-scrub-target")}>
-              <button className="timeline-node" type="button" onClick={() => selectDate(date)} aria-label={`选择 ${shortDate(date)}`} />
-              <button className="timeline-day-header" type="button" onClick={() => selectDate(date)} title={date}>
-                <Icon name="calendar" />
-                <strong>{shortDate(date)}</strong>
-                {date === todayKey ? <span>今天</span> : null}
-              </button>
-              <div className="day-cards">
-                {timelineGroupsWithNowMarker(visibleGroups, showCurrentTime && date === todayKey, nowMinutes, nowLabel).map((item) => {
-                  if (item.type === "now") {
+          {dates.length && !showCurrentTime ? <span className="timeline-axis-handle" data-time="" aria-hidden="true" /> : null}
+          {dates.length ? dates.map((date) => {
+            const dayEntries = displayGrouped.get(date) || [];
+            const isExpanded = expanded.has(date);
+            const isSelectedDay = date === selectedDate;
+            const isTodayGroup = date === todayKey;
+            const isCompactDay = compactDates.has(date);
+            const visible = isFocusMode ? dayEntries : (isExpanded || isSelectedDay || isTodayGroup ? dayEntries : dayEntries.slice(0, 3));
+            const visibleGroups = groupTimelineEntriesBySlot(visible);
+            const hiddenCount = isFocusMode ? 0 : dayEntries.length - visible.length;
+            const hasHigh = dayEntries.some((entry) => {
+              const card = entry.card;
+              return card && (card.priority === "high" || Number(card.rankScore || 0) >= 60);
+            });
+            const hasScrubTarget = Boolean(focusedCardId && dayEntries.some((entry) => entry.id === focusedCardId));
+            return (
+              <section key={date} className={cx("timeline-day", date === selectedDate && "is-selected", date === todayKey && "is-today", isCompactDay && "is-compact-day", hasHigh && "has-high", hasScrubTarget && "has-scrub-target")}>
+                <button className="timeline-node" type="button" onClick={() => selectDate(date)} aria-label={`选择 ${shortDate(date)}`} />
+                <button className="timeline-day-header" type="button" onClick={() => selectDate(date)} title={date}>
+                  <Icon name="calendar" />
+                  <strong>{shortDate(date)}</strong>
+                  {date === todayKey ? <span>今天</span> : null}
+                </button>
+                <div className="day-cards">
+                  {timelineGroupsWithNowMarker(visibleGroups, showCurrentTime && date === todayKey, nowMinutes, nowLabel).map((item) => {
+                    if (item.type === "now") {
+                      return (
+                        <div
+                          ref={item.autoFocus ? nowDividerRef : null}
+                          className="timeline-now-divider"
+                          key={item.key}
+                          aria-label={`当前时间 ${item.label}，以上是已过时间，以下是接下来`}
+                        >
+                          <span className="timeline-now-divider-label">
+                            <Icon name="clock" />
+                            <b>现在</b>
+                            <em>{item.label}</em>
+                          </span>
+                          <span className="timeline-now-divider-line" aria-hidden="true" />
+                          <span className="timeline-now-divider-next">接下来</span>
+                        </div>
+                      );
+                    }
+                    const group = item.group;
+                    const nowClass = showCurrentTime && date === todayKey ? timelineSlotNowClass(group.slot, nowMinutes) : "";
                     return (
-                      <div
-                        ref={item.autoFocus ? nowDividerRef : null}
-                        className="timeline-now-divider"
-                        key={item.key}
-                        aria-label={`当前时间 ${item.label}，以上是已过时间，以下是接下来`}
-                      >
-                        <span className="timeline-now-divider-label">
-                          <Icon name="clock" />
-                          <b>现在</b>
-                          <em>{item.label}</em>
-                        </span>
-                        <span className="timeline-now-divider-line" aria-hidden="true" />
-                        <span className="timeline-now-divider-next">接下来</span>
-                      </div>
+                      <section className={cx("timeline-time-group", `is-${group.slot.group}`, nowClass)} key={item.key}>
+                        <div className="timeline-time-label" aria-label={group.slot.label}>
+                          <TimelineGroupLabel group={group} profiles={profiles} currentUser={currentUser} />
+                        </div>
+                        <div className="timeline-time-cards">
+                          {group.cards.map((entry) => {
+                            const card = entry.card;
+                            const capture = entry.capture;
+                            const timeBlock = entry.block;
+                            const isScrubTarget = focusedCardId === entry.id;
+                            const isOrderDragging = card && orderDragRef.current.active && orderDragRef.current.cardId === card.id;
+                            const isCompactCard = (isCompactDay || (!isTodayGroup && !isSelectedDay)) && !isScrubTarget;
+                            return (
+                              <div
+                                key={entry.id}
+                                className={cx("timeline-card-slot", nowClass, isCompactCard && "is-compact", isScrubTarget && "is-scrub-target", isOrderDragging && "is-order-dragging")}
+                                ref={(node) => {
+                                  if (node) cardRefs.current.set(entry.id, node);
+                                  else cardRefs.current.delete(entry.id);
+                                }}
+                              >
+                                {card && canReorderCard(card) ? (
+                                  <button
+                                    className="card-order-handle"
+                                    type="button"
+                                    aria-label={`拖动排序 ${card.title || "生活卡"}`}
+                                    title="拖动排序"
+                                    onPointerDown={(event) => startOrderDrag(event, card, date)}
+                                  >
+                                    <Icon name="grip" />
+                                  </button>
+                                ) : null}
+                                {timeBlock ? (
+                                  <TimelineTimeBlock
+                                    block={timeBlock}
+                                    cards={cards}
+                                    profiles={profiles}
+                                    currentUser={currentUser}
+                                    selectedDate={date}
+                                    compact={isCompactCard}
+                                    openDetail={openDetail}
+                                  />
+                                ) : capture ? (
+                                  <TimelineCapture
+                                    capture={capture}
+                                    profiles={profiles}
+                                    compact={isCompactCard}
+                                    archiveCapture={archiveCapture}
+                                    openDetail={openDetail}
+                                  />
+                                ) : (
+                                  <LifeCard
+                                    card={card}
+                                    profiles={profiles}
+                                    currentUser={currentUser}
+                                    compact={isCompactCard}
+                                    toggleCard={toggleCard}
+                                    archiveCard={archiveCard}
+                                    toggleStep={toggleStep}
+                                    toggleTimer={toggleTimer}
+                                    setCardPriority={setCardPriority}
+                                    setEditingCard={setEditingCard}
+                                    openDetail={openDetail}
+                                    openDailySummary={openDailySummary}
+                                  />
+                                )}
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </section>
                     );
-                  }
-                  const group = item.group;
-                  const nowClass = showCurrentTime && date === todayKey ? timelineSlotNowClass(group.slot, nowMinutes) : "";
-                  return (
-                    <section className={cx("timeline-time-group", `is-${group.slot.group}`, nowClass)} key={item.key}>
-                      <div className="timeline-time-label" aria-label={group.slot.label}>
-                        <span>{group.slot.label}</span>
-                      </div>
-                      <div className="timeline-time-cards">
-                        {group.cards.map((entry) => {
-                          const card = entry.card;
-                          const capture = entry.capture;
-                          const isScrubTarget = focusedCardId === entry.id;
-                          const isOrderDragging = card && orderDragRef.current.active && orderDragRef.current.cardId === card.id;
-                          const isCompactCard = (isCompactDay || (!isTodayGroup && !isSelectedDay)) && !isScrubTarget;
-                          return (
-                            <div
-                              key={entry.id}
-                              className={cx("timeline-card-slot", nowClass, isCompactCard && "is-compact", isScrubTarget && "is-scrub-target", isOrderDragging && "is-order-dragging")}
-                              ref={(node) => {
-                                if (node) cardRefs.current.set(entry.id, node);
-                                else cardRefs.current.delete(entry.id);
-                              }}
-                            >
-                              {card && canReorderCard(card) ? (
-                                <button
-                                  className="card-order-handle"
-                                  type="button"
-                                  aria-label={`拖动排序 ${card.title || "生活卡"}`}
-                                  title="拖动排序"
-                                  onPointerDown={(event) => startOrderDrag(event, card, date)}
-                                >
-                                  <Icon name="grip" />
-                                </button>
-                              ) : null}
-                              {capture ? (
-                                <TimelineCapture
-                                  capture={capture}
-                                  profiles={profiles}
-                                  compact={isCompactCard}
-                                  archiveCapture={archiveCapture}
-                                  openDetail={openDetail}
-                                />
-                              ) : (
-                                <LifeCard
-                                  card={card}
-                                  profiles={profiles}
-                                  currentUser={currentUser}
-                                  compact={isCompactCard}
-                                  toggleCard={toggleCard}
-                                  archiveCard={archiveCard}
-                                  toggleStep={toggleStep}
-                                  toggleTimer={toggleTimer}
-                                  setCardPriority={setCardPriority}
-                                  setEditingCard={setEditingCard}
-                                  openDetail={openDetail}
-                                  openDailySummary={openDailySummary}
-                                />
-                              )}
-                            </div>
-                          );
-                        })}
-                      </div>
-                    </section>
-                  );
-                })}
-                {hiddenCount > 0 ? (
-                  <button
-                    className="fold-row"
-                    type="button"
-                    onClick={() => {
-                      const next = new Set(expanded);
-                      next.add(date);
-                      setExpanded(next);
-                    }}
-                  >
-                    <span>{hiddenCount} 张已折叠</span>
-                    <Icon name="chevronDown" />
-                  </button>
-                ) : isExpanded && dayEntries.length > 4 ? (
-                  <button
-                    className="fold-row"
-                    type="button"
-                    onClick={() => {
-                      const next = new Set(expanded);
-                      next.delete(date);
-                      setExpanded(next);
-                    }}
-                  >
-                    <span>收起</span>
-                    <Icon name="chevronUp" />
-                  </button>
-                ) : null}
-              </div>
-            </section>
-          );
-        }) : <EmptyState profiles={profiles} />}
+                  })}
+                  {hiddenCount > 0 ? (
+                    <button
+                      className="fold-row"
+                      type="button"
+                      onClick={() => {
+                        const next = new Set(expanded);
+                        next.add(date);
+                        setExpanded(next);
+                      }}
+                    >
+                      <span>{hiddenCount} 张已折叠</span>
+                      <Icon name="chevronDown" />
+                    </button>
+                  ) : isExpanded && dayEntries.length > 4 ? (
+                    <button
+                      className="fold-row"
+                      type="button"
+                      onClick={() => {
+                        const next = new Set(expanded);
+                        next.delete(date);
+                        setExpanded(next);
+                      }}
+                    >
+                      <span>收起</span>
+                      <Icon name="chevronUp" />
+                    </button>
+                  ) : null}
+                </div>
+              </section>
+            );
+          }) : <EmptyState profiles={profiles} />}
       </div>
+      {editingTimelineBlock ? (
+        <DayTimeBlockEditor
+          block={editingTimelineBlock}
+          profiles={profiles}
+          currentUser={currentUser}
+          cards={lifeCards}
+          selectedDate={selectedDate}
+          onClose={() => setEditingTimelineBlock(null)}
+          onSave={saveTimelineBlock}
+          onDelete={deleteTimelineBlock}
+        />
+      ) : null}
     </section>
   );
 }
@@ -5397,7 +6002,138 @@ function captureTimelineTitle(capture) {
   const text = cleanStoryText(capture?.text || "") || cleanCardText(capture?.text || "");
   if (text) return shortText(text, 54);
   const count = capture?.assets?.length || 0;
-  return count ? `${count} 张照片` : "随手记";
+  return count ? `${count} 张照片` : "事件记录";
+}
+
+function uniqueTimelineTexts(values, limit = 2) {
+  const seen = new Set();
+  return (values || [])
+    .map((value) => cleanCardText(value || ""))
+    .filter(Boolean)
+    .filter((value) => {
+      const key = value.toLowerCase();
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    })
+    .slice(0, limit);
+}
+
+function timelineGroupLabelInfo(group, profiles, currentUser) {
+  const entries = group?.cards || [];
+  const blocks = entries.map((entry) => entry.block).filter(Boolean);
+  const cards = entries.map((entry) => entry.card).filter(Boolean);
+  const captures = entries.map((entry) => entry.capture).filter(Boolean);
+  if (blocks.length) {
+    const block = blocks[0];
+    const date = block.date || dateFromDateTime(block.startAt) || today();
+    const range = timeMapRangeLabel(block.startAt, block.endAt, date) || group.slot?.label || "时间段";
+    const sub = timeMapDurationLabel(block.startAt, block.endAt, date) || group.slot?.subLabel || "";
+    const locationText = uniqueTimelineTexts(blocks.map((item) => item.location)).join("、");
+    const participantIds = [...new Set(blocks.flatMap((item) => blockParticipantIds(item, profiles, currentUser)))];
+    const peopleText = namesForIds(participantIds, profiles);
+    return {
+      tone: "block",
+      time: range,
+      shortTime: group.slot?.shortLabel || range,
+      sub,
+      details: [
+        locationText ? ["在", locationText] : null,
+        peopleText ? ["和", peopleText] : null,
+      ].filter(Boolean),
+    };
+  }
+  const participantIds = [...new Set([
+    ...cards.flatMap((card) => cardParticipantIds(card, profiles, currentUser)),
+    ...captures.map((capture) => capture.createdBy).filter(Boolean),
+  ])];
+  const locationText = uniqueTimelineTexts(cards.map((card) => card.location || card.place)).join("、");
+  const countText = entries.length > 1 ? `${entries.length} 张卡` : "";
+  const peopleText = namesForIds(participantIds, profiles);
+  return {
+    tone: group.slot?.group || "default",
+    time: group.slot?.label || "时间",
+    shortTime: group.slot?.shortLabel || group.slot?.label || "时间",
+    sub: group.slot?.subLabel || "",
+    details: [
+      countText ? ["卡", countText] : null,
+      locationText ? ["在", locationText] : null,
+      peopleText ? ["和", peopleText] : null,
+    ].filter(Boolean),
+  };
+}
+
+function TimelineGroupLabel({ group, profiles, currentUser }) {
+  const info = timelineGroupLabelInfo(group, profiles, currentUser);
+  return (
+    <span className={cx("timeline-label-box", info.details.length && "has-details", `is-${info.tone}`)}>
+      <b className="timeline-label-full timeline-label-time">{info.time}</b>
+      {info.shortTime && info.shortTime !== info.time ? <b className="timeline-label-short timeline-label-time">{info.shortTime}</b> : null}
+      {info.sub ? <em>{info.sub}</em> : null}
+      {info.details.length ? (
+        <span className="timeline-label-details">
+          {info.details.slice(0, 3).map(([label, value]) => (
+            <small key={`${label}-${value}`}>
+              <i>{label}</i>
+              <b>{value}</b>
+            </small>
+          ))}
+        </span>
+      ) : null}
+    </span>
+  );
+}
+
+function TimelineTimeBlock({ block, cards = [], profiles = [], currentUser, selectedDate, compact = false, openDetail }) {
+  const participantIds = blockParticipantIds(block, profiles, currentUser);
+  const cardTitles = timeMapLinkedCardTitles(block, cards);
+  const shared = participantIds.length > 1;
+  const isSleep = block.type === "sleep";
+  const title = timeMapBlockTitle(block);
+  const softTitle = isSleep ? "睡觉" : block.location ? block.location : shared ? "一起的小段" : "小段时间";
+  const rangeLabel = timeMapRangeLabel(block.startAt, block.endAt, selectedDate || block.date);
+  const durationText = timeMapDurationLabel(block.startAt, block.endAt, selectedDate || block.date);
+  const ownerColor = profileColor(profiles, participantIds[0], "var(--pink)");
+  const duplicateCount = Number(block.duplicateCount || 0);
+  return (
+    <article
+      className={cx(
+        "timeline-time-block",
+        isSleep && "is-sleep",
+        block.derived && "is-derived",
+        block.visibility === "private" && "is-private",
+        shared && "is-shared",
+        compact && "is-compact",
+      )}
+      style={{ "--card-owner-color": ownerColor }}
+    >
+      <button
+        className="timeline-time-block-open"
+        type="button"
+        onClick={() => openDetail?.("dayTimelineBlock", block)}
+        aria-label={`打开时间段 ${title}`}
+      >
+        <span className="timeline-time-block-range">
+          <b>{rangeLabel}</b>
+          {durationText ? <em>{durationText}</em> : null}
+        </span>
+        <span className="timeline-time-block-copy">
+          <span className="timeline-time-block-title">
+            <Icon name={isSleep ? "moon" : "clock"} />
+            <strong>{softTitle}</strong>
+            {duplicateCount > 1 ? <small>合并 {duplicateCount}</small> : null}
+          </span>
+          <span className="timeline-time-block-meta">
+            <AvatarPair profiles={profiles} ids={participantIds} className="avatar-pair-mini" />
+            {shared ? <i><Icon name="users" />共同</i> : null}
+            {block.location ? <i><Icon name="mapPin" />{block.location}</i> : null}
+            {cardTitles.length ? <i>{cardTitles.slice(0, 2).join(" · ")}</i> : null}
+            {block.derived ? <i>推断</i> : null}
+          </span>
+        </span>
+      </button>
+    </article>
+  );
 }
 
 function TimelineCapture({ capture, profiles, compact = false, archiveCapture, openDetail }) {
@@ -5414,7 +6150,7 @@ function TimelineCapture({ capture, profiles, compact = false, archiveCapture, o
         className="timeline-capture-open"
         type="button"
         onClick={() => openDetail?.("capture", capture)}
-        aria-label={`打开随手记 ${title}`}
+        aria-label={`打开事件记录 ${title}`}
       >
         <AvatarPair profiles={profiles} ids={ownerIds} />
         <span className="timeline-capture-copy">
@@ -5426,7 +6162,7 @@ function TimelineCapture({ capture, profiles, compact = false, archiveCapture, o
           className="timeline-capture-archive"
           type="button"
           onClick={handleArchive}
-          aria-label={archived ? "恢复随手记" : "归档随手记"}
+          aria-label={archived ? "恢复事件记录" : "归档事件记录"}
           title={archived ? "恢复" : "收进归档"}
         >
           <Icon name={archived ? "undo" : "archive"} />
@@ -6463,7 +7199,6 @@ function CardEditor({ card, profiles, currentUser, onClose, onSave, onDelete, co
                 <b className={cx("edit-dirty-badge", !isDirty && "is-clean")}>{isDirty ? "未保存" : "已保存"}</b>
               </div>
               <div className="sheet-icon-actions">
-                {showDelete ? <IconButton icon="trash" label="删除" danger onClick={onDelete} /> : null}
                 <IconButton icon="x" label="关闭" onClick={requestClose} />
               </div>
             </div>
@@ -6499,95 +7234,104 @@ function CardEditor({ card, profiles, currentUser, onClose, onSave, onDelete, co
                   <textarea rows={4} {...register("detail")} placeholder="写一点背景、提醒或需要照顾的地方" />
                 </label>
                 <input type="hidden" {...register("visibility")} />
-                {!isDailyCheckin ? (
-                  <button
-                    className={cx("secret-toggle", isSecret && "is-active")}
-                    type="button"
-                    onClick={() => setSecretMode(!isSecret)}
-                    aria-pressed={isSecret ? "true" : "false"}
-                  >
-                    <span className="secret-toggle-icon">
-                      <Icon name="lock" />
-                      <Icon name="sparkle" />
-                    </span>
-                    <span>
-                      <strong>小秘密</strong>
-                      <em>{isSecret ? "已藏好，只有我能看" : "点一下藏起来"}</em>
-                    </span>
-                  </button>
-                ) : null}
-                <div className="edit-field-grid">
-                  <div className="edit-line-field edit-date-field">
-                    <span>日期</span>
-                    <input type="date" {...register("date")} disabled={isDailyCheckin} aria-label="日期" />
-                    {!isDailyCheckin ? (
-                      <div className="date-shortcut-row" aria-label="日期快捷">
-                        {editorDateShortcuts.map((shortcut) => (
-                          <button
-                            key={`${shortcut.label}-${shortcut.value}-${shortcut.endValue || ""}`}
-                            type="button"
-                            className={cx(form.date === shortcut.value && (!shortcut.endValue || dateFromDateTime(form.dueAt) === shortcut.endValue) && "is-active")}
-                            onClick={() => setEditorDate(shortcut.value, shortcut.endValue)}
-                          >
-                            <span>{shortcut.label}</span>
-                            {shortcut.endValue ? <em>{shortDateRange(shortcut.value, shortcut.endValue)}</em> : null}
-                          </button>
-                        ))}
-                      </div>
-                    ) : null}
-                  </div>
-                  <label className="edit-line-field">
-                    <span>类型</span>
-                    <EditorSelect
-                      value={form.itemType}
-                      onValueChange={(value) => setValue("itemType", value, { shouldDirty: true, shouldValidate: true })}
-                      options={itemTypeOptions.map(([id, label]) => ({ id, label }))}
-                      disabled={isDailyCheckin}
-                      ariaLabel="类型"
-                    />
-                  </label>
-                  <label className="edit-line-field">
-                    <span>归属</span>
-                    <EditorSelect
-                      value={form.ownerId}
-                      onValueChange={updateOwner}
-                      options={ownerChoices}
-                      disabled={card.sourceType === "checkin" || isDailyCheckin || isSecret}
-                      ariaLabel="归属"
-                    />
-                  </label>
-                </div>
-                <div className="edit-line-field participant-field">
-                  <span>参与人</span>
-                  <div className="participant-picker" aria-label="参与人">
-                    {profiles.map((profile) => {
-                      const active = participants.includes(profile.id);
-                      const locked = isDailyCheckin || isSecret || form.ownerId === "shared" || form.ownerId === profile.id;
-                      return (
+                <div className="edit-line-field edit-date-field">
+                  <span>日期</span>
+                  <input type="date" {...register("date")} disabled={isDailyCheckin} aria-label="日期" />
+                  {!isDailyCheckin ? (
+                    <div className="date-shortcut-row" aria-label="日期快捷">
+                      {editorDateShortcuts.map((shortcut) => (
                         <button
-                          key={profile.id}
+                          key={`${shortcut.label}-${shortcut.value}-${shortcut.endValue || ""}`}
                           type="button"
-                          className={cx(active && "is-active", locked && "is-locked")}
-                          style={{ "--person-color": profile.color || avatarColor(profile) }}
-                          onClick={() => toggleParticipant(profile.id)}
-                          disabled={locked}
-                          aria-pressed={active ? "true" : "false"}
-                          title={locked && active ? "归属人会自动参与" : active ? "点一下移出参与" : "点一下加入参与"}
+                          className={cx(form.date === shortcut.value && (!shortcut.endValue || dateFromDateTime(form.dueAt) === shortcut.endValue) && "is-active")}
+                          onClick={() => setEditorDate(shortcut.value, shortcut.endValue)}
                         >
-                          <CatAvatar profile={profile} className="is-mini" />
-                          <strong>{profile.displayName}</strong>
-                          <Icon name={active ? "check" : "circle"} />
+                          <span>{shortcut.label}</span>
+                          {shortcut.endValue ? <em>{shortDateRange(shortcut.value, shortcut.endValue)}</em> : null}
                         </button>
-                      );
-                    })}
-                  </div>
-                  <em>{form.ownerId === "shared" ? "共同归属会默认两个人都参与" : "归属人会保留，其他人可自由加入或移出"}</em>
+                      ))}
+                    </div>
+                  ) : null}
                 </div>
-                <label className="edit-line-field">
-                  <span>标签</span>
-                  <input {...register("tags")} placeholder="用空格或逗号分开" />
-                  {errors.tags ? <em className="field-error">{errors.tags.message}</em> : null}
-                </label>
+                <details className="editor-more">
+                  <summary className="editor-more-summary">
+                    <span>更多设置</span>
+                    <em>{[ownerLabel, participantText, form.tags].filter(Boolean).join(" · ") || "可选"}</em>
+                    <Icon name="chevronDown" />
+                  </summary>
+                  <div className="editor-more-body">
+                    {!isDailyCheckin ? (
+                      <button
+                        className={cx("secret-toggle", isSecret && "is-active")}
+                        type="button"
+                        onClick={() => setSecretMode(!isSecret)}
+                        aria-pressed={isSecret ? "true" : "false"}
+                      >
+                        <span className="secret-toggle-icon">
+                          <Icon name="lock" />
+                          <Icon name="sparkle" />
+                        </span>
+                        <span>
+                          <strong>小秘密</strong>
+                          <em>{isSecret ? "已藏好，只有我能看" : "点一下藏起来"}</em>
+                        </span>
+                      </button>
+                    ) : null}
+                    <div className="edit-field-grid">
+                      <label className="edit-line-field">
+                        <span>类型</span>
+                        <EditorSelect
+                          value={form.itemType}
+                          onValueChange={(value) => setValue("itemType", value, { shouldDirty: true, shouldValidate: true })}
+                          options={itemTypeOptions.map(([id, label]) => ({ id, label }))}
+                          disabled={isDailyCheckin}
+                          ariaLabel="类型"
+                        />
+                      </label>
+                      <label className="edit-line-field">
+                        <span>归属</span>
+                        <EditorSelect
+                          value={form.ownerId}
+                          onValueChange={updateOwner}
+                          options={ownerChoices}
+                          disabled={card.sourceType === "checkin" || isDailyCheckin || isSecret}
+                          ariaLabel="归属"
+                        />
+                      </label>
+                    </div>
+                    <div className="edit-line-field participant-field">
+                      <span>参与人</span>
+                      <div className="participant-picker" aria-label="参与人">
+                        {profiles.map((profile) => {
+                          const active = participants.includes(profile.id);
+                          const locked = isDailyCheckin || isSecret || form.ownerId === "shared" || form.ownerId === profile.id;
+                          return (
+                            <button
+                              key={profile.id}
+                              type="button"
+                              className={cx(active && "is-active", locked && "is-locked")}
+                              style={{ "--person-color": profile.color || avatarColor(profile) }}
+                              onClick={() => toggleParticipant(profile.id)}
+                              disabled={locked}
+                              aria-pressed={active ? "true" : "false"}
+                              title={locked && active ? "归属人会自动参与" : active ? "点一下移出参与" : "点一下加入参与"}
+                            >
+                              <CatAvatar profile={profile} className="is-mini" />
+                              <strong>{profile.displayName}</strong>
+                              <Icon name={active ? "check" : "circle"} />
+                            </button>
+                          );
+                        })}
+                      </div>
+                      <em>{form.ownerId === "shared" ? "共同归属会默认两个人都参与" : "归属人会保留，其他人可自由加入或移出"}</em>
+                    </div>
+                    <label className="edit-line-field">
+                      <span>标签</span>
+                      <input {...register("tags")} placeholder="用空格或逗号分开" />
+                      {errors.tags ? <em className="field-error">{errors.tags.message}</em> : null}
+                    </label>
+                  </div>
+                </details>
               </Tabs.Content>
 
               <Tabs.Content className="edit-section-panel" value="plan">
@@ -6831,6 +7575,12 @@ function CardEditor({ card, profiles, currentUser, onClose, onSave, onDelete, co
               </Tabs.Content>
             </Tabs.Root>
             <div className="sheet-actions">
+              {showDelete ? (
+                <button className="editor-danger-link" type="button" onClick={onDelete}>
+                  <Icon name="trash" />
+                  <span>删除</span>
+                </button>
+              ) : <span />}
               <IconButton
                 icon="check"
                 label={isSubmitting ? "保存中" : isDirty ? "保存修改" : card.isDraft ? "创建生活卡" : "已保存"}
@@ -7499,7 +8249,7 @@ function DailySummaryPage({ data, profiles, currentUser, request, setData, selec
   const visibleCardTotal = Math.max(selectedCards.length, completedRows.length + missedRows.length);
   const sourceStats = [
     { key: "done", icon: "check", label: "完成", value: visibleCardTotal ? `${completedRows.length}/${visibleCardTotal}` : "0" },
-    { key: "captures", icon: "camera", label: "随手记", value: momentRows.length },
+    { key: "captures", icon: "camera", label: "事件线索", value: momentRows.length },
     { key: "memory", icon: "bookmark", label: "记忆", value: Math.max(memoryRows.length, memoryClueItems.length) },
     { key: "photos", icon: "image", label: "照片", value: summary?.photos?.length ?? 0 },
   ];
@@ -7623,7 +8373,6 @@ function DailySummaryPage({ data, profiles, currentUser, request, setData, selec
           <DailySummarySourceStrip stats={sourceStats} locations={summary?.locations || []} note={nextStep || summary?.qualityNote} dayContext={dayContext} calendarContext={data.calendarContext} />
         </details>
       ) : null}
-      <CollapsibleSourceList title="随手记" rows={momentRows} profiles={profiles} onOpen={(row) => openDetail(row.type, row.payload)} />
     </section>
   );
 }

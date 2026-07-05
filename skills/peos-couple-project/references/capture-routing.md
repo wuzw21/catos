@@ -49,6 +49,11 @@ Allowed memory kinds:
 - If a sentence contains multiple actions, split into `relatedItems` with a shared `relatedGroupId`.
 - If a sentence contains both a wish/preference and a concrete action, schedule the action and keep the wish/preference in `detail`/`reason` for later memory extraction.
 - Relative dates must be resolved against `selectedDate`, using the 03:00 product-day boundary when relevant.
+- The product day is `03:00 -> next day 02:59` in `Asia/Shanghai`. At `00:00-02:59`, "today/now/tonight" still belongs to the previous business date.
+- For events at `00:00-02:59`, keep `date` on the business date and put the true calendar timestamp in `plannedAt` / `dueAt`.
+- The router should read `timeContext` rather than assuming midnight is the day boundary.
+- The router should read `longTermMemory`, `memoryHints`, and `relationshipInsights` before deciding. Existing preferences, wishes, anniversaries, promises, care clues, repair notes, and place nicknames can convert a vague message into a memory update, a daily story, or a better-tagged schedule item.
+- Do not duplicate long-term memories. If a new capture confirms or refines an existing memory, return `memory` with a stable title matching that memory and put the new evidence in `detail`.
 
 ## Special Cases
 

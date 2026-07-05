@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-PEOS_SSH_TARGET="${PEOS_SSH_TARGET:-root@39.106.104.33}"
-PEOS_SSH_KEY="${PEOS_SSH_KEY:-${HOME}/.ssh/aliyun-peos.pem}"
+PEOS_SSH_TARGET="${PEOS_SSH_TARGET:-root@39.106.120.88}"
+PEOS_SSH_KEY="${PEOS_SSH_KEY:-${HOME}/.ssh/catandcat.pem}"
 PEOS_REMOTE_ROOT="${PEOS_REMOTE_ROOT:-/srv/peos}"
 PEOS_REMOTE_APP_DIR="${PEOS_REMOTE_APP_DIR:-${PEOS_REMOTE_ROOT}/app}"
 PEOS_REMOTE_TMP="${PEOS_REMOTE_TMP:-/tmp/peos-sync}"
@@ -27,8 +27,8 @@ Options:
   --with-codex    Also run the Codex exec check after restart.
 
 Environment:
-  PEOS_SSH_TARGET=root@39.106.104.33
-  PEOS_SSH_KEY=~/.ssh/aliyun-peos.pem
+  PEOS_SSH_TARGET=root@39.106.120.88
+  PEOS_SSH_KEY=~/.ssh/catandcat.pem
   PEOS_REMOTE_ROOT=/srv/peos
   PEOS_VERIFY_URL=https://catandcat.cn/web/index.html
 EOF
@@ -73,6 +73,7 @@ trap 'rm -rf "${WORK_DIR}"' EXIT
   $0 !~ /^node_modules\// &&
   $0 !~ /^\.git\// &&
   $0 !~ /^tmp\// &&
+  $0 !~ /^output\// &&
   $0 !~ /^content-private\// &&
   $0 !~ /^content-local\// &&
   $0 !~ /^content-demo-private\// &&

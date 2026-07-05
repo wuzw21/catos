@@ -8,8 +8,8 @@
 
 当前域名可以直接使用：
 
-- `catandcat.cn` 和 `www.catandcat.cn` 的公网 DNS 指向 `39.106.104.33`。
-- 公网 IP `39.106.104.33` 对外只需要开放 SSH、80、443。
+- `catandcat.cn` 和 `www.catandcat.cn` 的公网 DNS 指向 `39.106.120.88`。
+- 公网 IP `39.106.120.88` 对外只需要开放 SSH、80、443。
 - 私有 IP `172.24.60.250` 只适合云内网或管理网络访问，不作为手机入口。
 - Node 后端由 systemd 常驻运行在服务器 `2333`。
 - Caddy 监听 80/443，自动签发 HTTPS 证书，并反代到 `127.0.0.1:2333`。
@@ -32,9 +32,9 @@ PEOS_REQUIRE_HTTPS=1
 ## IP / 域名对应关系
 
 ```text
-catandcat.cn        -> 39.106.104.33 -> Caddy :443 -> 127.0.0.1:2333
-www.catandcat.cn    -> 39.106.104.33 -> Caddy :443 -> 127.0.0.1:2333
-39.106.104.33       -> 公网管理入口，只开放 SSH/80/443
+catandcat.cn        -> 39.106.120.88 -> Caddy :443 -> 127.0.0.1:2333
+www.catandcat.cn    -> 39.106.120.88 -> Caddy :443 -> 127.0.0.1:2333
+39.106.120.88       -> 公网管理入口，只开放 SSH/80/443
 172.24.60.250       -> 阿里云私网地址，只在对应私网/VPC 场景使用
 127.0.0.1:2333      -> 服务器本机 Node 服务入口，不给手机直接访问
 ```
@@ -210,6 +210,34 @@ PEOS_COUPLE_YOU_NAME=你的昵称
 PEOS_COUPLE_PARTNER_NAME=对方昵称
 PEOS_COUPLE_YOU_PASSWORD=换成强访问码
 PEOS_COUPLE_PARTNER_PASSWORD=换成另一个强访问码
+# CC Connect 入站消息 webhook。不要和网页登录密码复用。
+PEOS_CC_CONNECT_TOKEN=换成另一段很长的随机字符串
+PEOS_CC_CONNECT_DEFAULT_USER=you
+# 可选：通过 cc-connect send 主动发回已缓存的聊天会话。
+PEOS_CC_CONNECT_BIN=cc-connect
+PEOS_CC_CONNECT_DATA_DIR=/home/peos/.cc-connect
+PEOS_CC_CONNECT_PROJECT=
+PEOS_CC_CONNECT_SESSION_YOU=
+PEOS_CC_CONNECT_SESSION_PARTNER=
+# 或者用 JSON 一次配置：
+# PEOS_CC_CONNECT_OUTBOUND_TARGETS={"you":{"project":"cat-diary","session":"..."},"partner":{"project":"cat-diary","session":"..."}}
+# 可选：每天固定时间主动提醒小猫写日记，默认不开。
+PEOS_CC_CONNECT_DAILY_DIARY_REMINDER=0
+PEOS_CC_CONNECT_DAILY_DIARY_REMINDER_TIME=22:00
+PEOS_CC_CONNECT_DAILY_DIARY_REMINDER_USER=partner
+PEOS_CC_CONNECT_DAILY_DIARY_REMINDER_TEXT=记录今天的猫猫日记！
+# 可选：多个每日推送任务。
+# PEOS_CC_CONNECT_SCHEDULED_PUSHES=[{"id":"diary","userId":"partner","text":"记录今天的猫猫日记！","time":"22:00"}]
+# 持久化定时队列，供 Codex/后台 agent 创建“到点发送”的消息；默认开启。
+PEOS_CC_CONNECT_SCHEDULED_QUEUE=1
+PEOS_CC_CONNECT_SCHEDULED_QUEUE_INTERVAL_MS=30000
+PEOS_CC_CONNECT_SCHEDULED_PUSH_MAX_ATTEMPTS=3
+PEOS_CC_CONNECT_SCHEDULED_PUSH_RETRY_MS=300000
+# 微信公众号 / 测试号入站消息。Token 填到微信后台的服务器配置里。
+PEOS_WECHAT_TOKEN=换成另一段很长的随机字符串
+PEOS_WECHAT_DEFAULT_USER=you
+# 可选：把微信 OpenID 映射到 PEOS 用户，例如 {"oOpenIdA":"you","oOpenIdB":"partner"}
+PEOS_WECHAT_USER_MAP=
 # 可选：登录失败限速。默认 10 分钟内 6 次失败后锁 15 分钟
 PEOS_LOGIN_RATE_LIMIT_MAX_FAILURES=6
 PEOS_LOGIN_RATE_LIMIT_WINDOW_MS=600000
@@ -220,6 +248,13 @@ PEOS_COUPLE_DAILY_SUMMARY_HOUR=4
 PEOS_COUPLE_DAILY_SUMMARY_CRON_TARGET=yesterday
 # 可选：让日总结调用 Codex/Agent；不配置时使用本地规则生成
 PEOS_COUPLE_DAILY_SUMMARY_AGENT=1
+# 可选：后台 Codex Agent 模型。Capture Router 和 Daily Summary 默认走 gpt-5.5 high。
+PEOS_CODEX_MODEL=gpt-5.5
+PEOS_CODEX_REASONING_EFFORT=high
+PEOS_CAPTURE_AGENT_MODEL=gpt-5.5
+PEOS_CAPTURE_AGENT_REASONING_EFFORT=high
+PEOS_COUPLE_DAILY_SUMMARY_MODEL=gpt-5.5
+PEOS_COUPLE_DAILY_SUMMARY_REASONING_EFFORT=high
 CODEX_HOME=/home/peos/.codex
 ```
 
@@ -244,6 +279,174 @@ CODEX_HOME=/home/peos/.codex
 - 生产环境务必配置 `PEOS_COUPLE_SESSION_SECRET`，否则会用当前账号密码哈希派生本地开发 secret。
 - 默认只能修改“当前登录账号自己”的完成状态；如果确实要一个人代改另一个人的完成状态，可配置 `PEOS_COUPLE_ALLOW_CROSS_USER_STATUS=1`。
 - 后端会给页面和接口加 `noindex` 响应头，`/__content/*` 未登录不能访问。
+
+## CC Connect 入站消息
+
+可以把 CC Connect 的对话助手配置成调用服务器 webhook：
+
+```text
+POST https://catandcat.cn/api/integrations/cc-connect/message
+Authorization: Bearer <PEOS_CC_CONNECT_TOKEN>
+Content-Type: application/json
+```
+
+最小请求体：
+
+```json
+{
+  "text": "今天大猫和小猫去了亮马河，特别开心",
+  "userId": "you"
+}
+```
+
+后端会先把文本保存成 `cc-connect-message` raw capture，然后在服务器后台调用 Codex 做结构化分析。默认只自动沉淀 `memory` 和 `dailyStory`；如果要让明确待办直接生成生活卡，可以加：
+
+```json
+{
+  "text": "明天提醒我订餐厅",
+  "userId": "you",
+  "autoCreateSchedule": true
+}
+```
+
+如果 CC Connect 需要等完整结果再回复，可以传 `"async": false`；默认异步返回 `jobId`，之后可查：
+
+```text
+GET https://catandcat.cn/api/jobs/<jobId>
+```
+
+## CC Connect 主动发送
+
+主动发送走本机 `cc-connect send --stdin`，需要服务器上的 CC Connect 已经登录并缓存过目标聊天。先在运行 CC Connect 的用户下确认 session：
+
+```bash
+cc-connect sessions list
+```
+
+把大猫/小猫各自的 session key 写进 `/etc/peos/peos.env`：
+
+```bash
+PEOS_CC_CONNECT_DATA_DIR=/home/peos/.cc-connect
+PEOS_CC_CONNECT_PROJECT=cat-diary
+PEOS_CC_CONNECT_SESSION_YOU=填大猫的-session-key
+PEOS_CC_CONNECT_SESSION_PARTNER=填小猫的-session-key
+```
+
+本地或服务器可以直接发：
+
+```bash
+PEOS_CONTENT_ROOT=/srv/peos/content node scripts/send-cc-connect-message.js --user partner --text "记录今天的猫猫日记！"
+```
+
+也可以通过受 `PEOS_CC_CONNECT_TOKEN` 保护的后端接口发：
+
+```text
+POST https://catandcat.cn/api/integrations/cc-connect/send
+Authorization: Bearer <PEOS_CC_CONNECT_TOKEN>
+Content-Type: application/json
+```
+
+```json
+{
+  "userId": "partner",
+  "text": "记录今天的猫猫日记！"
+}
+```
+
+定时推送可以复用同一个脚本，例如交给 CC Connect cron：
+
+```bash
+cc-connect cron add --cron "0 22 * * *" --exec "cd /srv/peos/app && PEOS_CONTENT_ROOT=/srv/peos/content node scripts/send-cc-connect-message.js --user partner --text '记录今天的猫猫日记！'" --desc "提醒小猫记录日记"
+```
+
+如果希望 PEOS 服务自己每天到点发，设置：
+
+```bash
+PEOS_CC_CONNECT_DAILY_DIARY_REMINDER=1
+PEOS_CC_CONNECT_DAILY_DIARY_REMINDER_TIME=22:00
+PEOS_CC_CONNECT_DAILY_DIARY_REMINDER_USER=partner
+PEOS_CC_CONNECT_DAILY_DIARY_REMINDER_TEXT=记录今天的猫猫日记！
+```
+
+多个固定时间推送可以配置：
+
+```bash
+PEOS_CC_CONNECT_SCHEDULED_PUSHES='[{"id":"diary","userId":"partner","text":"记录今天的猫猫日记！","time":"22:00"}]'
+```
+
+Codex/后台 agent 要动态创建“到点发送”的消息，可以调用：
+
+```text
+POST https://catandcat.cn/api/integrations/cc-connect/schedule
+Authorization: Bearer <PEOS_CC_CONNECT_TOKEN>
+Content-Type: application/json
+```
+
+```json
+{
+  "userId": "partner",
+  "text": "记录今天的猫猫日记！",
+  "scheduledAt": "2026-05-22T22:00:00+08:00",
+  "idempotencyKey": "partner-diary-2026-05-22"
+}
+```
+
+也可以用 `date + time`：
+
+```json
+{
+  "userId": "partner",
+  "text": "记录今天的猫猫日记！",
+  "date": "2026-05-22",
+  "time": "22:00"
+}
+```
+
+这些任务会持久化到 `PEOS_CONTENT_ROOT/private/cc-connect-scheduled-pushes.json`。服务默认每 30 秒扫描一次，到点后调用 CC Connect 出站发送。查看和取消：
+
+```text
+GET  https://catandcat.cn/api/integrations/cc-connect/schedule
+POST https://catandcat.cn/api/integrations/cc-connect/schedule/cancel
+```
+
+服务器命令行也可以创建定时消息：
+
+```bash
+PEOS_CONTENT_ROOT=/srv/peos/content node scripts/schedule-cc-connect-message.js --user partner --text "记录今天的猫猫日记！" --date 2026-05-22 --time 22:00
+```
+
+修改环境变量后重启服务：
+
+```bash
+sudo systemctl restart peos
+```
+
+## 微信入站消息
+
+微信侧建议先用“公众号测试号”或已认证公众号的服务器配置。服务器 URL 填：
+
+```text
+https://catandcat.cn/api/integrations/wechat
+```
+
+Token 填 `/etc/peos/peos.env` 里的 `PEOS_WECHAT_TOKEN`。消息加解密方式先选“明文模式”，消息格式使用 XML。保存配置时，微信会先用 GET 请求校验签名；校验通过后，用户给公众号发文字消息时，后端会：
+
+1. 校验微信签名。
+2. 把原文保存为 `wechat-message` raw capture。
+3. 在服务器后台调用 Codex/Agent 整理，默认自动沉淀 `memory` 和 `dailyStory`。
+4. 立即给微信回复“已收到，我会在后台整理进猫猫日记。”
+
+如果两个人都从微信发消息，可以在拿到各自 OpenID 后配置：
+
+```bash
+PEOS_WECHAT_USER_MAP='{"oOpenIdA":"you","oOpenIdB":"partner"}'
+```
+
+没有配置映射时，默认按 `PEOS_WECHAT_DEFAULT_USER` 记录。生产环境修改 `/etc/peos/peos.env` 后执行：
+
+```bash
+sudo systemctl restart peos
+```
 
 如果还要保留原有 Markdown 系统的页面和回写能力，第一次部署前先初始化内容目录：
 

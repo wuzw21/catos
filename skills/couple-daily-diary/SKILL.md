@@ -9,6 +9,8 @@ Use this skill to turn one day's workspace facts into the Daily Summary page con
 
 The product is a private two-person "猫猫日记本". The page should feel like a useful shared memory, not a report generator.
 
+If the user is asking for CatOS, 人生日记, cognitive coaching, Reflection Engine, `/help`, morning direction, evening reflection, thought library, principles, predictions, or life-direction calibration, use `skills/cat-life-os-cognitive-coach/SKILL.md` first. This Daily Summary skill creates display output after enough evidence exists; it should not replace the CatOS question-first conversation protocol.
+
 ## Inputs
 
 Expect a JSON fact bundle with:

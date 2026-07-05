@@ -9,6 +9,8 @@ Use this skill when working on PEOS, also called 猫猫日记本 or 双人生活
 
 PEOS is a private two-person life OS. The frontend should feel like a warm, practical daily surface for two people, not a generic productivity dashboard or a Todoist clone.
 
+For CatOS / 人生日记 / cognitive-coach flows, the product is conversation-first. The frontend should not add many mechanical input boxes. If a web input is needed, prefer one large conversational surface; otherwise let CC Connect / chat be the main place where the user dumps thoughts and receives questions. Frontend value is seeing Compass, Focus, Reflection, Wisdom, and Evolution artifacts after the conversation.
+
 This is the product/UI decision skill. For codebase paths, validation commands, server sync, and repo-specific failure shields, use `peos-couple-project`.
 
 ## Product Thesis
@@ -93,6 +95,7 @@ Life cards:
 ## What Not To Build
 
 - Do not expand the frontend into a full todo/productivity suite unless the user asks.
+- Do not turn CatOS into many required daily fields. The daily protocol is a conversation that ends in Reflection, Decision, Progress, Insight, Next, and a 100-200 word diary.
 - Do not add many tabs, dashboards, analytics panels, or configuration-heavy surfaces to the homepage.
 - Do not put all content into one oversized wrapper card.
 - Do not make compact cards dense with next steps, long descriptions, debug text, or raw agent analysis.

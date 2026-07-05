@@ -9,6 +9,9 @@ const storePath = contentPath("private", "couple-workspace.json");
 const captureAnalysisSchemaPath = repoPath("schemas", "couple-capture-analysis.schema.json");
 const dailySummarySchemaPath = repoPath("schemas", "couple-daily-summary.schema.json");
 const dailySummarySkillPath = repoPath("skills", "couple-daily-diary", "SKILL.md");
+const businessTimeZone = "Asia/Shanghai";
+const defaultCodexAgentModel = process.env.PEOS_CODEX_MODEL || "gpt-5.5";
+const defaultCodexReasoningEffort = process.env.PEOS_CODEX_REASONING_EFFORT || "high";
 
 const segmentDefinitions = [
   { key: "allDay", label: "全天" },
@@ -31,6 +34,7 @@ const validCaptureModes = new Set(["save", "analysis", "todo"]);
 const validStatuses = new Set(["todo", "done"]);
 const validPriorities = new Set(["low", "normal", "high"]);
 const validTodoBuckets = new Set(["today", "future"]);
+const validDayTimelineBlockTypes = new Set(["event", "sleep"]);
 const validScheduleItemTypes = new Set(["thing", "work", "date", "purchase", "reminder", "checkin", "habit"]);
 const validCaptureDecisions = new Set(["capture", "schedule", "memory", "dailyStory"]);
 const validMemoryKinds = new Set(["preference", "wish", "purchase", "promise", "care", "anniversary", "memory", "gratitude", "repair", "identity", "goal", "list"]);
@@ -84,7 +88,10 @@ const captureAgentPrompt = [
   ...captureRouteDestinations.map((item) => `- ${item.key}: ${item.label}。${item.description}`),
   "Schedule Item 的 itemType 只能是 thing/work/date/purchase/reminder/checkin/habit。",
   "Long-term Memory 的 kind 只能是 preference/wish/purchase/promise/care/anniversary/memory/gratitude/repair/identity/goal/list。",
+  "时间硬规则：系统时区是 Asia/Shanghai；猫猫日记的一天从 03:00 到次日 02:59，凌晨 00:00-02:59 仍属于上一业务日。",
   "必须解析相对日期：今天、明天、今晚、今天下午、周末、周日、下周一、具体月日；周末是周六和周日两天。",
+  "遇到凌晨 00:00-02:59 的具体时间时，date 填业务日，plannedAt/dueAt 填真实日历时间。",
+  "路由必须参考已有 Long-term Memory，避免重复沉淀；新事实能补充已有记忆时要写成稳定、可合并的记忆。",
   "如果一句话包含多个动作，要输出 relatedItems，并用 relatedGroupId 表示一改全动的关系。",
   "如果输入同时包含偏好/心愿和具体行动，优先输出 schedule，并把偏好/心愿压进 detail/reason，后端会从 raw 和分析轨迹沉淀记忆。",
   "如果输入是在定义纪念日、周年、生日、在一起、相识、领证、结婚、第一次等重要日期，而不是安排庆祝动作，返回 memory，memoryKind=anniversary。",
@@ -105,6 +112,7 @@ const dailyCheckinTitle = "一起确认明天的安排";
 const dailyCheckinCardTitle = "一起打卡！";
 const dailyCheckinCardTag = "daily-checkin-card";
 const dailyCheckinCardDetail = "睡前写完今天的三件小记录，每天 03:00 刷新。";
+const dailyCheckinSleepStepTitle = "入睡时间";
 const dailyCheckinWakeStepTitle = "起床时间";
 const dailyCheckinPlanStepTitle = "确定明天安排";
 const dailyCheckinExerciseStepTitle = "进行体育锻炼";
@@ -113,6 +121,7 @@ const dailyCheckinContributionStepTitle = "最有贡献的事";
 const dailyCheckinPhotoStepTitle = "最珍贵的照片";
 const dailyCheckinBedtimeStepTitle = "睡前打卡";
 const dailyCheckinDefaultSteps = [
+  { title: dailyCheckinSleepStepTitle, inputType: "time" },
   { title: dailyCheckinWakeStepTitle, inputType: "time" },
   { title: dailyCheckinPlanStepTitle },
   { title: dailyCheckinExerciseStepTitle },
@@ -145,6 +154,7 @@ const actionSchedulePattern = /(?:^|[，,。；;\s])(?:查|查询|搜索|搜|找
 const fullDatePattern = /(?:^|[^\d])(\d{4})\s*(?:年|[./-])\s*(\d{1,2})\s*(?:月|[./-])\s*(\d{1,2})\s*日?(?!\d)/;
 const fullDateReplacePattern = /\d{4}\s*(?:年|[./-])\s*\d{1,2}\s*(?:月|[./-])\s*\d{1,2}\s*日?/g;
 const dayRolloverHour = 3;
+const dayRolloverClock = `${pad(dayRolloverHour)}:00`;
 const solarTermNames = [
   "小寒", "大寒", "立春", "雨水", "惊蛰", "春分", "清明", "谷雨",
   "立夏", "小满", "芒种", "夏至", "小暑", "大暑", "立秋", "处暑",
@@ -268,11 +278,33 @@ function formatDate(date = new Date()) {
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
 }
 
+function datePartsInBusinessTimeZone(date = new Date()) {
+  const source = date instanceof Date && !Number.isNaN(date.getTime()) ? date : new Date();
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: businessTimeZone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hourCycle: "h23",
+  }).formatToParts(source);
+  const byType = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+  return {
+    date: `${byType.year}-${byType.month}-${byType.day}`,
+    time: `${byType.hour}:${byType.minute}`,
+    hour: Number(byType.hour),
+    minute: Number(byType.minute),
+    second: Number(byType.second),
+  };
+}
+
 function businessDate(date = new Date()) {
-  const shifted = new Date(date);
-  if (shifted.getHours() < dayRolloverHour) {
-    shifted.setDate(shifted.getDate() - 1);
-  }
+  const parts = datePartsInBusinessTimeZone(date);
+  if (parts.hour >= dayRolloverHour) return parts.date;
+  const shifted = parseDate(parts.date) || new Date();
+  shifted.setDate(shifted.getDate() - 1);
   return formatDate(shifted);
 }
 
@@ -285,6 +317,25 @@ function addDays(dateText, offset) {
   const date = parseDate(normalizeDate(dateText)) || new Date();
   date.setDate(date.getDate() + offset);
   return formatDate(date);
+}
+
+function businessDayContext(date = new Date(), selectedDate = businessDate(date)) {
+  const parts = datePartsInBusinessTimeZone(date);
+  const currentBusinessDate = businessDate(date);
+  const dayStart = normalizeDate(selectedDate || currentBusinessDate);
+  return {
+    timezone: businessTimeZone,
+    rolloverHour: dayRolloverHour,
+    rolloverClock: dayRolloverClock,
+    rule: "一天从 03:00 到次日 02:59；00:00-02:59 的“今天/现在/今晚”仍属于上一业务日。",
+    currentLocalDate: parts.date,
+    currentLocalTime: parts.time,
+    currentBusinessDate,
+    selectedBusinessDate: dayStart,
+    selectedBusinessDayStartsAt: `${dayStart}T${dayRolloverClock}`,
+    selectedBusinessDayEndsAt: `${addDays(dayStart, 1)}T${dayRolloverClock}`,
+    isCurrentDeepNightForBusinessDay: parts.hour < dayRolloverHour,
+  };
 }
 
 function weekendRangeForDate(dateText) {
@@ -709,6 +760,25 @@ function nowIso() {
   return new Date().toISOString();
 }
 
+function codexAgentInvocationArgs(options = {}) {
+  const model = sanitizeText(
+    options.model ||
+    (options.modelEnvKey ? process.env[options.modelEnvKey] : "") ||
+    defaultCodexAgentModel,
+    80
+  );
+  const reasoningEffort = sanitizeText(
+    options.reasoningEffort ||
+    (options.reasoningEnvKey ? process.env[options.reasoningEnvKey] : "") ||
+    defaultCodexReasoningEffort,
+    20
+  );
+  const args = [];
+  if (model) args.push("--model", model);
+  if (reasoningEffort) args.push("--config", `model_reasoning_effort="${reasoningEffort}"`);
+  return args;
+}
+
 function sanitizeText(input, maxLength = 500) {
   return String(input || "")
     .replace(/\r\n/g, "\n")
@@ -746,6 +816,16 @@ function sanitizeList(items, maxItems = 8, maxLength = 180) {
 function normalizeIdList(items, maxItems = 16) {
   const raw = Array.isArray(items) ? items : String(items || "").split(/[,\s，、]+/);
   return [...new Set(raw.map((item) => sanitizeText(item, 100)).filter(Boolean))].slice(0, maxItems);
+}
+
+function normalizeProfileIdList(store, items, fallback = []) {
+  const profileIds = new Set(getProfileIds(store));
+  const raw = Array.isArray(items) ? items : String(items || "").split(/[,\s，、]+/);
+  const normalized = [...new Set(raw.map((item) => sanitizeText(item, 80)).filter((id) => profileIds.has(id)))];
+  if (normalized.length) return normalized;
+  return (Array.isArray(fallback) ? fallback : [])
+    .map((id) => sanitizeText(id, 80))
+    .filter((id) => profileIds.has(id));
 }
 
 function normalizeTagValue(input) {
@@ -833,6 +913,7 @@ function normalizeClockValue(value) {
 
 function dailyCheckinInputTypeForTitle(title) {
   const key = normalizedTitleKey(title);
+  if (key === normalizedTitleKey(dailyCheckinSleepStepTitle)) return "time";
   if (key === normalizedTitleKey(dailyCheckinWakeStepTitle)) return "time";
   if (key === normalizedTitleKey(dailyCheckinHappyStepTitle)) return "text";
   if (key === normalizedTitleKey(dailyCheckinContributionStepTitle)) return "text";
@@ -1067,6 +1148,16 @@ function dateTimeForSegment(date, segment) {
   return `${normalizeDate(date)}T${segmentStartTimes[normalizeSegment(segment)] || segmentStartTimes.allDay}`;
 }
 
+function dateTimeForBusinessClock(date, clock) {
+  const normalizedDate = normalizeDate(date);
+  const normalizedClock = normalizeClockValue(clock);
+  if (!normalizedDate || !normalizedClock) return "";
+  const [hourText, minuteText] = normalizedClock.split(":");
+  const minutes = Number(hourText) * 60 + Number(minuteText);
+  const calendarDate = minutes < dayRolloverHour * 60 ? addDays(normalizedDate, 1) : normalizedDate;
+  return `${calendarDate}T${normalizedClock}`;
+}
+
 function addMinutesToDateTime(dateTime, minutes) {
   const normalized = normalizeDateTime(dateTime);
   if (!normalized) return "";
@@ -1074,6 +1165,26 @@ function addMinutesToDateTime(dateTime, minutes) {
   if (Number.isNaN(parsed.getTime())) return "";
   parsed.setMinutes(parsed.getMinutes() + normalizeDurationMin(minutes, 30));
   return `${formatDate(parsed)}T${pad(parsed.getHours())}:${pad(parsed.getMinutes())}`;
+}
+
+function addRawMinutesToDateTime(dateTime, minutes) {
+  const normalized = normalizeDateTime(dateTime);
+  const parsedMinutes = Number(minutes);
+  if (!normalized || !Number.isFinite(parsedMinutes)) return "";
+  const parsed = new Date(normalized);
+  if (Number.isNaN(parsed.getTime())) return "";
+  parsed.setMinutes(parsed.getMinutes() + Math.round(parsedMinutes));
+  return `${formatDate(parsed)}T${pad(parsed.getHours())}:${pad(parsed.getMinutes())}`;
+}
+
+function minutesBetweenDateTimes(startAt, endAt) {
+  const start = normalizeDateTime(startAt);
+  const end = normalizeDateTime(endAt);
+  if (!start || !end) return 0;
+  const startMs = Date.parse(start);
+  const endMs = Date.parse(end);
+  if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || endMs <= startMs) return 0;
+  return Math.round((endMs - startMs) / 60000);
 }
 
 function formatDateTimeShort(value) {
@@ -1118,7 +1229,10 @@ function inferClockTime(text, segment) {
   if (!match) return "";
   let hour = Number(match[1]);
   const minute = Number(match[2] || 0);
-  if ((/下午|晚上|今晚|夜里/.test(raw) || ["afternoon", "evening"].includes(segment)) && hour < 12) {
+  const isDeepNightClock = /凌晨|半夜/.test(raw) || ((/夜里|晚上|今晚/.test(raw) || segment === "evening") && hour > 0 && hour < dayRolloverHour);
+  if ((/下午/.test(raw) || segment === "afternoon") && hour < 12) {
+    hour += 12;
+  } else if (!isDeepNightClock && (/晚上|今晚|夜里/.test(raw) || segment === "evening") && hour < 12) {
     hour += 12;
   }
   if (minute < 0 || minute > 59) return "";
@@ -1279,7 +1393,7 @@ function inferPlannedAt(text, date, segment, durationMin) {
   const normalizedDate = normalizeDate(date);
   const normalizedSegment = normalizeSegment(segment);
   const clock = inferClockTime(text, normalizedSegment);
-  if (clock) return `${normalizedDate}T${clock}`;
+  if (clock) return dateTimeForBusinessClock(normalizedDate, clock);
   if (normalizedSegment !== "allDay" || durationMin) return dateTimeForSegment(normalizedDate, normalizedSegment);
   return "";
 }
@@ -1288,7 +1402,7 @@ function inferDueAt(text, date, segment) {
   const raw = String(text || "");
   if (!/(?:ddl|deadline|截止|之前|前\b|前完成|前提交|到期)/i.test(raw)) return "";
   const clock = inferClockTime(raw, normalizeSegment(segment));
-  return `${normalizeDate(date)}T${clock || "23:59"}`;
+  return clock ? dateTimeForBusinessClock(date, clock) : `${normalizeDate(date)}T23:59`;
 }
 
 function cleanStoredLifeCardStepTitle(title, parentTitle = "") {
@@ -1954,6 +2068,225 @@ function assertLifeCardVisibleToUser(item, userId) {
   }
 }
 
+function normalizeDayTimelineBlockType(value) {
+  const raw = sanitizeText(value, 40);
+  return validDayTimelineBlockTypes.has(raw) ? raw : "event";
+}
+
+function businessDateForDateTime(value, fallback = businessDate()) {
+  const normalized = normalizeDateTime(value);
+  if (!normalized) return normalizeDate(fallback);
+  const parsed = new Date(normalized);
+  if (Number.isNaN(parsed.getTime())) return normalizeDate(fallback);
+  return businessDate(parsed);
+}
+
+function dayTimelineWindow(dateText) {
+  const date = normalizeDate(dateText);
+  return {
+    startAt: `${date}T03:00`,
+    endAt: `${addDays(date, 1)}T03:00`,
+  };
+}
+
+function dateTimeInDayTimelineWindow(dateText, dateTime) {
+  const normalized = normalizeDateTime(dateTime);
+  if (!normalized) return false;
+  const window = dayTimelineWindow(dateText);
+  return normalized >= window.startAt && normalized < window.endAt;
+}
+
+function normalizeDayTimelineDateTime(value, dateText, fallbackMinute = 9 * 60) {
+  const normalized = normalizeDateTime(value);
+  if (normalized) return normalized;
+  const date = normalizeDate(dateText);
+  const hour = Math.floor(fallbackMinute / 60) % 24;
+  const minute = fallbackMinute % 60;
+  const targetDate = fallbackMinute >= 24 * 60 ? addDays(date, 1) : date;
+  return `${targetDate}T${pad(hour)}:${pad(minute)}`;
+}
+
+function clampDayTimelineBlockToWindow(dateText, startAt, endAt) {
+  const date = normalizeDate(dateText);
+  const window = dayTimelineWindow(date);
+  let start = normalizeDateTime(startAt) || window.startAt;
+  let end = normalizeDateTime(endAt) || addMinutesToDateTime(start, 60);
+  if (start < window.startAt) start = window.startAt;
+  if (start >= window.endAt) start = addRawMinutesToDateTime(window.endAt, -30);
+  if (!end || end <= start) end = addMinutesToDateTime(start, 60);
+  if (end > window.endAt) end = window.endAt;
+  if (end <= start) end = addMinutesToDateTime(start, 30);
+  return { startAt: start, endAt: end };
+}
+
+function lifeCardIdForItem(sourceType, id) {
+  return `${sanitizeText(sourceType, 40)}-${sanitizeText(id, 80)}`;
+}
+
+function visibleLifeCardIdSet(store, userId) {
+  const ids = new Set();
+  [
+    ["schedule", store.scheduleItems],
+    ["todo", store.todoItems],
+    ["checkin", store.checkinItems],
+    ["deadline", store.deadlineItems],
+  ].forEach(([sourceType, collection]) => {
+    (Array.isArray(collection) ? collection : []).forEach((item) => {
+      if (lifeCardVisibleToUser(item, userId)) ids.add(lifeCardIdForItem(sourceType, item.id));
+    });
+  });
+  return ids;
+}
+
+function normalizeLinkedLifeCardIds(store, userId, input) {
+  const visibleIds = visibleLifeCardIdSet(store, userId);
+  return normalizeIdList(input, 12).filter((id) => visibleIds.has(id));
+}
+
+function normalizeStoredDayTimelineBlock(store, input = {}, userId = "") {
+  const fallbackDate = normalizeDate(input.date || businessDate());
+  const startAt = normalizeDayTimelineDateTime(input.startAt, fallbackDate, 9 * 60);
+  const inputDate = normalizeDate(input.date || "", "");
+  const date = inputDate && dateTimeInDayTimelineWindow(inputDate, startAt)
+    ? inputDate
+    : normalizeDate(businessDateForDateTime(startAt, fallbackDate), fallbackDate);
+  const endAt = normalizeDayTimelineDateTime(input.endAt, date, 10 * 60);
+  const clamped = clampDayTimelineBlockToWindow(date, startAt, endAt);
+  const visibility = normalizeLifeCardVisibility(input);
+  const participantFallback = userId ? [userId] : getProfileIds(store);
+  const participantIds = visibility === "private"
+    ? normalizeProfileIdList(store, [userId || input.createdBy], participantFallback).slice(0, 1)
+    : normalizeProfileIdList(store, input.participantIds || input.participants, participantFallback);
+  const linkedLifeCardIds = userId
+    ? normalizeLinkedLifeCardIds(store, userId, input.linkedLifeCardIds)
+    : normalizeIdList(input.linkedLifeCardIds, 12);
+  const type = normalizeDayTimelineBlockType(input.type);
+  const title = sanitizeText(input.title || (type === "sleep" ? "睡觉" : ""), 120);
+  return {
+    id: sanitizeText(input.id, 80) || makeId("time"),
+    date,
+    type,
+    title: title || (type === "sleep" ? "睡觉" : "时间段"),
+    detail: sanitizeText(input.detail, 500),
+    location: sanitizeText(input.location, 120),
+    participantIds,
+    linkedLifeCardIds,
+    startAt: clamped.startAt,
+    endAt: clamped.endAt,
+    visibility,
+    createdBy: sanitizeText(input.createdBy || userId, 80),
+    updatedBy: sanitizeText(input.updatedBy || userId, 80),
+    createdAt: sanitizeText(input.createdAt, 40) || nowIso(),
+    updatedAt: sanitizeText(input.updatedAt, 40) || nowIso(),
+  };
+}
+
+function dayTimelineBlockVisibleToUser(block, userId) {
+  if (block.visibility !== "private") return true;
+  return block.createdBy === userId || block.participantIds?.includes(userId);
+}
+
+function publicDayTimelineBlock(block, store = null, userId = "") {
+  const linkedLifeCardIds = Array.isArray(block.linkedLifeCardIds) ? block.linkedLifeCardIds : [];
+  const visibleIds = store && userId ? visibleLifeCardIdSet(store, userId) : null;
+  return {
+    id: block.id,
+    date: block.date,
+    type: normalizeDayTimelineBlockType(block.type),
+    title: block.title || "",
+    detail: block.detail || "",
+    location: block.location || "",
+    participantIds: Array.isArray(block.participantIds) ? block.participantIds : [],
+    linkedLifeCardIds: visibleIds ? linkedLifeCardIds.filter((id) => visibleIds.has(id)) : linkedLifeCardIds,
+    startAt: normalizeDateTime(block.startAt),
+    endAt: normalizeDateTime(block.endAt),
+    visibility: block.visibility === "private" ? "private" : "shared",
+    derived: Boolean(block.derived),
+    derivedFrom: block.derivedFrom || "",
+    createdBy: block.createdBy || "",
+    updatedBy: block.updatedBy || "",
+    createdAt: block.createdAt || "",
+    updatedAt: block.updatedAt || "",
+  };
+}
+
+function dailyCheckinStepByTitle(item, title) {
+  const key = normalizedTitleKey(title);
+  return normalizeDailyCheckinStepsForItem(item).find((step) => normalizedTitleKey(step.title) === key) || null;
+}
+
+function dateTimeFromBusinessDayClock(dateText, clockValue, preferNextDay = false) {
+  const time = normalizeClockValue(clockValue);
+  if (!time) return "";
+  const minutes = Number(time.slice(0, 2)) * 60 + Number(time.slice(3, 5));
+  const date = preferNextDay || minutes < dayRolloverHour * 60 ? addDays(dateText, 1) : normalizeDate(dateText);
+  return `${date}T${time}`;
+}
+
+function manualSleepBlockExists(blocks, date, userId) {
+  return (blocks || []).some((block) =>
+    block.date === date &&
+    block.type === "sleep" &&
+    !block.derived &&
+    Array.isArray(block.participantIds) &&
+    block.participantIds.includes(userId)
+  );
+}
+
+function buildDerivedSleepTimelineBlocks(store, date, userId) {
+  const profileIds = getProfileIds(store);
+  const checkin = (store.todoItems || []).find((item) =>
+    item.date === date &&
+    normalizeLifeCardTags(item.tags, item).includes(dailyCheckinCardTag)
+  );
+  if (!checkin) return [];
+  const sleepStep = dailyCheckinStepByTitle(checkin, dailyCheckinSleepStepTitle);
+  const wakeStep = dailyCheckinStepByTitle(checkin, dailyCheckinWakeStepTitle);
+  if (!sleepStep || !wakeStep) return [];
+  return profileIds
+    .filter((id) => dayTimelineBlockVisibleToUser({ visibility: "shared", participantIds: [id] }, userId))
+    .map((id) => {
+      if (manualSleepBlockExists(store.dayTimelineBlocks, date, id)) return null;
+      const sleepAt = dateTimeFromBusinessDayClock(date, sleepStep.valueByUser?.[id], false);
+      const wakeAt = dateTimeFromBusinessDayClock(date, wakeStep.valueByUser?.[id], true);
+      if (!sleepAt || !wakeAt || minutesBetweenDateTimes(sleepAt, wakeAt) <= 0) return null;
+      return publicDayTimelineBlock({
+        id: `sleep-${date}-${id}`,
+        date,
+        type: "sleep",
+        title: "睡觉",
+        detail: "",
+        location: "",
+        participantIds: [id],
+        linkedLifeCardIds: [lifeCardIdForItem("todo", checkin.id)],
+        startAt: sleepAt,
+        endAt: wakeAt,
+        visibility: "shared",
+        derived: true,
+        derivedFrom: "daily-checkin",
+        createdBy: "system",
+        updatedBy: "system",
+        createdAt: "",
+        updatedAt: "",
+      }, store, userId);
+    })
+    .filter(Boolean);
+}
+
+function buildDayTimelineBlocks(store, userId, dateText) {
+  const date = normalizeDate(dateText);
+  const stored = (store.dayTimelineBlocks || [])
+    .filter((block) => block.date === date)
+    .filter((block) => dayTimelineBlockVisibleToUser(block, userId))
+    .map((block) => publicDayTimelineBlock(block, store, userId));
+  const derived = buildDerivedSleepTimelineBlocks(store, date, userId);
+  return [...stored, ...derived].sort((a, b) =>
+    String(a.startAt).localeCompare(String(b.startAt)) ||
+    String(a.endAt).localeCompare(String(b.endAt)) ||
+    String(a.title).localeCompare(String(b.title))
+  );
+}
+
 function resolveCatWordTargetUserId(store, capture, fallbackSenderId) {
   const profileIds = getProfileIds(store);
   const senderId = profileIds.includes(capture?.createdBy) ? capture.createdBy : fallbackSenderId;
@@ -2393,6 +2726,64 @@ function reorderLifeCards(userId, payload = {}) {
     });
 
     return updated;
+  });
+}
+
+function upsertDayTimelineBlock(userId, payload = {}) {
+  return mutateStore((store) => {
+    store.dayTimelineBlocks = Array.isArray(store.dayTimelineBlocks) ? store.dayTimelineBlocks : [];
+    const id = sanitizeText(payload.id, 80);
+    const existingIndex = id ? store.dayTimelineBlocks.findIndex((block) => block.id === id) : -1;
+    const existing = existingIndex >= 0 ? store.dayTimelineBlocks[existingIndex] : null;
+    if (existing?.derived) {
+      throw new Error("derived timeline block cannot be edited");
+    }
+    if (existing && !dayTimelineBlockVisibleToUser(existing, userId)) {
+      throw new Error("timeline block not found");
+    }
+    const timestamp = nowIso();
+    const block = normalizeStoredDayTimelineBlock(store, {
+      ...(existing || {}),
+      ...payload,
+      id: existing?.id || id,
+      createdBy: existing?.createdBy || userId,
+      createdAt: existing?.createdAt || timestamp,
+      updatedBy: userId,
+      updatedAt: timestamp,
+    }, userId);
+    if (existing) {
+      const visibleIds = visibleLifeCardIdSet(store, userId);
+      const hiddenExistingLinks = normalizeIdList(existing.linkedLifeCardIds, 12).filter((linkId) => !visibleIds.has(linkId));
+      block.linkedLifeCardIds = normalizeIdList([...hiddenExistingLinks, ...block.linkedLifeCardIds], 12);
+    }
+    if (existingIndex >= 0) {
+      store.dayTimelineBlocks[existingIndex] = block;
+    } else {
+      store.dayTimelineBlocks.push(block);
+    }
+    recordOperation(store, userId, existingIndex >= 0 ? "update" : "create", "day-timeline", block.id, {
+      date: block.date,
+      title: block.title,
+      sourceType: "day-timeline",
+    });
+    return publicDayTimelineBlock(block, store, userId);
+  });
+}
+
+function deleteDayTimelineBlock(userId, payload = {}) {
+  return mutateStore((store) => {
+    const id = sanitizeText(payload.id, 80);
+    const index = (store.dayTimelineBlocks || []).findIndex((block) => block.id === id);
+    if (index < 0 || !dayTimelineBlockVisibleToUser(store.dayTimelineBlocks[index], userId)) {
+      throw new Error("timeline block not found");
+    }
+    const [removed] = store.dayTimelineBlocks.splice(index, 1);
+    recordOperation(store, userId, "delete", "day-timeline", removed.id, {
+      date: removed.date,
+      title: removed.title,
+      sourceType: "day-timeline",
+    });
+    return publicDayTimelineBlock(removed, store, userId);
   });
 }
 
@@ -2965,6 +3356,7 @@ function createDefaultStore() {
     todoItems: [],
     checkinItems: [],
     deadlineItems: [],
+    dayTimelineBlocks: [],
     operations: [],
     diaryDays: {},
     dailySummaries: {},
@@ -3041,6 +3433,7 @@ function ensureStoreShape(store) {
   shaped.todoItems = Array.isArray(shaped.todoItems) ? shaped.todoItems : [];
   shaped.checkinItems = Array.isArray(shaped.checkinItems) ? shaped.checkinItems : [];
   shaped.deadlineItems = Array.isArray(shaped.deadlineItems) ? shaped.deadlineItems : [];
+  shaped.dayTimelineBlocks = Array.isArray(shaped.dayTimelineBlocks) ? shaped.dayTimelineBlocks : [];
   ["scheduleItems", "todoItems", "checkinItems", "deadlineItems"].forEach((key) => {
     shaped[key] = shaped[key].map((item) => ({
       ...item,
@@ -3054,6 +3447,10 @@ function ensureStoreShape(store) {
       statusMetaByDate: item.statusMetaByDate && typeof item.statusMetaByDate === "object" ? item.statusMetaByDate : {},
     }));
   });
+  shaped.dayTimelineBlocks = shaped.dayTimelineBlocks
+    .map((block) => normalizeStoredDayTimelineBlock(shaped, block, ""))
+    .filter((block) => block.startAt && block.endAt)
+    .slice(-600);
   shaped.operations = Array.isArray(shaped.operations) ? shaped.operations : [];
   shaped.diaryDays = shaped.diaryDays && typeof shaped.diaryDays === "object" ? shaped.diaryDays : {};
   shaped.dailySummaries = shaped.dailySummaries && typeof shaped.dailySummaries === "object" ? shaped.dailySummaries : {};
@@ -4172,6 +4569,46 @@ function publicCaptureAgentContextItem(item, sourceType) {
   };
 }
 
+function memoryContextVisibleToUser(store, item, userId) {
+  if (!item) return false;
+  const sourceCaptureId = item.sourceCaptureId || "";
+  if (sourceCaptureId) {
+    const capture = store.captures.find((captureItem) => captureItem.id === sourceCaptureId);
+    if (capture && !captureVisibleToUser(capture, userId)) return false;
+  }
+  return true;
+}
+
+function publicCaptureAgentMemoryContextItem(item) {
+  if (!item) return null;
+  return {
+    id: item.id || "",
+    kind: normalizeMemoryKind(item.kind) || "memory",
+    kindLabel: item.kindLabel || relationshipInsightKindLabels[item.kind] || "记忆",
+    group: item.group || memoryGroupForKind(item.kind),
+    title: sanitizeText(item.title, 120),
+    detail: sanitizeText(item.detail, 320),
+    ownerId: item.ownerId || "shared",
+    targetUserId: sanitizeText(item.targetUserId, 80),
+    source: sanitizeText(item.source, 40),
+    sourceCaptureId: sanitizeText(item.sourceCaptureId, 80),
+    sourceCardIds: normalizeIdList(item.sourceCardIds, 6),
+    suggestedDate: item.suggestedDate ? normalizeDate(item.suggestedDate) : "",
+    itemType: normalizeScheduleItemType(item.itemType, "reminder"),
+    tags: normalizeLifeCardTags(item.tags, item).slice(0, 8),
+    score: Number(item.score) || 0,
+    updatedAt: sanitizeText(item.updatedAt, 40),
+  };
+}
+
+function buildCaptureAgentMemoryContext(store, userId, selectedDate, relationshipInsights) {
+  return buildMemoryItems(store, userId, selectedDate, relationshipInsights)
+    .filter((item) => memoryContextVisibleToUser(store, item, userId))
+    .map(publicCaptureAgentMemoryContextItem)
+    .filter((item) => item?.title || item?.detail)
+    .slice(0, 24);
+}
+
 function captureAssetFilePath(asset) {
   const url = String(asset?.url || "");
   if (!url.startsWith("/__content/")) return "";
@@ -4193,6 +4630,8 @@ function buildCaptureAgentFacts(store, userId, payload, capture, text, selectedD
   const profileIds = getProfileIds(store);
   const startDate = addDays(selectedDate, -14);
   const endDate = addDays(selectedDate, 90);
+  const currentTimeContext = businessDayContext(new Date(), selectedDate);
+  const relationshipInsights = buildRelationshipInsights(store, userId, selectedDate).slice(0, 12);
   const datedContext = [
     ...store.todoItems.filter((item) => lifeCardVisibleToUser(item, userId)).map((item) => publicCaptureAgentContextItem(item, "todo")),
     ...store.scheduleItems.filter((item) => lifeCardVisibleToUser(item, userId)).map((item) => publicCaptureAgentContextItem(item, "schedule")),
@@ -4205,8 +4644,9 @@ function buildCaptureAgentFacts(store, userId, payload, capture, text, selectedD
     .slice(0, 30);
 
   return {
-    currentDate: businessDate(),
+    currentDate: currentTimeContext.currentBusinessDate,
     selectedDate,
+    timeContext: currentTimeContext,
     userId,
     ownerId,
     profiles: store.profiles.map(publicProfile),
@@ -4233,6 +4673,9 @@ function buildCaptureAgentFacts(store, userId, payload, capture, text, selectedD
     segments: segmentDefinitions,
     templateDraft,
     nearbyLifeCards: datedContext,
+    memoryHints: buildMemoryHints(store, relationshipInsights),
+    longTermMemory: buildCaptureAgentMemoryContext(store, userId, selectedDate, relationshipInsights),
+    relationshipInsights: relationshipInsights.map(publicRelationshipInsight),
     recentCaptures: store.captures
       .filter((item) => captureVisibleToUser(item, userId))
       .slice(0, 16)
@@ -4255,12 +4698,20 @@ function buildCaptureAgentStructuredPrompt(facts) {
     "输出必须严格符合 JSON schema。",
     "",
     "决策要求：",
+    "- 时间是硬规则：系统时区固定按 Asia/Shanghai 理解；猫猫日记的一天从 03:00 到次日 02:59，不按自然日 00:00 切分。",
+    "- selectedDate 是业务日，不一定等于日历今天；timeContext.selectedBusinessDayStartsAt/EndsAt 给出了这一天的真实时间窗口。",
+    "- 如果当前本地时间在 00:00-02:59，用户说“今天/现在/今晚/刚刚”仍然指上一业务日，也就是 currentDate/selectedDate，不要跳到新的自然日。",
+    "- 如果业务日 selectedDate 中安排了 00:00-02:59 的凌晨事件，date 仍填 selectedDate；plannedAt/dueAt 填真实日历时间，例如 selectedDate=2026-05-21 的凌晨 01:00 应写 plannedAt=2026-05-22T01:00。",
+    "- 用户明确给出自然日日期时优先尊重该日期；但仍按 03:00 业务日窗口判断它属于哪一天的时间线。",
     "- decision=schedule：用户明确说了要发生、要提醒、要买、要做、要约、要打卡、要养成习惯的事。",
     "- 查资料、搜视频、学习、练习、训练、复习、准备、处理、整理这类短动作也属于 schedule，默认落到今天的 thing/work。",
     "- 纪念日/周年/生日/在一起/相识/领证/结婚/第一次的日期定义属于 memory，memoryKind=anniversary；无年份日期用 selectedDate/currentDate 所在年份补齐，repeatRule=yearly，ownerId=shared，participants=双方。",
     "- 纪念日记忆要在 reason/detail 中说明可用于倒计时、今年第几天、提前提醒和准备建议；不要因为“今天录入”把 date 设成今天。",
     "- 只有明确要提醒、准备、买礼物、订餐厅、整理照片、写信、庆祝时才生成 schedule；这类 schedule 的 memoryKinds 必须包含 anniversary，礼物/吃饭/照片/信等准备动作要拆成 relatedItems。",
     "- decision=memory：偏好、心愿、承诺、照顾线索、纪念线索、感谢、修复、关系资料、长期目标。",
+    "- 路由前必须参考 longTermMemory、memoryHints、relationshipInsights：已有偏好/心愿/纪念日/承诺不要重复造新记忆；新消息能补充旧记忆时，title/detail 应写成可合并的稳定事实。",
+    "- 当输入改写、补充或确认已有长期记忆时，返回 decision=memory，并让 title 对齐已有记忆主题；detail 写新增事实或更准确版本。",
+    "- 当输入只是触发一个基于长期记忆的行动（例如按已知偏好订餐厅、给纪念日准备礼物），返回 schedule，并把相关 memoryKinds/tags 带上。",
     "- decision=dailyStory：适合进入当天日总结素材，但不是未来行动或长期记忆。",
     "- decision=capture：只保留 raw，不需要任何生活卡或长期记忆。",
     "- itemType 默认 thing；工作/作业/会议用 work；购买用 purchase；约会/一起出去用 date；提醒/截止用 reminder；打卡用 checkin；周期习惯用 habit。",
@@ -4290,6 +4741,12 @@ function runCaptureAgentCodex(facts, options = {}) {
     .flatMap((filePath) => ["--image", filePath]);
   const args = [
     "exec",
+    ...codexAgentInvocationArgs({
+      model: options.model,
+      modelEnvKey: "PEOS_CAPTURE_AGENT_MODEL",
+      reasoningEffort: options.reasoningEffort,
+      reasoningEnvKey: "PEOS_CAPTURE_AGENT_REASONING_EFFORT",
+    }),
     "--ephemeral",
     "--skip-git-repo-check",
     "-C",
@@ -4301,10 +4758,6 @@ function runCaptureAgentCodex(facts, options = {}) {
     outputPath,
     buildCaptureAgentStructuredPrompt(facts),
   ];
-
-  if (options.model) {
-    args.splice(1, 0, "--model", options.model);
-  }
 
   return new Promise((resolve, reject) => {
     let settled = false;
@@ -4624,6 +5077,7 @@ async function analyzeCaptureWithAgent(userId, payload = {}) {
     agentOutput = await runCaptureAgentCodex(facts, {
       imagePaths: captureImagePaths(capture),
       model: payload.model,
+      reasoningEffort: payload.reasoningEffort,
       timeoutMs: payload.timeoutMs,
     });
   } catch (error) {
@@ -5709,7 +6163,7 @@ function buildScheduleItemCards(store, userId, selectedDate, relationshipInsight
       date,
       selectedDate: today,
       timeLabel: time || repeatRuleLabel(item.repeatRule),
-      plannedAt: time ? `${date}T${time}` : redateDateTime(item.plannedAt, date),
+      plannedAt: time ? dateTimeForBusinessClock(date, time) : redateDateTime(item.plannedAt, date),
       dueAt: item.dueAt && String(item.dueAt).slice(0, 10) === normalizeDate(item.date) ? redateDateTime(item.dueAt, date) : "",
       statusByUser: statusByUserForDate(item, participants, date),
       statusUpdatedBy: statusMetaByUserForDate(item, date, "updatedBy"),
@@ -6940,6 +7394,12 @@ function generateAgentNarrative(facts, options = {}) {
   const outputPath = path.join(os.tmpdir(), `couple-daily-summary-${facts.date}-${Date.now()}.json`);
   const args = [
     "exec",
+    ...codexAgentInvocationArgs({
+      model: options.model,
+      modelEnvKey: "PEOS_COUPLE_DAILY_SUMMARY_MODEL",
+      reasoningEffort: options.reasoningEffort,
+      reasoningEnvKey: "PEOS_COUPLE_DAILY_SUMMARY_REASONING_EFFORT",
+    }),
     "--ephemeral",
     "--skip-git-repo-check",
     "-C",
@@ -6950,10 +7410,6 @@ function generateAgentNarrative(facts, options = {}) {
     outputPath,
     buildAgentPrompt(facts),
   ];
-
-  if (options.model) {
-    args.splice(1, 0, "--model", options.model);
-  }
 
   const result = spawnSync("codex", args, {
     cwd: repoRoot,
@@ -7127,6 +7583,7 @@ function buildDailySummary(store, date, userId, options = {}) {
     try {
       agent = generateAgentNarrative(facts, {
         model: options.model || process.env.PEOS_COUPLE_DAILY_SUMMARY_MODEL,
+        reasoningEffort: options.reasoningEffort || process.env.PEOS_COUPLE_DAILY_SUMMARY_REASONING_EFFORT,
         timeoutMs: options.timeoutMs,
       });
       mode = "agent";
@@ -7281,6 +7738,7 @@ function getState(userId, options = {}) {
       completionTimeline: buildCompletionTimeline(store, selectedDate, userId),
     }),
     scheduleItemCards,
+    dayTimelineBlocks: buildDayTimelineBlocks(store, userId, selectedDate),
     relationshipInsights,
     memoryHints: buildMemoryHints(store, relationshipInsights),
     memoryItems,
@@ -8205,10 +8663,11 @@ function refreshDailySummary(userId, payload = {}) {
     const summary = buildDailySummary(store, date, userId || "system", {
       includePrivate: payload.includePrivate === true,
       useAgent: payload.useAgent === true,
-      requireAgent: payload.requireAgent === true,
-      model: payload.model,
-      timeoutMs: payload.timeoutMs,
-    });
+        requireAgent: payload.requireAgent === true,
+        model: payload.model,
+        reasoningEffort: payload.reasoningEffort,
+        timeoutMs: payload.timeoutMs,
+      });
     const dayContext = buildDayContext(store, date);
     store.dayContexts = store.dayContexts || {};
     store.dayContexts[date] = dayContext;
@@ -8230,8 +8689,10 @@ module.exports = {
   archiveCaptureItem,
   archiveScheduleItem,
   archiveTodoItem,
+  businessDayContext,
   businessDate,
   createLifeCardsFromConfirmation,
+  deleteDayTimelineBlock,
   deleteCheckinItem,
   deleteDeadlineItem,
   deleteScheduleItem,
@@ -8255,6 +8716,7 @@ module.exports = {
   updatePersonalPage,
   updateProfile,
   updateDiaryDay,
+  upsertDayTimelineBlock,
   upsertCheckinItem,
   upsertDeadlineItem,
   upsertScheduleItem,

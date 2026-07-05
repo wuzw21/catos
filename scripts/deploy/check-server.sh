@@ -62,12 +62,17 @@ check_cmd node
 check_cmd npm
 check_cmd git
 check_cmd curl
-check_cmd codex
+
+if [ "${WITH_CODEX}" = "1" ]; then
+  check_cmd codex
+fi
 
 if command -v tailscale >/dev/null 2>&1; then
   pass "command exists: tailscale"
-else
+elif [ "${REQUIRE_TAILSCALE}" = "1" ]; then
   fail "missing command: tailscale"
+else
+  echo "skip - Tailscale command is not installed; domain deployment does not require it"
 fi
 
 check_path "${PEOS_APP_DIR}/package.json"
@@ -114,7 +119,9 @@ if command -v tailscale >/dev/null 2>&1; then
 fi
 
 if [ "${WITH_CODEX}" = "1" ]; then
-  if id "${PEOS_SERVICE_USER}" >/dev/null 2>&1; then
+  if ! command -v codex >/dev/null 2>&1; then
+    fail "missing command: codex"
+  elif id "${PEOS_SERVICE_USER}" >/dev/null 2>&1; then
     if runuser -u "${PEOS_SERVICE_USER}" -- env HOME="/home/${PEOS_SERVICE_USER}" OTEL_SDK_DISABLED=true codex exec --ephemeral --skip-git-repo-check -C "${PEOS_APP_DIR}" "Return exactly: pong" </dev/null >/tmp/peos-codex-check.out 2>/tmp/peos-codex-check.err; then
       pass "Codex exec works for ${PEOS_SERVICE_USER}"
       if [ -n "${PEOS_EXPECT_CODEX_PROVIDER}" ]; then

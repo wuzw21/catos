@@ -15,6 +15,10 @@ function titles(steps) {
 try {
   assert.equal(store.verifyLogin("you", "damao").id, "you");
   assert.equal(store.verifyLogin("partner", "xiaomao").id, "partner");
+  assert.equal(store.businessDate(new Date("2026-05-21T16:30:00Z")), "2026-05-21");
+  assert.equal(store.businessDate(new Date("2026-05-21T19:30:00Z")), "2026-05-22");
+  assert.equal(store.businessDayContext(new Date("2026-05-21T16:30:00Z")).currentBusinessDate, "2026-05-21");
+  assert.equal(store.businessDayContext(new Date("2026-05-21T16:30:00Z")).isCurrentDeepNightForBusinessDay, true);
 
   const homework = store.analyzeCapture("you", {
     date: "2026-05-10",
@@ -60,6 +64,22 @@ try {
   assert.equal(weekly.plannedAt, "2026-05-18T20:00");
   assert.equal(weekly.repeatRule, "weekly@mon@20:00");
   assert.equal(weekly.title, "做周复盘");
+
+  const deepNightPlan = store.analyzeCapture("you", {
+    date: "2026-05-21",
+    text: "今天凌晨1点写日记",
+    analysisMode: "template",
+  });
+  assert.equal(deepNightPlan.decision, "schedule");
+  assert.equal(deepNightPlan.date, "2026-05-21");
+  assert.equal(deepNightPlan.plannedAt, "2026-05-22T01:00");
+
+  const eveningPlan = store.analyzeCapture("you", {
+    date: "2026-05-21",
+    text: "今天晚上8点写日记",
+    analysisMode: "template",
+  });
+  assert.equal(eveningPlan.plannedAt, "2026-05-21T20:00");
 
   const refactor = store.analyzeCapture("you", {
     date: "2026-05-10",
@@ -319,6 +339,53 @@ try {
   assert(!secretPartnerState.scheduleItemCards.some((card) => card.sourceId === secretTodo.id));
   assert.throws(() => store.toggleTodoItem("partner", { id: secretTodo.id, targetUserId: "partner" }), /not found/);
 
+  const timelineSecretLink = store.upsertDayTimelineBlock("you", {
+    date: "2026-05-12",
+    title: "准备礼物",
+    startAt: "2026-05-12T20:00",
+    endAt: "2026-05-12T21:00",
+    participantIds: ["you", "partner"],
+    linkedLifeCardIds: [`todo-${secretTodo.id}`],
+  }).result;
+  assert.deepEqual(timelineSecretLink.linkedLifeCardIds, [`todo-${secretTodo.id}`]);
+  const secretTimelineOwnerState = store.getState("you", { date: "2026-05-12" });
+  const ownerTimelineBlock = secretTimelineOwnerState.dayTimelineBlocks.find((block) => block.id === timelineSecretLink.id);
+  assert(ownerTimelineBlock.linkedLifeCardIds.includes(`todo-${secretTodo.id}`));
+  const secretTimelinePartnerState = store.getState("partner", { date: "2026-05-12" });
+  const partnerTimelineBlock = secretTimelinePartnerState.dayTimelineBlocks.find((block) => block.id === timelineSecretLink.id);
+  assert(partnerTimelineBlock);
+  assert(!partnerTimelineBlock.linkedLifeCardIds.includes(`todo-${secretTodo.id}`));
+  store.upsertDayTimelineBlock("partner", {
+    id: timelineSecretLink.id,
+    date: "2026-05-12",
+    title: "一起出门",
+    startAt: "2026-05-12T20:30",
+    endAt: "2026-05-12T21:30",
+    participantIds: ["you", "partner"],
+    linkedLifeCardIds: [],
+  });
+  const timelineSecretLinkAfterPartnerEdit = store.getState("you", { date: "2026-05-12" })
+    .dayTimelineBlocks.find((block) => block.id === timelineSecretLink.id);
+  assert(timelineSecretLinkAfterPartnerEdit.linkedLifeCardIds.includes(`todo-${secretTodo.id}`));
+
+  const privateTimeline = store.upsertDayTimelineBlock("you", {
+    date: "2026-05-12",
+    title: "小秘密时间",
+    startAt: "2026-05-12T02:30",
+    endAt: "2026-05-12T03:30",
+    visibility: "private",
+  }).result;
+  assert.equal(privateTimeline.date, "2026-05-11");
+  assert.equal(privateTimeline.startAt, "2026-05-12T02:30");
+  assert.equal(privateTimeline.endAt, "2026-05-12T03:00");
+  assert(!store.getState("partner", { date: "2026-05-11" }).dayTimelineBlocks.some((block) => block.id === privateTimeline.id));
+  const boundaryTimeline = store.upsertDayTimelineBlock("you", {
+    title: "三点边界",
+    startAt: "2026-05-12T03:00",
+    endAt: "2026-05-12T03:30",
+  }).result;
+  assert.equal(boundaryTimeline.date, "2026-05-12");
+
   const steppedTodo = store.upsertTodoItem("you", {
     date: "2026-05-12",
     title: "分步骤测试",
@@ -385,14 +452,17 @@ try {
   const checkinCard = checkinState.scheduleItemCards.find((card) => card.tags.includes("daily-checkin-card"));
   assert(checkinCard);
   assert(checkinCard.steps.length >= 4);
+  const sleepStep = checkinCard.steps.find((step) => step.title === "入睡时间");
   const wakeStep = checkinCard.steps.find((step) => step.title === "起床时间");
   const planStep = checkinCard.steps.find((step) => step.title === "确定明天安排");
   const exerciseStep = checkinCard.steps.find((step) => step.title === "进行体育锻炼");
   const bedtimeStep = checkinCard.steps.find((step) => step.title === "睡前打卡");
+  assert(sleepStep);
   assert(wakeStep);
   assert(planStep);
   assert(exerciseStep);
   assert(bedtimeStep);
+  assert.equal(sleepStep.inputType, "time");
   assert.equal(wakeStep.inputType, "time");
   assert.equal(bedtimeStep.inputType, "bedtime");
   assert(!checkinCard.steps.some((step) => step.title === "最开心的事"));
@@ -400,6 +470,13 @@ try {
   assert(!checkinCard.steps.some((step) => step.title === "最珍贵的照片"));
   assert.deepEqual(wakeStep.statusByUser, { you: "todo", partner: "todo" });
 
+  store.toggleLifeCardStep("you", {
+    sourceType: "todo",
+    id: checkinCard.sourceId,
+    stepId: sleepStep.id,
+    targetUserId: "you",
+    value: "23:40",
+  });
   store.toggleLifeCardStep("you", {
     sourceType: "todo",
     id: checkinCard.sourceId,
@@ -414,6 +491,22 @@ try {
   assert.equal(recordedWakeStep.statusByUser.you, "done");
   assert.equal(recordedWakeStep.statusByUser.partner, "todo");
   assert.equal(wakeCheckinStepCard.statusByUser.you, "todo");
+  const sleepBlocks = wakeCheckinStepState.dayTimelineBlocks.filter((block) => block.type === "sleep" && block.participantIds.includes("you"));
+  assert.equal(sleepBlocks.length, 1);
+  assert.equal(sleepBlocks[0].startAt, "2026-05-12T23:40");
+  assert.equal(sleepBlocks[0].endAt, "2026-05-13T07:30");
+  const manualSleep = store.upsertDayTimelineBlock("you", {
+    date: "2026-05-12",
+    type: "sleep",
+    title: "补记睡觉",
+    startAt: "2026-05-12T23:20",
+    endAt: "2026-05-13T07:10",
+    participantIds: ["you"],
+  }).result;
+  const manualSleepState = store.getState("you", { date: "2026-05-12" });
+  const manualSleepBlocks = manualSleepState.dayTimelineBlocks.filter((block) => block.type === "sleep" && block.participantIds.includes("you"));
+  assert.equal(manualSleepBlocks.length, 1);
+  assert.equal(manualSleepBlocks[0].id, manualSleep.id);
 
   store.toggleLifeCardStep("you", {
     sourceType: "todo",
@@ -480,6 +573,8 @@ try {
   assert.equal(clearedWakeStep.valueByUser.you, undefined);
   assert.equal(clearedWakeStep.statusByUser.you, "todo");
   assert.equal(clearedWakeCheckinCard.statusByUser.you, "todo");
+  assert.equal(clearedWakeCheckinState.dayTimelineBlocks.filter((block) => block.type === "sleep" && block.derived && block.participantIds.includes("you")).length, 0);
+  assert(clearedWakeCheckinState.dayTimelineBlocks.some((block) => block.id === manualSleep.id));
 
   const appendedCheckin = store.createLifeCardsFromConfirmation("you", {
     decision: "schedule",
